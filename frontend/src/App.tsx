@@ -8,6 +8,8 @@ import { TransferOptions, defaultOptions } from './components/TransferOptions';
 import type { TransferOptionsState } from './types/transfer';
 import { ConnectionStates } from './types/oauth';
 import type { ProfileResponse } from './types/oauth';
+import { migrationApi } from './api/migrationApi';
+import { Toaster, toast } from 'react-hot-toast';
 
 const formatBytes = (bytes: number) => {
   if (bytes === 0) return '0 B';
@@ -182,9 +184,68 @@ function App() {
 
   const isReadyToTransfer = sourceSelection.length > 0 && destinationFolder !== null;
 
+  const migrationMutation = useMutation({
+    mutationFn: migrationApi.startMigration,
+    onSuccess: (data) => {
+      console.log('Migration started successfully:', data);
+      toast.success('Migration job initialized successfully!');
+      // TODO: transition to progress view
+    },
+    onError: (error: any) => {
+      console.error('Migration failed to start:', error);
+      toast.error(error.message || 'Failed to start migration');
+    }
+  });
+
+  const handleStartMigration = async () => {
+    console.log("START BUTTON CLICKED");
+    
+    console.log('1. Validating state...');
+    
+    if (!bothConnected) {
+      console.error('Validation failed: Not both connected');
+      toast.error('Both accounts must be connected');
+      return;
+    }
+    
+    if (sourceSelection.length === 0) {
+      console.error('Validation failed: No source selected');
+      toast.error('Please select at least one item to migrate');
+      return;
+    }
+    
+    if (!destinationFolder) {
+      console.error('Validation failed: No destination selected');
+      toast.error('Please select a destination folder');
+      return;
+    }
+
+    if (migrationMutation.isPending) {
+      console.error('Validation failed: Mutation is pending');
+      return;
+    }
+
+    console.log('2. Preparing payload...');
+    const payload = {
+      sourceSelection,
+      destinationFolder,
+      options: transferOptions
+    };
+
+    console.log('Payload:', JSON.stringify(payload, null, 2));
+
+    console.log('3. Executing mutation...');
+    try {
+      await migrationMutation.mutateAsync(payload);
+      console.log('4. Mutation complete');
+    } catch (e) {
+      console.error('Mutation error:', e);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col items-center justify-center p-4 selection:bg-primary/20">
-      
+      <Toaster position="top-right" />
       <div className="w-full max-w-4xl flex flex-col items-center mb-10 text-center">
         <div className="w-16 h-16 bg-primary rounded-2xl rotate-3 shadow-lg flex items-center justify-center mb-6">
           <ArrowRight className="text-primary-foreground w-8 h-8 -rotate-3" />
@@ -222,10 +283,11 @@ function App() {
 
         <div className="pt-4 border-t border-border flex justify-end">
           <button 
-            disabled={!isReadyToTransfer}
+            disabled={!isReadyToTransfer || migrationMutation.isPending}
+            onClick={handleStartMigration}
             className="bg-primary text-primary-foreground font-semibold px-8 py-3 rounded-lg shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary/90 active:scale-95 flex items-center gap-2"
           >
-            Start Migration
+            {migrationMutation.isPending ? 'Starting...' : 'Start Migration'}
             <ArrowRight className="w-5 h-5" />
           </button>
         </div>

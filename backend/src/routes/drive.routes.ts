@@ -14,6 +14,43 @@ router.use('/:type', (req, res, next) => {
   next();
 });
 
+router.get('/:type/summary', async (req, res) => {
+  const type = req.params.type as AccountType;
+  const itemsParam = req.query.items as string; // format: "id:type,id:type" e.g., "123:folder,456:file"
+
+  if (!itemsParam) {
+    res.status(400).json({ error: 'Missing items parameter' });
+    return;
+  }
+
+  const items = itemsParam.split(',').map(part => {
+    const [id, itemType] = part.split(':');
+    return { id, isFolder: itemType === 'folder' };
+  });
+
+  // Setup SSE headers
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+     
+  });
+
+  const onProgress = (folders: number, files: number, bytes: number, currentAction: string) => {
+    res.write(`data: ${JSON.stringify({ folders, files, bytes, currentAction })}\n\n`);
+  };
+
+  try {
+    const summary = await driveService.getSelectionSummary(type, items, onProgress);
+    res.write(`data: ${JSON.stringify({ ...summary, complete: true })}\n\n`);
+  } catch (error: any) {
+    console.error(`Error calculating summary for ${type}:`, error.message);
+    res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+  } finally {
+    res.end();
+  }
+});
+
 router.get('/:type/root', async (req, res) => {
   const type = req.params.type as AccountType;
   const pageToken = req.query.pageToken as string | undefined;

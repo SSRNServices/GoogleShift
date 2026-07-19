@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import authRoutes from './routes/auth.routes';
 import driveRoutes from './routes/drive.routes';
+import migrationRoutes from './routes/migration.routes';
 
 dotenv.config();
 
@@ -17,12 +18,22 @@ const port = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} ${res.statusCode} - ${duration}ms`);
+  });
+  next();
+});
+
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'CloudShift Backend is running' });
 });
 
 app.use('/auth', authRoutes);
 app.use('/api/drive', driveRoutes);
+app.use('/api/migrations', migrationRoutes);
 
 // Print all registered routes
 const printRoutes = () => {

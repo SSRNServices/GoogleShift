@@ -1,4 +1,5 @@
-import { ArrowRight, HardDrive, FolderOpen, File as FileIcon } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { ArrowRight, HardDrive, FolderOpen, File as FileIcon, Loader2 } from 'lucide-react';
 import type { DriveItem } from '../types/drive';
 
 export interface TransferSummaryProps {
@@ -15,10 +16,87 @@ const formatBytes = (bytes: number) => {
 };
 
 export function TransferSummary({ sourceSelection, destinationFolder }: TransferSummaryProps) {
-  const folders = sourceSelection.filter(item => item.mimeType === 'application/vnd.google-apps.folder');
-  const files = sourceSelection.filter(item => item.mimeType !== 'application/vnd.google-apps.folder');
-  
-  const totalSize = sourceSelection.reduce((acc, item) => acc + (item.size || 0), 0);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanStats, setScanStats] = useState({ folders: 0, files: 0, bytes: 0 });
+  const [currentAction, setCurrentAction] = useState<string>('');
+
+  useEffect(() => {
+    if (sourceSelection.length === 0) {
+      setScanStats({ folders: 0, files: 0, bytes: 0 });
+      setCurrentAction('');
+      setIsScanning(false);
+      return;
+    }
+
+    setIsScanning(true);
+    setScanStats({ folders: 0, files: 0, bytes: 0 });
+    setCurrentAction('Starting scan...');
+
+    console.log('[Frontend] Folder selected for scan. Item count:', sourceSelection.length);
+
+    // Convert selection into items parameter: id1:folder,id2:file
+    const itemsParam = sourceSelection.map(item => {
+      const isFolder = item.mimeType === 'application/vnd.google-apps.folder';
+      return `${item.id}:${isFolder ? 'folder' : 'file'}`;
+    }).join(',');
+
+    const url = `http://localhost:3000/api/drive/source/summary?items=${encodeURIComponent(itemsParam)}`;
+    console.log('[Frontend] Summary request started. URL:', url);
+    const eventSource = new EventSource(url);
+
+    eventSource.onopen = () => {
+      console.log('[Frontend] SSE connection opened successfully.');
+    };
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        
+        if (data.error) {
+          console.error('Scan error:', data.error);
+          setCurrentAction(`Error: ${data.error}`);
+          setIsScanning(false);
+          eventSource.close();
+          return;
+        }
+
+        if (data.complete) {
+          console.log('[Frontend] Scanning completed. Final summary received:', data);
+          setIsScanning(false);
+          setCurrentAction('');
+          setScanStats({
+            folders: data.folders,
+            files: data.files,
+            bytes: data.bytes
+          });
+          eventSource.close();
+          return;
+        }
+
+        setScanStats({
+          folders: data.folders,
+          files: data.files,
+          bytes: data.bytes
+        });
+        if (data.currentAction) {
+          setCurrentAction(data.currentAction);
+        }
+
+      } catch (err) {
+        console.error('Error parsing SSE data', err);
+      }
+    };
+
+    eventSource.onerror = (err) => {
+      console.error('[Frontend] Summary failed / SSE Error:', err);
+      setIsScanning(false);
+      eventSource.close();
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  }, [sourceSelection]);
 
   return (
     <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
@@ -32,20 +110,29 @@ export function TransferSummary({ sourceSelection, destinationFolder }: Transfer
           {sourceSelection.length === 0 ? (
             <div className="text-sm text-muted-foreground italic">No items selected</div>
           ) : (
-            <div className="space-y-2">
-              <div className="flex items-center gap-2 text-sm">
-                <FolderOpen className="w-4 h-4 text-blue-500" />
-                <span className="font-medium text-foreground">{folders.length} Folders</span>
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm">
+                  <FolderOpen className="w-4 h-4 text-blue-500" />
+                  <span className="font-medium text-foreground">{scanStats.folders} Folders</span>
+                </div>
+                <div className="flex items-center gap-2 text-sm">
+                  <FileIcon className="w-4 h-4 text-muted-foreground" />
+                  <span className="font-medium text-foreground">{scanStats.files} Files</span>
+                </div>
+                <div className="flex items-center gap-2 text-sm">
+                  <HardDrive className="w-4 h-4 text-emerald-500" />
+                  <span className="font-medium text-foreground">Estimated Size: {formatBytes(scanStats.bytes)}</span>
+                </div>
+                {isScanning && (
+                  <div className="pt-2 border-t border-border mt-2">
+                    <div className="flex items-center gap-2 text-xs text-primary font-medium mb-1">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      Scanning Drive...
+                    </div>
+                    {currentAction && <div className="text-[10px] text-muted-foreground truncate" title={currentAction}>{currentAction}</div>}
+                  </div>
+                )}
               </div>
-              <div className="flex items-center gap-2 text-sm">
-                <FileIcon className="w-4 h-4 text-muted-foreground" />
-                <span className="font-medium text-foreground">{files.length} Files</span>
-              </div>
-              <div className="flex items-center gap-2 text-sm">
-                <HardDrive className="w-4 h-4 text-emerald-500" />
-                <span className="font-medium text-foreground">Estimated Size: {formatBytes(totalSize)}</span>
-              </div>
-            </div>
           )}
         </div>
 
