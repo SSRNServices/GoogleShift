@@ -22,6 +22,7 @@ export function TransferSummary({ sourceSelection, destinationFolder }: Transfer
 
   useEffect(() => {
     if (sourceSelection.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setScanStats({ folders: 0, files: 0, bytes: 0 });
       setCurrentAction('');
       setIsScanning(false);

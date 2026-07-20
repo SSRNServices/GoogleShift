@@ -1,3 +1,6 @@
+import { createJob } from '../utils/database';
+import { queueService } from './QueueService';
+
 export class MigrationService {
   public async startMigrationJob(payload: any) {
     // 1. Validate the payload structure
@@ -14,14 +17,15 @@ export class MigrationService {
     const jobId = 'job_' + Date.now();
     console.log(`[Backend] Creating migration job ${jobId}`);
 
-    // In the future:
-    // - Spin up a worker thread or async process
-    // - Initialize SSE broadcaster for this jobId
-    // - Connect Source and Destination streams
+    // Write to DB
+    await createJob(jobId, payload);
+    
+    // Notify queue
+    queueService.notifyNewJob();
 
     return {
       jobId,
-      status: 'started',
+      status: 'queued',
       message: 'Migration engine initialized.'
     };
   }

@@ -1,6 +1,7 @@
 import { Settings, Check } from 'lucide-react';
 import type { TransferOptionsState } from '../types/transfer';
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const defaultOptions: TransferOptionsState = {
   preserveStructure: true,
   overwriteExisting: false,

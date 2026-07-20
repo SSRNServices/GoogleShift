@@ -9,13 +9,8 @@ export interface DriveItem {
   parentId?: string;
 }
 
-export interface DriveFolder extends DriveItem {
-  // Folder specific properties if any
-}
-
-export interface DriveFile extends DriveItem {
-  // File specific properties if any
-}
+export type DriveFolder = DriveItem;
+export type DriveFile = DriveItem;
 
 export type SelectionMode = 'ENTIRE_DRIVE' | 'FOLDER' | 'FILES';
 

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { ArrowRight, HardDrive, CheckCircle2, AlertTriangle, FolderSearch } from 'lucide-react';
 import { DriveBrowserModal } from './components/DriveBrowserModal';
 import type { DriveItem } from './types/drive';
@@ -10,6 +10,7 @@ import { ConnectionStates } from './types/oauth';
 import type { ProfileResponse } from './types/oauth';
 import { migrationApi } from './api/migrationApi';
 import { Toaster, toast } from 'react-hot-toast';
+import { MigrationDashboard } from './components/MigrationDashboard';
 
 const formatBytes = (bytes: number) => {
   if (bytes === 0) return '0 B';
@@ -184,64 +185,57 @@ function App() {
 
   const isReadyToTransfer = sourceSelection.length > 0 && destinationFolder !== null;
 
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+
   const migrationMutation = useMutation({
     mutationFn: migrationApi.startMigration,
-    onSuccess: (data) => {
+    onSuccess: (data: any) => {
       console.log('Migration started successfully:', data);
       toast.success('Migration job initialized successfully!');
-      // TODO: transition to progress view
+      if (data.jobId) {
+         setActiveJobId(data.jobId);
+      }
     },
-    onError: (error: any) => {
+    onError: (error: Error) => {
       console.error('Migration failed to start:', error);
       toast.error(error.message || 'Failed to start migration');
     }
   });
 
   const handleStartMigration = async () => {
-    console.log("START BUTTON CLICKED");
-    
-    console.log('1. Validating state...');
-    
     if (!bothConnected) {
-      console.error('Validation failed: Not both connected');
       toast.error('Both accounts must be connected');
       return;
     }
-    
     if (sourceSelection.length === 0) {
-      console.error('Validation failed: No source selected');
       toast.error('Please select at least one item to migrate');
       return;
     }
-    
     if (!destinationFolder) {
-      console.error('Validation failed: No destination selected');
       toast.error('Please select a destination folder');
       return;
     }
+    if (migrationMutation.isPending) return;
 
-    if (migrationMutation.isPending) {
-      console.error('Validation failed: Mutation is pending');
-      return;
-    }
-
-    console.log('2. Preparing payload...');
     const payload = {
       sourceSelection,
       destinationFolder,
       options: transferOptions
     };
 
-    console.log('Payload:', JSON.stringify(payload, null, 2));
-
-    console.log('3. Executing mutation...');
     try {
       await migrationMutation.mutateAsync(payload);
-      console.log('4. Mutation complete');
-    } catch (e) {
-      console.error('Mutation error:', e);
-    }
+    } catch (e) {}
   };
+
+  if (activeJobId) {
+    return (
+      <div className="min-h-screen bg-background text-foreground flex flex-col items-center justify-center p-4 selection:bg-primary/20">
+        <Toaster position="top-right" />
+        <MigrationDashboard jobId={activeJobId} onClose={() => setActiveJobId(null)} />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col items-center justify-center p-4 selection:bg-primary/20">

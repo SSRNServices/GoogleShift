@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "jetro": {
+      "command": "/home/cyrus/.jetro/runtime/node-linux-x64",
+      "args": [
+        "/home/cyrus/.jetro/mcp-server/index.js"
+      ],
+      "env": {
+        "JET_WORKSPACE": "/home/cyrus/Desktop/GoogleShift",
+        "JET_API_URL": "https://api.jetro.ai",
+        "PATH": "/home/cyrus/.jetro/runtime:/home/cyrus/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/snap/bin:/home/cyrus/.local/bin"
+      }
+    }
+  }
+}

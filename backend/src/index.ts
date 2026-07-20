@@ -70,8 +70,12 @@ const runDiagnostics = async () => {
   console.log('===========================\n');
 };
 
+import { queueService } from './services/QueueService';
+
 app.listen(port, async () => {
   console.log(`[server]: Server is running at http://localhost:${port}`);
   printRoutes();
   await runDiagnostics();
+  
+  queueService.init();
 });

@@ -50,7 +50,7 @@ export function DriveBrowserModal({ isOpen, onClose, type, onSelectionComplete }
   const { data, isLoading } = useQuery<{files: DriveItem[], folder?: DriveItem, nextPageToken?: string}>({
     queryKey: ['drive', type, viewMode, currentFolderId, searchQuery],
     queryFn: async () => {
-      let endpoint = '';
+      let endpoint: string;
       if (viewMode === 'root') {
         if (currentFolderId === 'root') {
           endpoint = `/api/drive/${type}/root`;
@@ -72,6 +72,7 @@ export function DriveBrowserModal({ isOpen, onClose, type, onSelectionComplete }
 
   // Virtualizer setup
   const parentRef = useRef<HTMLDivElement>(null);
+  // eslint-disable-next-line react-hooks/incompatible-library
   const rowVirtualizer = useVirtualizer({
     count: files.length,
     getScrollElement: () => parentRef.current,

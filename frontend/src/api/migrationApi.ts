@@ -1,7 +1,10 @@
+import type { DriveItem } from '../types/drive';
+import type { TransferOptionsState } from '../types/transfer';
+
 export interface StartMigrationPayload {
-  sourceSelection: any[];
-  destinationFolder: any;
-  options: any;
+  sourceSelection: DriveItem[];
+  destinationFolder: DriveItem;
+  options: TransferOptionsState;
 }
 
 export const migrationApi = {
@@ -17,7 +20,7 @@ export const migrationApi = {
       try {
         const errorData = await res.json();
         message = errorData.error || message;
-      } catch (e) {
+      } catch {
         // Fallback
       }
       throw new Error(message);
