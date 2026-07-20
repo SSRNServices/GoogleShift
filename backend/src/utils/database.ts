@@ -55,20 +55,40 @@ export async function getDb(): Promise<Database> {
     );
   `);
 
+  const { ManifestStorage } = await import('./ManifestStorage');
+  await ManifestStorage.createManifestTable();
+
   return db;
 }
 
 export async function createJob(jobId: string, payload: any) {
   const db = await getDb();
+  
+  const stats = await db.get(`
+    SELECT 
+      SUM(CASE WHEN isFolder = 1 THEN 1 ELSE 0 END) as totalFolders,
+      SUM(CASE WHEN isFolder = 0 THEN 1 ELSE 0 END) as totalFiles,
+      SUM(size) as totalBytes
+    FROM migration_manifest 
+    WHERE jobId = ?
+  `, [jobId]);
+
+  const totalFolders = stats?.totalFolders || 0;
+  const totalFiles = stats?.totalFiles || 0;
+  const totalBytes = stats?.totalBytes || 0;
+
   await db.run(
-    `INSERT INTO migration_jobs (jobId, status, sourceSelection, destinationFolder, options, startedAt, updatedAt)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO migration_jobs (jobId, status, sourceSelection, destinationFolder, options, totalFolders, totalFiles, totalBytes, startedAt, updatedAt)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       jobId, 
       'queued', 
       JSON.stringify(payload.sourceSelection), 
       JSON.stringify(payload.destinationFolder),
       JSON.stringify(payload.options),
+      totalFolders,
+      totalFiles,
+      totalBytes,
       Date.now(),
       Date.now()
     ]

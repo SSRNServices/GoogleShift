@@ -91,11 +91,26 @@ export class MigrationWorker {
     let totalFolders = job.totalFolders || 0;
     let totalFiles = job.totalFiles || 0;
     let totalBytes = job.totalBytes || 0;
-    let completedFolders = job.completedFolders || 0;
-    let completedFiles = job.completedFiles || 0;
     let failedFiles = job.failedFiles || 0;
-    let transferredBytes = job.transferredBytes || 0;
     let lastSuccessfulFile = job.lastSuccessfulFile || '';
+    
+    // Fetch precise resume state directly from the immutable manifest
+    const { ManifestStorage } = await import('../utils/ManifestStorage');
+    const { getDb } = await import('../utils/database');
+    const db = await getDb();
+    
+    const completedStats = await db.get(`
+      SELECT 
+        SUM(CASE WHEN isFolder = 1 THEN 1 ELSE 0 END) as completedFolders,
+        SUM(CASE WHEN isFolder = 0 THEN 1 ELSE 0 END) as completedFiles,
+        SUM(CASE WHEN isFolder = 0 THEN size ELSE 0 END) as transferredBytes
+      FROM migration_manifest 
+      WHERE jobId = ? AND status = 'COMPLETED'
+    `, [job.jobId]);
+    
+    let completedFolders = completedStats?.completedFolders || 0;
+    let completedFiles = completedStats?.completedFiles || 0;
+    let transferredBytes = completedStats?.transferredBytes || 0;
 
     const emitProgress = async (currentFile = '', currentFolder = '') => {
       await updateJobProgress(job.jobId, {
@@ -191,95 +206,93 @@ export class MigrationWorker {
       await emitProgress('', '');
     };
 
-    const processFolder = async (sourceDrive: drive_v3.Drive, destDrive: drive_v3.Drive, sourceId: string, sourceName: string, destParentId: string) => {
-      await emitProgress('', sourceName);
-      
-      let newDestFolderId = destParentId;
-      if (options.preserveStructure) {
-        // Check folder checkpoint
-        const cp = await getCheckpoint(job.jobId, 'folder', destParentId, sourceId);
-        if (cp && cp !== 'pending') {
-           newDestFolderId = cp; // The ID of the created folder was saved
-           await logJobEvent(job.jobId, `Resumed into existing folder: ${sourceName}`);
-        } else {
-           await logJobEvent(job.jobId, `Creating folder ${sourceName}`);
-           let folderExists = false;
-           if (options.skipExisting) {
-             const existing = await this.withRetry(job.jobId, 'List Folders', () => destDrive.files.list({
-               q: `name = '${sourceName.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.folder' and '${destParentId}' in parents and trashed = false`,
-               fields: 'files(id)'
-             }));
-             if (existing.data.files && existing.data.files.length > 0 && existing.data.files[0].id) {
-               newDestFolderId = existing.data.files[0].id;
-               folderExists = true;
-             }
-           }
-           
-           if (!folderExists) {
-             const createRes = await this.withRetry(job.jobId, 'Create Folder', () => destDrive.files.create({
-               requestBody: {
-                 name: sourceName,
-                 mimeType: 'application/vnd.google-apps.folder',
-                 parents: [destParentId]
-               },
-               fields: 'id'
-             }));
-             newDestFolderId = createRes.data.id!;
-           }
-           await saveCheckpoint(job.jobId, 'folder', destParentId, sourceId, newDestFolderId);
-           completedFolders++;
-        }
-      }
-      await emitProgress('', sourceName);
-
-      let pageToken: string | undefined = undefined;
-      do {
-        const listParams: any = {
-          q: `'${sourceId}' in parents and trashed = false`,
-          fields: 'nextPageToken, files(id, name, mimeType, size)',
-          pageSize: 100
-        };
-        if (pageToken) listParams.pageToken = pageToken;
-        
-        const res: any = await this.withRetry(job.jobId, 'List Children', () => sourceDrive.files.list(listParams));
-
-        const children = res.data.files || [];
-        for (const child of children) {
-          if (!child.id || !child.name) continue;
-          if (child.mimeType === 'application/vnd.google-apps.folder') {
-            totalFolders++;
-            await emitProgress('', child.name);
-            await processFolder(sourceDrive, destDrive, child.id, child.name, newDestFolderId);
-          } else {
-            totalFiles++;
-            const size = child.size ? parseInt(child.size, 10) : 0;
-            totalBytes += size;
-            await emitProgress(child.name, '');
-            await copyFile(sourceDrive, destDrive, child.id, child.name, child.mimeType || '', newDestFolderId, child.size || '0');
-          }
-        }
-        pageToken = res.data.nextPageToken || undefined;
-      } while (pageToken);
-    };
-
     try {
       const sourceDrive = await this.getClient('source', job.jobId);
       const destDrive = await this.getClient('destination', job.jobId);
 
       const actualDestId = destinationFolder.id === 'root' ? 'root' : destinationFolder.id;
-      for (const item of sourceSelection) {
-        if (item.isFolder || item.mimeType === 'application/vnd.google-apps.folder') {
-          totalFolders++;
-          await emitProgress('', item.name);
-          await processFolder(sourceDrive, destDrive, item.id === 'root' ? 'root' : item.id, item.name, actualDestId);
-        } else {
-          totalFiles++;
-          const size = item.size ? parseInt(item.size, 10) : 0;
-          totalBytes += size;
-          await emitProgress(item.name, '');
-          await copyFile(sourceDrive, destDrive, item.id, item.name, item.mimeType || '', actualDestId, item.size?.toString());
+      
+      const apiWrapper = async <T>(name: string, op: () => Promise<T>): Promise<T> => {
+         return this.withRetry(job.jobId, name, op);
+      };
+
+      const processFolderNode = async (sourceId: string, destParentId: string) => {
+        const children = await ManifestStorage.getChildren(job.jobId, sourceId);
+        
+        const files = children.filter(c => !c.isFolder);
+        const folders = children.filter(c => c.isFolder);
+
+        // Upload files directly in this folder
+        for (const file of files) {
+          if (file.status === 'PENDING') {
+            await emitProgress(file.name, '');
+            if (file.originalId) {
+               await logJobEvent(job.jobId, `Resolved shortcut ${file.originalId} -> ${file.id} (${file.mimeType})`);
+            }
+            await copyFile(sourceDrive, destDrive, file.sourceId, file.name, file.mimeType, destParentId, file.size.toString());
+            await ManifestStorage.updateItemStatus(job.jobId, file.id, 'COMPLETED');
+            completedFiles++;
+          }
         }
-      }
+
+        // Process child folders
+        for (const folder of folders) {
+          let childDestParentId = folder.createdDestId;
+          
+          if (folder.status === 'PENDING') {
+             await emitProgress('', folder.name);
+             let newDestFolderId = destParentId;
+             
+             if (options.preserveStructure) {
+                const cp = await getCheckpoint(job.jobId, 'folder', destParentId, folder.sourceId);
+                if (cp && cp !== 'pending') {
+                   newDestFolderId = cp; 
+                   await logJobEvent(job.jobId, `Resumed into existing folder: ${folder.name}`);
+                } else {
+                   await logJobEvent(job.jobId, `Creating folder ${folder.name}`);
+                   let folderExists = false;
+                   if (options.skipExisting) {
+                     const existing = await apiWrapper('List Folders', () => destDrive.files.list({
+                       q: `name = '${folder.name.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.folder' and '${destParentId}' in parents and trashed = false`,
+                       fields: 'files(id)'
+                     }));
+                     if (existing.data.files && existing.data.files.length > 0 && existing.data.files[0].id) {
+                       newDestFolderId = existing.data.files[0].id;
+                       folderExists = true;
+                     }
+                   }
+                   
+                   if (!folderExists) {
+                     const createRes = await apiWrapper('Create Folder', () => destDrive.files.create({
+                       requestBody: {
+                         name: folder.name,
+                         mimeType: 'application/vnd.google-apps.folder',
+                         parents: [destParentId]
+                       },
+                       fields: 'id'
+                     }));
+                     newDestFolderId = createRes.data.id!;
+                   }
+                   await saveCheckpoint(job.jobId, 'folder', destParentId, folder.sourceId, newDestFolderId);
+                }
+             }
+             
+             childDestParentId = newDestFolderId;
+             await ManifestStorage.updateCreatedDestId(job.jobId, folder.id, childDestParentId);
+             await ManifestStorage.updateItemStatus(job.jobId, folder.id, 'COMPLETED');
+             completedFolders++;
+             await emitProgress('', folder.name);
+          }
+          
+          if (childDestParentId) {
+             await processFolderNode(folder.id, childDestParentId);
+             await emitProgress('', `Returning to ${folder.name}`);
+          }
+        }
+      };
+
+      // Start the recursive traversal from 'root'
+      await processFolderNode('root', actualDestId);
       
       const finalStatus = failedFiles > 0 ? 'completed_with_errors' : 'completed';
       await logJobEvent(job.jobId, `Migration ${finalStatus}.`);

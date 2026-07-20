@@ -189,138 +189,73 @@ export class DriveService {
     let totalFiles = 0;
     let totalBytes = 0;
 
+    const manifestId = 'manifest_' + Date.now();
     const startTime = Date.now();
-    console.log(`[Backend] Recursive scan started for ${type} account, ${items.length} items`);
+    console.log(`[Backend] Recursive scan started for ${type} account, ${items.length} items. Manifest: ${manifestId}`);
 
-    const visited = new Set<string>();
-    const limit = pLimit(5); // Limit API calls, not the recursion itself
-
-    let activeRecursion = 0;
-
-    const scanFolder = async (folderId: string, folderName: string, depth: number) => {
-      activeRecursion++;
-      const pendingAsyncCount = limit.activeCount || 0;
-      console.log(`[ENTER] folder id: ${folderId} | name: ${folderName} | depth: ${depth} | visited count: ${visited.size} | pending async count: ${pendingAsyncCount}`);
-
-      try {
-        // Resolve root ID
-        if (folderId === 'root') {
-          const rootRes = await limit(() => drive.files.get({ fileId: 'root', fields: 'id' }));
-          folderId = rootRes.data.id || 'root';
-        }
-
-        if (visited.has(folderId)) {
-          console.log(`[SKIPPED] already visited folder id: ${folderId}`);
-          return;
-        }
-        visited.add(folderId);
-
-        onProgress(totalFolders, totalFiles, totalBytes, `Scanning folder: ${folderName}...`);
-
-        let pageToken: string | undefined = undefined;
-
-        do {
-          const currentPageToken = pageToken;
-          if (currentPageToken) {
-             console.log(`current page token: ${currentPageToken}`);
-          }
-
-          const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('HUNG RECURSION')), 30000));
-          const apiPromise = limit(() => drive.files.list({
-            q: `'${folderId}' in parents and trashed = false`,
-            fields: 'nextPageToken, files(id, name, mimeType, size)',
-            pageSize: 1000,
-            pageToken: pageToken,
-            supportsAllDrives: true,
-            includeItemsFromAllDrives: true,
-          }));
-
-          let res: any;
-          try {
-            res = await Promise.race([apiPromise, timeoutPromise]);
-          } catch (error: any) {
-             if (error.message === 'HUNG RECURSION') {
-                console.log(`[HUNG RECURSION] folder id: ${folderId} | name: ${folderName} | current depth: ${depth}`);
-             }
-             throw error;
-          }
-
-          const files = res.data.files || [];
-          console.log(`returned items: ${files.length} | next page token: ${res.data.nextPageToken || 'none'}`);
-          
-          const subfolderPromises: Promise<void>[] = [];
-
-          for (const file of files) {
-            if (file.mimeType === 'application/vnd.google-apps.folder') {
-              console.log(`[CHILD] folder: ${file.name}`);
-              totalFolders++;
-              if (file.id) {
-                // Do not wrap the recursion with limit!
-                subfolderPromises.push(scanFolder(file.id, file.name || 'Unknown Folder', depth + 1));
-              }
-            } else if (file.mimeType === 'application/vnd.google-apps.shortcut') {
-              console.log(`[CHILD] shortcut: ${file.name}`);
-            } else if (file.mimeType === 'application/vnd.google-apps.document' || file.mimeType === 'application/vnd.google-apps.spreadsheet' || file.mimeType === 'application/vnd.google-apps.presentation') {
-              console.log(`[CHILD] Google Doc: ${file.name}`);
-              totalFiles++;
-              // size is estimated as 0
-            } else {
-              console.log(`[CHILD] file: ${file.name}`);
-              totalFiles++;
-              if (file.size) {
-                totalBytes += parseInt(file.size, 10);
-              }
-            }
-          }
-
-          onProgress(totalFolders, totalFiles, totalBytes, `Scanning folder: ${folderName}... (Found ${files.length} items)`);
-          
-          if (subfolderPromises.length > 0) {
-            console.log(`waiting for ${subfolderPromises.length} promises (depth: ${depth})`);
-            await Promise.all(subfolderPromises);
-            console.log(`completed Promise.all for ${subfolderPromises.length} promises (depth: ${depth})`);
-          }
-
-          const npt = res.data.nextPageToken || undefined;
-          if (pageToken && npt === pageToken) {
-             console.error(`[ABORT] Identical page token repeated: ${npt}`);
-             break;
-          }
-          pageToken = npt;
-
-        } while (pageToken);
-      } finally {
-        activeRecursion--;
-        console.log(`[LEAVE] folder id: ${folderId} | name: ${folderName} | depth: ${depth}`);
-      }
+    const { DriveTraversalEngine } = await import('./DriveTraversalEngine');
+    const { ManifestStorage } = await import('../utils/ManifestStorage');
+    const { RetryHelper } = await import('../utils/retry');
+    
+    const apiWrapper = async <T>(name: string, op: () => Promise<T>): Promise<T> => {
+       return RetryHelper.withRetry(name, op, (msg) => console.log(msg));
     };
 
-    for (const item of items) {
-      if (item.isFolder) {
-        totalFolders++; // Count the root selected folder itself
-        const meta = await limit(() => drive.files.get({ fileId: item.id === 'root' ? 'root' : item.id, fields: 'name' }));
-        await scanFolder(item.id, meta.data.name || 'Folder', 0);
-      } else {
+    const engine = new DriveTraversalEngine<string>(drive, {
+      onFolderEnter: async (folder, context) => {
+        totalFolders++;
+        await ManifestStorage.insertItem({
+           jobId: manifestId,
+           id: folder.id,
+           sourceId: folder.originalId || folder.id,
+           sourceParentId: context,
+           destParentId: null, // To be filled during migration
+           createdDestId: null,
+           name: folder.name,
+           mimeType: folder.mimeType,
+           size: folder.size,
+           originalId: folder.originalId || null,
+           originalMimeType: folder.originalMimeType || null,
+           status: 'PENDING',
+           isFolder: true
+        });
+        return folder.id; // child context is this folder's ID
+      },
+      onFile: async (file, context) => {
         totalFiles++;
-        const meta = await limit(() => drive.files.get({ fileId: item.id, fields: 'size, name' }));
-        if (meta.data.size) {
-          totalBytes += parseInt(meta.data.size, 10);
-        }
-        onProgress(totalFolders, totalFiles, totalBytes, `Scanned file: ${meta.data.name}`);
+        totalBytes += file.size;
+        await ManifestStorage.insertItem({
+           jobId: manifestId,
+           id: file.id,
+           sourceId: file.originalId || file.id,
+           sourceParentId: context,
+           destParentId: null,
+           createdDestId: null,
+           name: file.name,
+           mimeType: file.mimeType,
+           size: file.size,
+           originalId: file.originalId || null,
+           originalMimeType: file.originalMimeType || null,
+           status: 'PENDING',
+           isFolder: false
+        });
+        onProgress(totalFolders, totalFiles, totalBytes, `Scanned file: ${file.name}`);
       }
-    }
+    }, apiWrapper);
 
-    if (activeRecursion !== 0) {
-       console.error(`[WARNING] active recursion == ${activeRecursion} (expected 0)`);
+    for (const item of items) {
+       // Root level items have 'root' as their parent conceptually for the manifest
+       await engine.traverseItem(item, 'root');
     }
 
     const elapsed = Date.now() - startTime;
-    console.log(`\nSCAN COMPLETE\nFolders: ${totalFolders}\nFiles: ${totalFiles}\nBytes: ${totalBytes}\nElapsed Time: ${elapsed}ms\nVisited folders: ${visited.size}`);
+    console.log(`\nFinal totals:\nFolders: ${totalFolders}\nFiles: ${totalFiles}\nBytes: ${totalBytes}\nElapsed Time: ${elapsed}ms`);
 
     // Final update
     onProgress(totalFolders, totalFiles, totalBytes, 'Complete');
 
     return {
+      manifestId,
       folders: totalFolders,
       files: totalFiles,
       bytes: totalBytes

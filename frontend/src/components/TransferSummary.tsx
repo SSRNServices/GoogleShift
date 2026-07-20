@@ -5,6 +5,7 @@ import type { DriveItem } from '../types/drive';
 export interface TransferSummaryProps {
   sourceSelection: DriveItem[];
   destinationFolder: DriveItem | null;
+  onScanComplete?: (manifestId: string, stats: { folders: number, files: number, bytes: number }) => void;
 }
 
 const formatBytes = (bytes: number) => {
@@ -15,7 +16,7 @@ const formatBytes = (bytes: number) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
-export function TransferSummary({ sourceSelection, destinationFolder }: TransferSummaryProps) {
+export function TransferSummary({ sourceSelection, destinationFolder, onScanComplete }: TransferSummaryProps) {
   const [isScanning, setIsScanning] = useState(false);
   const [scanStats, setScanStats] = useState({ folders: 0, files: 0, bytes: 0 });
   const [currentAction, setCurrentAction] = useState<string>('');
@@ -37,7 +38,9 @@ export function TransferSummary({ sourceSelection, destinationFolder }: Transfer
 
     // Convert selection into items parameter: id1:folder,id2:file
     const itemsParam = sourceSelection.map(item => {
-      const isFolder = item.mimeType === 'application/vnd.google-apps.folder';
+      const isFolder = item.mimeType === 'application/vnd.google-apps.folder' 
+                    || item.mimeType === 'application/vnd.google-apps.shortcut'
+                    || item.mimeType?.includes('folder');
       return `${item.id}:${isFolder ? 'folder' : 'file'}`;
     }).join(',');
 
@@ -70,6 +73,9 @@ export function TransferSummary({ sourceSelection, destinationFolder }: Transfer
             files: data.files,
             bytes: data.bytes
           });
+          if (onScanComplete && data.manifestId) {
+             onScanComplete(data.manifestId, { folders: data.folders, files: data.files, bytes: data.bytes });
+          }
           eventSource.close();
           return;
         }

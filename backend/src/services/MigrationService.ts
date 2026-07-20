@@ -14,7 +14,11 @@ export class MigrationService {
       throw new Error('Missing transfer options');
     }
 
-    const jobId = 'job_' + Date.now();
+    if (!payload.manifestId) {
+      throw new Error('Missing manifest ID');
+    }
+
+    const jobId = payload.manifestId;
     console.log(`[Backend] Creating migration job ${jobId}`);
 
     // Write to DB
