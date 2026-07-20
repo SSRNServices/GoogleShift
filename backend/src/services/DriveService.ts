@@ -37,6 +37,10 @@ export class DriveService {
       icon: file.iconLink || undefined,
       thumbnail: file.thumbnailLink || undefined,
       parentId: file.parents?.[0] || undefined,
+      shortcutDetails: file.shortcutDetails ? {
+        targetId: file.shortcutDetails.targetId || undefined,
+        targetMimeType: file.shortcutDetails.targetMimeType || undefined
+      } : undefined
     };
   }
 
@@ -48,7 +52,7 @@ export class DriveService {
 
     const res = await drive.files.list({
       q: `'${queryId}' in parents and trashed = false`,
-      fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime, createdTime, owners, iconLink, thumbnailLink, parents)',
+      fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime, createdTime, owners, iconLink, thumbnailLink, parents, shortcutDetails)',
       orderBy: 'folder, name',
       pageSize: 50,
       pageToken: pageToken,
@@ -65,7 +69,7 @@ export class DriveService {
     
     const res = await drive.files.list({
       q: `fullText contains '${query.replace(/'/g, "\\'")}' and trashed = false`,
-      fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime, createdTime, owners, iconLink, thumbnailLink, parents)',
+      fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime, createdTime, owners, iconLink, thumbnailLink, parents, shortcutDetails)',
       orderBy: 'folder, name',
       pageSize: 50,
       pageToken: pageToken,
@@ -82,7 +86,7 @@ export class DriveService {
     
     const res = await drive.files.list({
       q: `sharedWithMe = true and trashed = false`,
-      fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime, createdTime, owners, iconLink, thumbnailLink, parents)',
+      fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime, createdTime, owners, iconLink, thumbnailLink, parents, shortcutDetails)',
       orderBy: 'folder, name',
       pageSize: 50,
       pageToken: pageToken,
@@ -99,7 +103,7 @@ export class DriveService {
     
     const res = await drive.files.list({
       q: `trashed = false`,
-      fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime, createdTime, owners, iconLink, thumbnailLink, parents)',
+      fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime, createdTime, owners, iconLink, thumbnailLink, parents, shortcutDetails)',
       orderBy: 'modifiedTime desc',
       pageSize: 50,
       pageToken: pageToken,
@@ -116,7 +120,7 @@ export class DriveService {
     
     const res = await drive.files.list({
       q: `starred = true and trashed = false`,
-      fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime, createdTime, owners, iconLink, thumbnailLink, parents)',
+      fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime, createdTime, owners, iconLink, thumbnailLink, parents, shortcutDetails)',
       orderBy: 'folder, name',
       pageSize: 50,
       pageToken: pageToken,
@@ -142,7 +146,7 @@ export class DriveService {
 
     const res = await drive.files.create({
       requestBody: fileMetadata,
-      fields: 'id, name, mimeType, size, modifiedTime, createdTime, owners, iconLink, thumbnailLink, parents',
+      fields: 'id, name, mimeType, size, modifiedTime, createdTime, owners, iconLink, thumbnailLink, parents, shortcutDetails',
     });
 
     return this.mapFile(res.data);
@@ -152,7 +156,7 @@ export class DriveService {
     const drive = this.getDriveClient(type);
     const res = await drive.files.get({
         fileId: folderId === 'root' ? 'root' : folderId,
-        fields: 'id, name, mimeType, size, modifiedTime, createdTime, owners, iconLink, thumbnailLink, parents'
+        fields: 'id, name, mimeType, size, modifiedTime, createdTime, owners, iconLink, thumbnailLink, parents, shortcutDetails'
     });
     
     // If it's root, the name might just be 'My Drive' or something similar.
@@ -165,7 +169,7 @@ export class DriveService {
     // 1. Fetch real root metadata
     const rootMetaRes = await drive.files.get({
       fileId: 'root',
-      fields: 'id, name, mimeType, size, modifiedTime, createdTime, owners, iconLink, thumbnailLink, parents'
+      fields: 'id, name, mimeType, size, modifiedTime, createdTime, owners, iconLink, thumbnailLink, parents, shortcutDetails'
     });
     
     // 2. Fetch root children
@@ -201,14 +205,14 @@ export class DriveService {
        return RetryHelper.withRetry(name, op, (msg) => console.log(msg));
     };
 
-    const engine = new DriveTraversalEngine<string>(drive, {
+    const engine = new DriveTraversalEngine<{ parentId: string, depth: number }>(drive, {
       onFolderEnter: async (folder, context) => {
         totalFolders++;
         await ManifestStorage.insertItem({
            jobId: manifestId,
            id: folder.id,
            sourceId: folder.originalId || folder.id,
-           sourceParentId: context,
+           sourceParentId: context.parentId,
            destParentId: null, // To be filled during migration
            createdDestId: null,
            name: folder.name,
@@ -217,9 +221,10 @@ export class DriveService {
            originalId: folder.originalId || null,
            originalMimeType: folder.originalMimeType || null,
            status: 'PENDING',
-           isFolder: true
+           isFolder: true,
+           depth: context.depth
         });
-        return folder.id; // child context is this folder's ID
+        return { parentId: folder.id, depth: context.depth + 1 }; // child context
       },
       onFile: async (file, context) => {
         totalFiles++;
@@ -228,7 +233,7 @@ export class DriveService {
            jobId: manifestId,
            id: file.id,
            sourceId: file.originalId || file.id,
-           sourceParentId: context,
+           sourceParentId: context.parentId,
            destParentId: null,
            createdDestId: null,
            name: file.name,
@@ -237,7 +242,8 @@ export class DriveService {
            originalId: file.originalId || null,
            originalMimeType: file.originalMimeType || null,
            status: 'PENDING',
-           isFolder: false
+           isFolder: false,
+           depth: context.depth
         });
         onProgress(totalFolders, totalFiles, totalBytes, `Scanned file: ${file.name}`);
       }
@@ -245,7 +251,7 @@ export class DriveService {
 
     for (const item of items) {
        // Root level items have 'root' as their parent conceptually for the manifest
-       await engine.traverseItem(item, 'root');
+       await engine.traverseItem(item, { parentId: 'root', depth: 0 });
     }
 
     const elapsed = Date.now() - startTime;

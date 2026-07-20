@@ -4,10 +4,11 @@ export class RetryHelper {
     const status = e?.response?.status || e?.status;
 
     // Node network errors
-    const transientCodes = ['EAI_AGAIN', 'ENOTFOUND', 'ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EPIPE'];
+    const transientCodes = ['EAI_AGAIN', 'ENOTFOUND', 'ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EPIPE', 'SQLITE_BUSY', 'SQLITE_LOCKED'];
     if (code && transientCodes.includes(code)) return true;
     if (e.message && e.message.includes('socket hang up')) return true;
     if (e.message && e.message.includes('TLS')) return true;
+    if (e.message && e.message.includes('SQLITE_BUSY')) return true;
 
     // Google API transient errors
     if (status === 429) return true; // Rate limit
@@ -18,7 +19,7 @@ export class RetryHelper {
 
   private static isPermanentError(e: any): boolean {
     const status = e?.response?.status || e?.status;
-    if (status === 401 || status === 403 || status === 404) {
+    if (status === 401 || status === 403 || status === 404 || status === 400) {
       if (status === 403 && (e.message?.includes('Rate limit') || e.message?.includes('User rate limit exceeded'))) {
          return false; // Actually transient
       }
@@ -28,9 +29,14 @@ export class RetryHelper {
     return false;
   }
 
-  public static async withRetry<T>(operationName: string, operation: () => Promise<T>, logFn?: (msg: string) => void): Promise<T> {
-    const backoffs = [2, 4, 8, 16, 30, 60, 120, 300]; // in seconds
-    const maxRetries = 10;
+  public static async withRetry<T>(
+      operationName: string, 
+      operation: () => Promise<T>, 
+      logFn?: (msg: string) => void,
+      onRateLimit?: () => void
+  ): Promise<T> {
+    const backoffs = [1, 2, 4, 8, 16]; // in seconds
+    const maxRetries = 5;
     
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
@@ -43,7 +49,11 @@ export class RetryHelper {
         if (this.isTransientError(e) || (e.response?.status === 403 && e.message?.includes('User rate limit exceeded'))) {
           if (attempt === maxRetries - 1) throw e;
           
-          const delaySecs = backoffs[Math.min(attempt, backoffs.length - 1)] || 300;
+          if (e.response?.status === 429 || (e.response?.status === 403 && e.message?.includes('rate limit'))) {
+             if (onRateLimit) onRateLimit();
+          }
+          
+          const delaySecs = backoffs[Math.min(attempt, backoffs.length - 1)] || 16;
           const jitter = Math.random() * 1000;
           const delayMs = delaySecs * 1000 + jitter;
 

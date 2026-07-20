@@ -55,6 +55,8 @@ export class DriveResolver {
       actualId = meta.data.shortcutDetails.targetId || actualId;
       mimeType = meta.data.shortcutDetails.targetMimeType || mimeType;
 
+      console.log(`[RESOLVER] Resolved shortcut ${originalId} -> Target ${actualId} (${mimeType})`);
+
       // Note: we don't recursively get the target's size right now. 
       // If it's a file, size will be reported as 0 initially.
       // But we can fetch it if it's a file.

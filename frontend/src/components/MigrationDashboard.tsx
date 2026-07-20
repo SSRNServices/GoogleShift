@@ -90,6 +90,9 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
       <div className="p-6 border-b border-border bg-muted/20 flex items-center justify-between">
         <h2 className="text-xl font-bold flex items-center gap-3">
           {status.status === 'running' && <Loader2 className="w-5 h-5 text-primary animate-spin" />}
+          {status.status === 'creating_tree' && <FolderOpen className="w-5 h-5 text-primary animate-pulse" />}
+          {status.status === 'uploading_files' && <Loader2 className="w-5 h-5 text-primary animate-spin" />}
+          {status.status === 'verifying' && <CheckCircle2 className="w-5 h-5 text-primary animate-pulse" />}
           {status.status === 'paused_network' && <Loader2 className="w-5 h-5 text-amber-500 animate-spin" />}
           {status.status === 'completed' && <CheckCircle2 className="w-5 h-5 text-emerald-500" />}
           {status.status === 'completed_with_errors' && <AlertTriangle className="w-5 h-5 text-amber-500" />}

@@ -1,6 +1,8 @@
 import sqlite3 from 'sqlite3';
 import { open, Database } from 'sqlite';
 import path from 'path';
+import { safeSerialize, safeDeserialize } from './serialization';
+import { MigrationJob, MigrationRequest } from '../transfer/types';
 
 let db: Database | null = null;
 
@@ -58,10 +60,29 @@ export async function getDb(): Promise<Database> {
   const { ManifestStorage } = await import('./ManifestStorage');
   await ManifestStorage.createManifestTable();
 
+  // Schema migrations for new metrics
+  const newColumns = [
+    'currentWorkers INTEGER DEFAULT 0',
+    'busyWorkers INTEGER DEFAULT 0',
+    'idleWorkers INTEGER DEFAULT 0',
+    'queueLength INTEGER DEFAULT 0',
+    'currentSpeed REAL DEFAULT 0',
+    'averageSpeed REAL DEFAULT 0',
+    'eta REAL DEFAULT 0'
+  ];
+
+  for (const colDef of newColumns) {
+    try {
+      await db.exec(`ALTER TABLE migration_jobs ADD COLUMN ${colDef}`);
+    } catch (e: any) {
+      // Ignore "duplicate column name" errors
+    }
+  }
+
   return db;
 }
 
-export async function createJob(jobId: string, payload: any) {
+export async function createJob(jobId: string, payload: MigrationRequest) {
   const db = await getDb();
   
   const stats = await db.get(`
@@ -83,9 +104,9 @@ export async function createJob(jobId: string, payload: any) {
     [
       jobId, 
       'queued', 
-      JSON.stringify(payload.sourceSelection), 
-      JSON.stringify(payload.destinationFolder),
-      JSON.stringify(payload.options),
+      safeSerialize(payload.sourceSelection), 
+      safeSerialize(payload.destinationFolder),
+      safeSerialize(payload.options),
       totalFolders,
       totalFiles,
       totalBytes,
@@ -93,6 +114,19 @@ export async function createJob(jobId: string, payload: any) {
       Date.now()
     ]
   );
+}
+
+export async function getJob(jobId: string): Promise<MigrationJob | null> {
+  const db = await getDb();
+  const row = await db.get(`SELECT * FROM migration_jobs WHERE jobId = ?`, [jobId]);
+  if (!row) return null;
+  
+  return {
+    ...row,
+    sourceSelection: safeDeserialize(row.sourceSelection),
+    destinationFolder: safeDeserialize(row.destinationFolder),
+    options: safeDeserialize(row.options)
+  } as MigrationJob;
 }
 
 export async function updateJobStatus(jobId: string, status: string) {
@@ -120,7 +154,14 @@ export async function updateJobProgress(jobId: string, updates: Partial<{
   lastSuccessfulFile: string,
   networkStatus: string,
   retryCount: number,
-  status: string
+  status: string,
+  currentWorkers: number,
+  busyWorkers: number,
+  idleWorkers: number,
+  queueLength: number,
+  currentSpeed: number,
+  averageSpeed: number,
+  eta: number
 }>) {
   const db = await getDb();
   const keys = Object.keys(updates);

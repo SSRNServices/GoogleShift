@@ -33,6 +33,11 @@ export class DriveTraversalEngine<TContext> {
        if (!this.visited.has(resolved.id)) {
           this.visited.add(resolved.id);
           
+          const forbidden = ['node_modules', '.git', 'venv', 'dist', 'backend', 'frontend'];
+          if (forbidden.includes(resolved.name)) {
+             throw new Error(`InvalidScanSourceException: Scanner attempted to scan local filesystem path or forbidden directory "${resolved.name}" instead of Google Drive.`);
+          }
+
           const newContext = await this.strategy.onFolderEnter(resolved, initialContext);
           if (newContext !== 'skip') {
              await this.scanFolder(resolved.id, resolved.name, 0, newContext);

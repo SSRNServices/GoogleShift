@@ -1,19 +1,78 @@
 import { Router } from 'express';
 import { migrationService } from '../services/MigrationService';
-import { getDb, updateJobStatus } from '../utils/database';
+import { getDb, updateJobStatus, getJob } from '../utils/database';
 
 const router = Router();
+
+router.get('/current', async (req, res) => {
+  try {
+    const db = await getDb();
+    const job = await db.get(`
+      SELECT jobId, status, startedAt 
+      FROM migration_jobs 
+      WHERE status NOT IN ('completed', 'completed_with_errors', 'failed', 'cancelled')
+      ORDER BY startedAt DESC LIMIT 1
+    `);
+    
+    if (job) {
+      res.json({
+        jobId: job.jobId,
+        status: job.status === 'paused' ? 'paused' : 'running',
+        resumeAvailable: job.status === 'paused'
+      });
+    } else {
+      res.json({ status: 'idle' });
+    }
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 router.post('/start', async (req, res) => {
   console.log('[Backend] MIGRATION START RECEIVED');
   console.log('Payload:', req.body);
 
   try {
+    const db = await getDb();
+    // Validate no running migration
+    const active = await db.get(`
+      SELECT jobId FROM migration_jobs 
+      WHERE status NOT IN ('completed', 'completed_with_errors', 'failed', 'cancelled', 'paused')
+    `);
+    if (active) {
+      return res.status(409).json({ error: 'Migration already running' });
+    }
+
     const job = await migrationService.startMigrationJob(req.body);
     res.status(200).json(job);
   } catch (error: any) {
     console.error('Error starting migration:', error);
-    res.status(500).json({ error: error.message || 'Failed to start migration' });
+    if (['RequestValidationError', 'ManifestError', 'ShortcutResolutionError'].includes(error.name)) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message || 'Failed to start migration' });
+    }
+  }
+});
+
+router.post('/:jobId/resume', async (req, res) => {
+  try {
+    const job = await getJob(req.params.jobId);
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+    if (job.status !== 'paused') {
+      return res.status(400).json({ error: 'Job is not paused' });
+    }
+    
+    await updateJobStatus(req.params.jobId, 'STARTING');
+    
+    const { migrationWorker } = await import('../services/MigrationWorker');
+    migrationWorker.executeMigration(job).catch(err => console.error('[FATAL]', err));
+
+    res.json({ success: true, status: 'starting' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
   }
 });
 

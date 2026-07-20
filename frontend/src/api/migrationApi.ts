@@ -27,5 +27,27 @@ export const migrationApi = {
     }
 
     return res.json();
+  },
+
+  async getCurrent() {
+    const res = await fetch('http://localhost:3000/api/migrations/current');
+    if (!res.ok) throw new Error('Failed to fetch current migration state');
+    return res.json();
+  },
+
+  async resume(jobId: string) {
+    const res = await fetch(`http://localhost:3000/api/migrations/${jobId}/resume`, {
+      method: 'POST'
+    });
+    if (!res.ok) throw new Error('Failed to resume migration');
+    return res.json();
+  },
+
+  async discard(jobId: string) {
+    const res = await fetch(`http://localhost:3000/api/migrations/${jobId}/cancel`, {
+      method: 'POST'
+    });
+    if (!res.ok) throw new Error('Failed to discard migration');
+    return res.json();
   }
 };

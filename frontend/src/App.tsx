@@ -11,6 +11,7 @@ import type { ProfileResponse } from './types/oauth';
 import { migrationApi } from './api/migrationApi';
 import { Toaster, toast } from 'react-hot-toast';
 import { MigrationDashboard } from './components/MigrationDashboard';
+import { Loader2 } from 'lucide-react';
 
 const formatBytes = (bytes: number) => {
   if (bytes === 0) return '0 B';
@@ -189,6 +190,34 @@ function App() {
 
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
+  // Check current job on mount
+  const { data: currentJob, isLoading: isLoadingCurrent } = useQuery({
+    queryKey: ['migration', 'current'],
+    queryFn: migrationApi.getCurrent,
+    retry: false,
+    refetchOnWindowFocus: false
+  });
+
+  const resumeMutation = useMutation({
+    mutationFn: migrationApi.resume,
+    onSuccess: (data, variables) => {
+      setActiveJobId(variables);
+    },
+    onError: (e) => toast.error('Failed to resume migration: ' + e.message)
+  });
+
+  const discardMutation = useMutation({
+    mutationFn: migrationApi.discard,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['migration', 'current'] });
+    },
+    onError: (e) => toast.error('Failed to discard migration: ' + e.message)
+  });
+
+  if (['running', 'creating_tree', 'uploading_files', 'verifying'].includes(currentJob?.status || '') && !activeJobId) {
+    setActiveJobId(currentJob.jobId);
+  }
+
   const migrationMutation = useMutation({
     mutationFn: migrationApi.startMigration,
     onSuccess: (data: any) => {
@@ -240,6 +269,51 @@ function App() {
       <div className="min-h-screen bg-background text-foreground flex flex-col items-center justify-center p-4 selection:bg-primary/20">
         <Toaster position="top-right" />
         <MigrationDashboard jobId={activeJobId} onClose={() => setActiveJobId(null)} />
+      </div>
+    );
+  }
+
+  if (isLoadingCurrent) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background text-foreground">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  if (currentJob?.status === 'paused' && !activeJobId) {
+    return (
+      <div className="min-h-screen bg-background text-foreground flex flex-col items-center justify-center p-4">
+        <Toaster position="top-right" />
+        <div className="w-full max-w-md bg-card border border-border rounded-2xl shadow-xl overflow-hidden p-8 flex flex-col gap-6 text-center">
+          <div className="w-16 h-16 bg-amber-500/20 rounded-full flex items-center justify-center mx-auto">
+            <AlertTriangle className="text-amber-500 w-8 h-8" />
+          </div>
+          <div>
+            <h2 className="text-2xl font-bold mb-2">Interrupted Migration</h2>
+            <p className="text-muted-foreground text-sm">
+              We detected an unfinished migration that was paused. You can resume exactly where it left off, or discard it to start a new one.
+            </p>
+          </div>
+          <div className="flex flex-col gap-3">
+            <button 
+              onClick={() => resumeMutation.mutate(currentJob.jobId)}
+              disabled={resumeMutation.isPending || discardMutation.isPending}
+              className="bg-primary text-primary-foreground font-semibold px-6 py-3 rounded-lg shadow-sm hover:bg-primary/90 transition-all flex items-center justify-center gap-2"
+            >
+              {resumeMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+              Resume Previous Migration
+            </button>
+            <button 
+              onClick={() => discardMutation.mutate(currentJob.jobId)}
+              disabled={resumeMutation.isPending || discardMutation.isPending}
+              className="bg-destructive/10 text-destructive font-semibold px-6 py-3 rounded-lg hover:bg-destructive/20 transition-all flex items-center justify-center gap-2"
+            >
+              {discardMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+              Discard Previous Migration
+            </button>
+          </div>
+        </div>
       </div>
     );
   }
