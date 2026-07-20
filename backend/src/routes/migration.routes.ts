@@ -66,6 +66,8 @@ router.get('/:jobId/status', async (req, res) => {
 
       res.write(`data: ${JSON.stringify({
         status: job.status,
+        networkStatus: job.networkStatus,
+        retryCount: job.retryCount,
         percentage: Math.min(percentage, 100),
         totalFiles: job.totalFiles,
         completedFiles: job.completedFiles,
@@ -76,6 +78,7 @@ router.get('/:jobId/status', async (req, res) => {
         completedFolders: job.completedFolders,
         currentFile: job.currentFile,
         currentFolder: job.currentFolder,
+        lastSuccessfulFile: job.lastSuccessfulFile,
         speedBytesPerSecond: speed,
         remainingSeconds: remainingSeconds,
         logs: logs.map(l => l.message),

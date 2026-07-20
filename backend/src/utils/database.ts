@@ -18,6 +18,8 @@ export async function getDb(): Promise<Database> {
     CREATE TABLE IF NOT EXISTS migration_jobs (
       jobId TEXT PRIMARY KEY,
       status TEXT,
+      networkStatus TEXT DEFAULT 'online',
+      retryCount INTEGER DEFAULT 0,
       sourceSelection TEXT,
       destinationFolder TEXT,
       options TEXT,
@@ -30,6 +32,7 @@ export async function getDb(): Promise<Database> {
       transferredBytes INTEGER DEFAULT 0,
       currentFile TEXT DEFAULT '',
       currentFolder TEXT DEFAULT '',
+      lastSuccessfulFile TEXT DEFAULT '',
       startedAt INTEGER,
       updatedAt INTEGER,
       finishedAt INTEGER
@@ -40,6 +43,15 @@ export async function getDb(): Promise<Database> {
       jobId TEXT,
       timestamp INTEGER,
       message TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS migration_checkpoints (
+      jobId TEXT,
+      type TEXT, 
+      folderId TEXT,
+      fileId TEXT,
+      status TEXT,
+      PRIMARY KEY (jobId, folderId, fileId)
     );
   `);
 
@@ -84,7 +96,11 @@ export async function updateJobProgress(jobId: string, updates: Partial<{
   failedFiles: number,
   transferredBytes: number,
   currentFile: string,
-  currentFolder: string
+  currentFolder: string,
+  lastSuccessfulFile: string,
+  networkStatus: string,
+  retryCount: number,
+  status: string
 }>) {
   const db = await getDb();
   const keys = Object.keys(updates);
@@ -94,4 +110,15 @@ export async function updateJobProgress(jobId: string, updates: Partial<{
   const values = keys.map(k => (updates as any)[k]);
   
   await db.run(`UPDATE migration_jobs SET ${setString}, updatedAt = ? WHERE jobId = ?`, [...values, Date.now(), jobId]);
+}
+
+export async function saveCheckpoint(jobId: string, type: 'folder' | 'file', folderId: string, fileId: string, status: string) {
+  const db = await getDb();
+  await db.run(`INSERT OR REPLACE INTO migration_checkpoints (jobId, type, folderId, fileId, status) VALUES (?, ?, ?, ?, ?)`, [jobId, type, folderId, fileId, status]);
+}
+
+export async function getCheckpoint(jobId: string, type: 'folder' | 'file', folderId: string, fileId: string): Promise<string | null> {
+  const db = await getDb();
+  const row = await db.get(`SELECT status FROM migration_checkpoints WHERE jobId = ? AND type = ? AND folderId = ? AND fileId = ?`, [jobId, type, folderId, fileId]);
+  return row ? row.status : null;
 }

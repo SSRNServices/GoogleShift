@@ -29,6 +29,8 @@ const formatTime = (seconds: number) => {
 export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) {
   const [status, setStatus] = useState<any>({
     status: 'queued',
+    networkStatus: 'online',
+    retryCount: 0,
     percentage: 0,
     totalFiles: 0,
     completedFiles: 0,
@@ -39,6 +41,7 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
     completedFolders: 0,
     currentFile: '',
     currentFolder: '',
+    lastSuccessfulFile: '',
     speedBytesPerSecond: 0,
     remainingSeconds: 0,
     elapsed: 0
@@ -63,7 +66,7 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
            setLogs(prev => [...prev, ...data.logs]);
         }
         
-        if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
+        if (data.status === 'completed' || data.status === 'completed_with_errors' || data.status === 'failed' || data.status === 'cancelled') {
            eventSource.close();
         }
       } catch (err) {}
@@ -80,18 +83,23 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
     } catch (err) {}
   };
 
-  const isTerminal = status.status === 'completed' || status.status === 'failed' || status.status === 'cancelled';
+  const isTerminal = status.status === 'completed' || status.status === 'completed_with_errors' || status.status === 'failed' || status.status === 'cancelled';
 
   return (
     <div className="w-full max-w-5xl bg-card border border-border rounded-2xl shadow-xl overflow-hidden flex flex-col">
       <div className="p-6 border-b border-border bg-muted/20 flex items-center justify-between">
         <h2 className="text-xl font-bold flex items-center gap-3">
           {status.status === 'running' && <Loader2 className="w-5 h-5 text-primary animate-spin" />}
+          {status.status === 'paused_network' && <Loader2 className="w-5 h-5 text-amber-500 animate-spin" />}
           {status.status === 'completed' && <CheckCircle2 className="w-5 h-5 text-emerald-500" />}
+          {status.status === 'completed_with_errors' && <AlertTriangle className="w-5 h-5 text-amber-500" />}
           {status.status === 'failed' && <AlertTriangle className="w-5 h-5 text-destructive" />}
           {status.status === 'cancelled' && <XCircle className="w-5 h-5 text-muted-foreground" />}
           {status.status === 'queued' && <Loader2 className="w-5 h-5 text-muted-foreground animate-spin" />}
-          Migration {status.status.charAt(0).toUpperCase() + status.status.slice(1)}
+          
+          {status.status === 'paused_network' 
+            ? `Paused (Network Issue) - Retrying` 
+            : `Migration ${status.status.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())}`}
         </h2>
         {isTerminal && (
            <button onClick={onClose} className="px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors text-sm font-medium">
@@ -123,15 +131,18 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
 
         {/* Status Grid */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="bg-muted/10 border border-border/50 rounded-xl p-4">
-            <div className="text-xs text-muted-foreground uppercase mb-1">Status</div>
-            <div className="font-semibold capitalize text-foreground flex items-center gap-2">
-              {status.status === 'running' && 'Copying Files'}
-              {status.status === 'queued' && 'Initializing...'}
-              {status.status === 'completed' && 'Finished'}
-              {status.status === 'cancelled' && 'Cancelled'}
-              {status.status === 'failed' && 'Error'}
+          <div className={`border border-border/50 rounded-xl p-4 ${status.networkStatus === 'offline' ? 'bg-amber-500/10 border-amber-500/30' : 'bg-muted/10'}`}>
+            <div className="text-xs text-muted-foreground uppercase mb-1">Network Status</div>
+            <div className="font-semibold text-foreground flex items-center gap-2">
+              {status.networkStatus === 'online' ? (
+                <><span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Online</>
+              ) : (
+                <><span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span> Waiting...</>
+              )}
             </div>
+            {status.retryCount > 0 && (
+              <div className="text-[10px] text-amber-500 mt-1">Recovered {status.retryCount} times</div>
+            )}
           </div>
           <div className="bg-muted/10 border border-border/50 rounded-xl p-4">
             <div className="text-xs text-muted-foreground uppercase mb-1">Elapsed Time</div>
@@ -139,11 +150,11 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
           </div>
           <div className="bg-muted/10 border border-border/50 rounded-xl p-4">
             <div className="text-xs text-muted-foreground uppercase mb-1">Est. Remaining</div>
-            <div className="font-semibold text-foreground">{formatTime(status.remainingSeconds)}</div>
+            <div className="font-semibold text-foreground">{status.status === 'paused_network' ? 'Paused' : formatTime(status.remainingSeconds)}</div>
           </div>
           <div className="bg-muted/10 border border-border/50 rounded-xl p-4">
             <div className="text-xs text-muted-foreground uppercase mb-1">Transfer Speed</div>
-            <div className="font-semibold text-foreground">{formatBytes(status.speedBytesPerSecond)}/s</div>
+            <div className="font-semibold text-foreground">{status.status === 'paused_network' ? '0 B/s' : `${formatBytes(status.speedBytesPerSecond)}/s`}</div>
           </div>
         </div>
 
