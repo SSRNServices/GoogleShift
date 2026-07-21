@@ -12,11 +12,13 @@ import { MigrationJob } from '../transfer/types';
 
 export class MigrationWorker {
   public async executeMigration(job: MigrationJob) {
+    const startTime = Date.now();
     const sourceSelection = job.sourceSelection;
     const destinationFolder = job.destinationFolder;
     const options = job.options;
 
-    console.log(`\n[STATE] STARTING\nMigration: ${job.jobId}\nReason: Explicit Start/Resume`);
+    console.log(`\n[ENTRY] MigrationWorker.executeMigration | Job: ${job.jobId} | Input: ${JSON.stringify(options)}`);
+    console.log(`[STATE] STARTING\nMigration: ${job.jobId}\nReason: Explicit Start/Resume`);
     await logJobEvent(job.jobId, `[STATE] STARTING`);
     await updateJobProgress(job.jobId, { status: 'running', networkStatus: 'online', retryCount: 0 });
 
@@ -41,6 +43,33 @@ export class MigrationWorker {
       lastSuccessfulFile: job.lastSuccessfulFile || '',
     }, DEFAULT_MIGRATION_CONFIG.progressInterval, DEFAULT_MIGRATION_CONFIG.resumeInterval);
 
+    // Watchdog for deadlock detection (30 seconds)
+    let lastTransferred = -1;
+    let stuckCycles = 0;
+    const watchdog = setInterval(() => {
+      const metrics = progress.getMetrics();
+      if (lastTransferred === metrics.transferredBytes + metrics.completedFolders + metrics.completedFiles) {
+        stuckCycles++;
+        if (stuckCycles >= 6) { // 30 seconds
+          console.error(`\n[DEADLOCK DETECTED] Migration ${job.jobId} has been stuck for 30 seconds.`);
+          console.error(`Active state dump:`);
+          console.error(`Busy Workers: ${metrics.busyWorkers}`);
+          console.error(`Queue Length: ${metrics.queueLength}`);
+          console.error(`Completed: Folders ${metrics.completedFolders}, Files ${metrics.completedFiles}`);
+          console.error(`Pending items not advancing.`);
+          
+          logJobEvent(job.jobId, `[STATE] FAILED - Deadlock detected. Workers: ${metrics.busyWorkers}, Queue: ${metrics.queueLength}`);
+          updateJobProgress(job.jobId, { status: 'failed' });
+          
+          clearInterval(watchdog);
+          process.exit(1); // Force crash to allow pm2 or docker to restart, or just throw.
+        }
+      } else {
+        stuckCycles = 0;
+        lastTransferred = metrics.transferredBytes + metrics.completedFolders + metrics.completedFiles;
+      }
+    }, 5000);
+
     try {
       progress.start();
 
@@ -61,11 +90,15 @@ export class MigrationWorker {
       console.log(`\n[STATE] CREATING_FOLDERS\nMigration: ${job.jobId}\nReason: Folder Scheduler Initiated`);
       await logJobEvent(job.jobId, `[STATE] CREATING_FOLDERS`);
       await updateJobProgress(job.jobId, { status: 'creating_tree' });
-      const folderScheduler = new FolderScheduler(job.jobId, actualDestId, destDrive, options, rateLimiter);
+      const folderScheduler = new FolderScheduler(job.jobId, actualDestId, destDrive, options, rateLimiter, progress);
+      const phase1Start = Date.now();
       await folderScheduler.run();
+      console.log(`[EXIT] FolderScheduler.run() | Duration: ${Date.now() - phase1Start}ms`);
 
       // Ensure all DB writes from folder creation are committed
+      const drainStart = Date.now();
       await dbWriter.drain();
+      console.log(`[EXIT] DatabaseWriter.drain() | Duration: ${Date.now() - drainStart}ms`);
 
       // Generate mapping cache
       const folderCache = new Map<string, string>();
@@ -76,11 +109,13 @@ export class MigrationWorker {
       }
 
       // Phase 2: Files
-      console.log(`\n[STATE] UPLOADING\nMigration: ${job.jobId}\nReason: File Scheduler Initiated`);
-      await logJobEvent(job.jobId, `[STATE] UPLOADING`);
+      console.log(`\n[STATE] COPYING_FILES\nMigration: ${job.jobId}\nReason: File Scheduler Initiated`);
+      await logJobEvent(job.jobId, `[STATE] COPYING_FILES`);
       await updateJobProgress(job.jobId, { status: 'uploading_files' });
       const fileScheduler = new FileScheduler(job.jobId, sourceDrive, destDrive, options, rateLimiter, progress, folderCache);
+      const phase2Start = Date.now();
       await fileScheduler.run();
+      console.log(`[EXIT] FileScheduler.run() | Duration: ${Date.now() - phase2Start}ms`);
       
       // Ensure all DB writes from files are committed
       await dbWriter.drain();
@@ -91,13 +126,16 @@ export class MigrationWorker {
       await updateJobProgress(job.jobId, { status: 'verifying' });
       
       progress.stop();
+      clearInterval(watchdog);
       
       const finalStatus = 'completed';
       console.log(`\n[STATE] COMPLETED\nMigration: ${job.jobId}\nReason: All phases verified and completed successfully`);
       await logJobEvent(job.jobId, `[STATE] COMPLETED`);
       await updateJobProgress(job.jobId, { status: finalStatus, networkStatus: 'online' });
+      console.log(`[EXIT] MigrationWorker.executeMigration | Total Duration: ${Date.now() - startTime}ms`);
     } catch (e: any) {
       progress.stop();
+      clearInterval(watchdog);
       
       const errorPayload = {
         name: e.name || 'WorkerError',

@@ -38,38 +38,42 @@ export class DatabaseWriter {
     if (this.isProcessing || this.queue.length === 0) return;
     this.isProcessing = true;
 
-    while (this.queue.length > 0) {
-      const event = this.queue.shift();
-      if (!event) continue;
+    try {
+      while (this.queue.length > 0) {
+        const event = this.queue.shift();
+        if (!event) continue;
 
-      const db = await getDb();
-      try {
-        await db.run('BEGIN TRANSACTION');
+        const db = await getDb();
+        try {
+          await db.run('BEGIN TRANSACTION');
 
-        if (event.type === 'FolderCreated') {
-          await ManifestStorage.updateCreatedDestId(this.jobId, event.sourceId, event.destId);
-          await ManifestStorage.updateItemStatus(this.jobId, event.sourceId, 'COMPLETED');
-          eventBus.emitEvent({ type: 'FolderMapped', jobId: this.jobId, sourceId: event.sourceId, destId: event.destId });
-        } 
-        else if (event.type === 'FolderFailed') {
-          await ManifestStorage.updateItemStatus(this.jobId, event.sourceId, 'FAILED');
-        }
-        else if (event.type === 'UploadFinished') {
-          await ManifestStorage.updateItemStatus(this.jobId, event.sourceId, 'COMPLETED');
-        }
-        else if (event.type === 'UploadFailed') {
-          await ManifestStorage.updateItemStatus(this.jobId, event.sourceId, 'FAILED');
-        }
+          if (event.type === 'FolderCreated') {
+            await ManifestStorage.updateCreatedDestId(this.jobId, event.sourceId, event.destId);
+            await ManifestStorage.updateItemStatus(this.jobId, event.sourceId, 'COMPLETED');
+            eventBus.emitEvent({ type: 'FolderMapped', jobId: this.jobId, sourceId: event.sourceId, destId: event.destId });
+          } 
+          else if (event.type === 'FolderFailed') {
+            await ManifestStorage.updateItemStatus(this.jobId, event.sourceId, 'FAILED');
+          }
+          else if (event.type === 'UploadFinished') {
+            await ManifestStorage.updateItemStatus(this.jobId, event.sourceId, 'COMPLETED');
+          }
+          else if (event.type === 'UploadFailed') {
+            await ManifestStorage.updateItemStatus(this.jobId, event.sourceId, 'FAILED');
+          }
 
-        await db.run('COMMIT');
-      } catch (error: any) {
-        await db.run('ROLLBACK');
-        console.error(`[DatabaseWriter] Failed to process event ${event.type} for sourceId ${'sourceId' in event ? event.sourceId : 'unknown'}: ${error.message}`);
-        // If it's a fatal DB error, we might push it back or halt. We'll just log for now.
-        // The workers will know if it failed because they can await a specific FolderMapped event if they wanted, but our DAG is memory-first.
+          await db.run('COMMIT');
+        } catch (error: any) {
+          try {
+            await db.run('ROLLBACK');
+          } catch (rollbackError: any) {
+            console.error(`[DatabaseWriter] Failed to rollback transaction: ${rollbackError.message}`);
+          }
+          console.error(`[DatabaseWriter] Failed to process event ${event.type} for sourceId ${'sourceId' in event ? event.sourceId : 'unknown'}: ${error.message}`);
+        }
       }
+    } finally {
+      this.isProcessing = false;
     }
-
-    this.isProcessing = false;
   }
 }

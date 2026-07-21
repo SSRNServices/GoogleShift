@@ -81,7 +81,7 @@ export class UploadWorker {
        return; // Already accounted for in progress totals on boot
     }
 
-    console.log(`[UPLOAD] Starting Upload\nWorker: ${this.id}\nFile: ${item.name}\nSource ID: ${item.sourceId}\nDestination Parent: ${destParentId}`);
+    console.log(`[FILE_STARTED] Worker: ${this.id} | File: ${item.name} | Source ID: ${item.sourceId} | Destination Parent: ${destParentId}`);
 
     await RetryHelper.withRetry(`Upload ${item.name}`, async () => {
       let mediaBody: any;
@@ -101,20 +101,20 @@ export class UploadWorker {
         }
 
         if (exportMimeType) {
-          console.log(`[UPLOAD] Download Started (Export) for ${item.name}`);
+          console.log(`[FILE_PROGRESS] Download Started (Export) for ${item.name}`);
           const res = await this.sourceDrive.files.export({ fileId: item.sourceId, mimeType: exportMimeType }, { responseType: 'stream' });
           mediaBody = res.data;
-          console.log(`[UPLOAD] Download Finished (Export) for ${item.name}`);
+          console.log(`[FILE_PROGRESS] Download Finished (Export) for ${item.name}`);
         } else {
           console.log(`[Worker ${this.id}] Skipped unsupported file type: ${item.name}`);
-          await saveCheckpoint(this.jobId, 'file', destParentId, item.sourceId, 'skipped');
+          await saveCheckpoint(this.jobId, 'file', destParentId!, item.sourceId, 'skipped');
           return;
         }
       } else {
-        console.log(`[UPLOAD] Download Started for ${item.name}`);
+        console.log(`[FILE_PROGRESS] Download Started for ${item.name}`);
         const res = await this.sourceDrive.files.get({ fileId: item.sourceId, alt: 'media' }, { responseType: 'stream' });
         mediaBody = res.data;
-        console.log(`[UPLOAD] Download Finished for ${item.name}`);
+        console.log(`[FILE_PROGRESS] Download Finished for ${item.name}`);
       }
 
       if (this.options.skipExisting) {
@@ -124,17 +124,17 @@ export class UploadWorker {
         });
         if (existingRes.data.files && existingRes.data.files.length > 0) {
           console.log(`[Worker ${this.id}] Skipped existing file: ${item.name}`);
-          await saveCheckpoint(this.jobId, 'file', destParentId, item.sourceId, 'skipped');
+          await saveCheckpoint(this.jobId, 'file', destParentId!, item.sourceId, 'skipped');
           return;
         }
       }
 
-      console.log(`[UPLOAD] Uploading:\nFile name: ${item.name}\nSource ID: ${item.sourceId}\nDestination folder ID: ${destParentId}\nMime type: ${targetMimeType}\nSize: ${item.size}`);
+      console.log(`[FILE_PROGRESS] Uploading:\nFile name: ${item.name}\nSource ID: ${item.sourceId}\nDestination folder ID: ${destParentId}\nMime type: ${targetMimeType}\nSize: ${item.size}`);
       
       const createRes = await this.destDrive.files.create({
         requestBody: {
           name: item.name,
-          parents: [destParentId],
+          parents: [destParentId!],
           mimeType: targetMimeType
         },
         media: {
@@ -143,14 +143,14 @@ export class UploadWorker {
         fields: 'id, parents, name, mimeType'
       });
 
-      console.log(`[UPLOAD] Google Response for ${item.name}:\nID: ${createRes.data.id}\nParents: ${createRes.data.parents?.join(',')}\nName: ${createRes.data.name}\nMimeType: ${createRes.data.mimeType}`);
+      console.log(`[FILE_PROGRESS] Google Response for ${item.name}:\nID: ${createRes.data.id}\nParents: ${createRes.data.parents?.join(',')}\nName: ${createRes.data.name}\nMimeType: ${createRes.data.mimeType}`);
 
       if (!createRes.data.id) {
          throw new Error(`Google Drive API returned success but no file ID was provided in the response.`);
       }
 
       // End-to-End validation check
-      console.log(`[UPLOAD] Validating ${item.name} existence in Drive...`);
+      console.log(`[FILE_PROGRESS] Validating ${item.name} existence in Drive...`);
       const verifyRes = await this.destDrive.files.get({
         fileId: createRes.data.id,
         fields: 'id'
@@ -160,9 +160,9 @@ export class UploadWorker {
          throw new Error(`Google Drive API created file, but validation fetch failed to find it.`);
       }
 
-      console.log(`[UPLOAD] Google Upload Completed\nDestination File ID: ${createRes.data.id}`);
+      console.log(`[FILE_FINISHED] Google Upload Completed | Destination File ID: ${createRes.data.id}`);
       
-      await saveCheckpoint(this.jobId, 'file', destParentId, item.sourceId, 'completed');
+      await saveCheckpoint(this.jobId, 'file', destParentId!, item.sourceId, 'completed');
     }, (msg) => { console.log(msg); }, () => this.rateLimiter.reportRateLimit());
 
     this.rateLimiter.reportSuccess();
@@ -171,6 +171,6 @@ export class UploadWorker {
     eventBus.emitEvent({ type: 'UploadFinished', jobId: this.jobId, sourceId: item.id, bytes: item.size });
     this.progress.reportFileCompleted(item.size, item.name);
     
-    console.log(`[UPLOAD] Database Write Queued\nProgress Updated\nUploaded Bytes: ${this.progress.getMetrics().transferredBytes}\nWorker Released`);
+    console.log(`[FILE_PROGRESS] Database Write Queued | Progress Updated | Worker Released`);
   }
 }

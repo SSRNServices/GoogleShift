@@ -143,4 +143,35 @@ export class FolderDAG {
   public getReadyCount(): number {
     return this.readyQueue.length;
   }
+
+  public getDiagnostics() {
+    let rootNodes = 0;
+    let leafNodes = 0;
+    let edges = 0;
+    
+    for (const node of this.nodes.values()) {
+      if (node.sourceParentId === 'root' || !this.nodes.has(node.sourceParentId)) {
+        rootNodes++;
+      }
+      if (node.children.length === 0) {
+        leafNodes++;
+      }
+      edges += node.children.length;
+    }
+    
+    return {
+      nodes: this.nodes.size,
+      edges,
+      rootNodes,
+      leafNodes,
+      readyQueueSize: this.readyQueue.length
+    };
+  }
+
+  public dumpDAG() {
+    console.error(`\n[DAG DUMP] Full DAG State:`);
+    for (const node of this.nodes.values()) {
+       console.error(`Node: ${node.id} | Parent: ${node.sourceParentId} | Name: ${node.name} | Status: ${node.status} | Children: ${node.children.length}`);
+    }
+  }
 }

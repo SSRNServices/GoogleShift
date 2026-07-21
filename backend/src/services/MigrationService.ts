@@ -28,13 +28,27 @@ export class MigrationService {
       throw new ManifestError('Manifest validation failed: No items found for this manifest. Please rescan.');
     }
 
+    const manifestTotals = await db.get(`
+      SELECT 
+        SUM(CASE WHEN isFolder = 1 THEN 1 ELSE 0 END) as totalFolders,
+        SUM(CASE WHEN isFolder = 0 THEN 1 ELSE 0 END) as totalFiles,
+        SUM(CASE WHEN isFolder = 0 THEN size ELSE 0 END) as totalBytes
+      FROM migration_manifest 
+      WHERE jobId = ?
+    `, [jobId]);
+
+    const totalFolders = manifestTotals?.totalFolders || 0;
+    const totalFiles = manifestTotals?.totalFiles || 0;
+    const totalBytes = manifestTotals?.totalBytes || 0;
+
+    if (totalFolders === 0 && totalFiles === 0) {
+      throw new ManifestError('Manifest contains 0 items to migrate.');
+    }
+
     // 3. Google Shortcut Support
     for (let i = 0; i < payload.sourceSelection.length; i++) {
       const item = payload.sourceSelection[i];
       if (item.mimeType === 'application/vnd.google-apps.shortcut') {
-        // Only resolve if we have shortcut details or if we can fetch it (but DriveService mapping only has shortcutDetails if we added it, wait...)
-        // Actually, if we just fetch info using the shortcut's ID, does it return the shortcut or target?
-        // Let's assume frontend provides `shortcutDetails` or we fetch it.
         const targetId = item.shortcutDetails?.targetId;
         if (!targetId) {
             throw new ShortcutResolutionError(`Shortcut ${item.id} has no targetId`);
@@ -45,7 +59,7 @@ export class MigrationService {
             const realFolder = await driveService.getFolderInfo('source', targetId);
             payload.sourceSelection[i] = {
                ...realFolder,
-               parentId: item.parentId // preserve the tree structural mount point
+               parentId: item.parentId
             };
             console.log(`[SHORTCUT] Target Name: ${realFolder.name}`);
         } catch (e: any) {
@@ -59,20 +73,18 @@ export class MigrationService {
     // Write to DB
     await createJob(jobId, payload);
     
-    // The route `POST /start` handles explicit worker initialization, but we can do it right here since the route calls this service method.
-    // However, since we return the job right away to the frontend to redirect it, we will async dispatch the worker.
     await updateJobStatus(jobId, 'STARTING');
     
     const { migrationWorker } = await import('./MigrationWorker');
     
-    // Explicit background dispatch (No double serialization anymore since the worker accepts the raw object)
+    // Explicit background dispatch
     migrationWorker.executeMigration({
       ...payload,
       jobId,
       status: 'starting',
-      totalFolders: 0,
-      totalFiles: 0,
-      totalBytes: 0,
+      totalFolders,
+      totalFiles,
+      totalBytes,
       failedFiles: 0,
       lastSuccessfulFile: ''
     }).catch(err => console.error('[FATAL]', err));

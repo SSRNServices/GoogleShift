@@ -38,16 +38,25 @@ export class RetryHelper {
     const backoffs = [1, 2, 4, 8, 16]; // in seconds
     const maxRetries = 5;
     
+    console.log(`[ENTRY] RetryHelper.withRetry | Operation: ${operationName}`);
+    const rStart = Date.now();
+
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        return await operation();
+        const result = await operation();
+        console.log(`[EXIT] RetryHelper.withRetry | Operation: ${operationName} | Duration: ${Date.now() - rStart}ms | Status: Success`);
+        return result;
       } catch (e: any) {
         if (this.isPermanentError(e)) {
+          console.log(`[EXIT] RetryHelper.withRetry | Operation: ${operationName} | Duration: ${Date.now() - rStart}ms | Status: Permanent Error`);
           throw e; // Do not retry permanent errors
         }
         
         if (this.isTransientError(e) || (e.response?.status === 403 && e.message?.includes('User rate limit exceeded'))) {
-          if (attempt === maxRetries - 1) throw e;
+          if (attempt === maxRetries - 1) {
+            console.log(`[EXIT] RetryHelper.withRetry | Operation: ${operationName} | Duration: ${Date.now() - rStart}ms | Status: Max Retries Reached`);
+            throw e;
+          }
           
           if (e.response?.status === 429 || (e.response?.status === 403 && e.message?.includes('rate limit'))) {
              if (onRateLimit) onRateLimit();
@@ -63,10 +72,13 @@ export class RetryHelper {
           
           if (logFn) logFn(`Resuming ${operationName}...`);
         } else {
+          console.log(`[EXIT] RetryHelper.withRetry | Operation: ${operationName} | Duration: ${Date.now() - rStart}ms | Status: Unknown Error`);
           throw e; // Unknown error, bubble up
         }
       }
     }
+    
+    console.log(`[EXIT] RetryHelper.withRetry | Operation: ${operationName} | Duration: ${Date.now() - rStart}ms | Status: Unreachable`);
     throw new Error('Unreachable');
   }
 }
