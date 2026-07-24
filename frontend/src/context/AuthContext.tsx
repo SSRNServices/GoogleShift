@@ -7,7 +7,7 @@ interface User {
   email: string;
   name: string;
   picture: string;
-  role: 'SUPER_ADMIN' | 'ADMIN' | 'USER';
+  role: 'SUPER_ADMIN' | 'ADMIN' | 'SUPERVISOR' | 'USER';
   status: 'ACTIVE' | 'PENDING' | 'DISABLED';
 }
 

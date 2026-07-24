@@ -8,8 +8,11 @@ import { sessionMiddleware } from './auth/session';
 import { requireUserAuth } from './auth/auth.middleware';
 import passport from 'passport';
 import { configurePassport } from './auth/passport';
+import { configureLocalStrategy } from './auth/local.strategy';
 import driveRoutes from './routes/drive.routes';
 import migrationRoutes from './routes/migration.routes';
+import authAdminRoutes from './routes/auth.admin.routes';
+import helmet from 'helmet';
 
 dotenv.config();
 
@@ -50,8 +53,12 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL] The backend will remain alive to allow other workers to continue.');
 });
 
+configurePassport();
+configureLocalStrategy();
+
 const app = express();
 app.set('trust proxy', true);
+app.use(helmet());
 const PORT = Number(process.env.PORT) || 3000;
 
 const allowedOrigins = [
@@ -109,6 +116,7 @@ app.get('/', (req, res) => {
 });
 
 app.use('/auth', authRoutes);
+app.use('/api/admin/auth', authAdminRoutes);
 app.use('/api/admin', adminRoutes);
 
 app.get('/api/health', (req, res) => {

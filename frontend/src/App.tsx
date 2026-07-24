@@ -6,14 +6,19 @@ import { AuthGuard } from './components/auth/AuthGuard';
 import { RoleGuard } from './components/auth/RoleGuard';
 import { MainLayout } from './components/layout/MainLayout';
 import { AdminLayout } from './components/layout/AdminLayout';
+import AdminSetup from './pages/admin/Setup';
+import AdminLogin from './pages/admin/AdminLogin';
+import AdminUsers from './pages/admin/Users';
 import NotFound from './pages/errors/404';
 import Forbidden from './pages/errors/403';
 
 export default function App() {
   return (
     <Routes>
-      {/* Public Route */}
+      {/* Public Routes */}
       <Route path="/login" element={<Login />} />
+      <Route path="/admin/login" element={<AdminLogin />} />
+      <Route path="/admin/setup" element={<AdminSetup />} />
       <Route path="/" element={<Navigate to="/login" replace />} />
 
       {/* Protected Routes wrapper */}
@@ -26,12 +31,12 @@ export default function App() {
 
         {/* Admin Routes */}
         <Route path="/admin" element={
-          <RoleGuard allowedRoles={['SUPER_ADMIN']}>
+          <RoleGuard allowedRoles={['SUPER_ADMIN', 'ADMIN', 'SUPERVISOR']}>
             <AdminLayout />
           </RoleGuard>
         }>
           <Route index element={<AdminDashboard />} />
-          <Route path="users" element={<AdminDashboard />} /> {/* placeholder */}
+          <Route path="users" element={<AdminUsers />} />
           <Route path="migrations" element={<AdminDashboard />} /> {/* placeholder */}
           <Route path="health" element={<AdminDashboard />} /> {/* placeholder */}
           <Route path="logs" element={<AdminDashboard />} /> {/* placeholder */}

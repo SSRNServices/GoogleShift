@@ -3,7 +3,7 @@ import { useAuth } from "../../context/AuthContext"
 import Forbidden from "../../pages/errors/403"
 
 interface RoleGuardProps {
-  allowedRoles: Array<'SUPER_ADMIN' | 'ADMIN' | 'USER'>
+  allowedRoles: Array<'SUPER_ADMIN' | 'ADMIN' | 'SUPERVISOR' | 'USER'>
   children?: React.ReactNode
 }
 
