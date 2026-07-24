@@ -2,7 +2,7 @@ import { Navigate, Outlet, useLocation } from "react-router-dom"
 import { useAuth } from "../../context/AuthContext"
 import { Loader2 } from "lucide-react"
 
-export function RouteGuard() {
+export function AuthGuard({ children }: { children?: React.ReactNode }) {
   const { isAuthenticated, loading } = useAuth()
   const location = useLocation()
 
@@ -16,8 +16,9 @@ export function RouteGuard() {
 
   if (!isAuthenticated) {
     // Save the attempted url for redirecting after login
-    return <Navigate to="/" state={{ from: location }} replace />
+    // The user requested redirect to "/login" instead of "/"
+    return <Navigate to="/login" state={{ from: location }} replace />
   }
 
-  return <Outlet />
+  return children ? <>{children}</> : <Outlet />
 }

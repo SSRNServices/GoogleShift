@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import { Navigate } from 'react-router-dom';
 
 export default function Login() {
-  const { isAuthenticated, loading, login } = useAuth();
+  const { isAuthenticated, loading, login, user } = useAuth();
 
   if (loading) {
     return (
@@ -13,7 +13,10 @@ export default function Login() {
     );
   }
 
-  if (isAuthenticated) {
+  if (isAuthenticated && user) {
+    if (user.role === 'SUPER_ADMIN') {
+      return <Navigate to="/admin" replace />;
+    }
     return <Navigate to="/dashboard" replace />;
   }
 

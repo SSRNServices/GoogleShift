@@ -1,25 +1,25 @@
 import { Navigate, Outlet } from "react-router-dom"
 import { useAuth } from "../../context/AuthContext"
+import Forbidden from "../../pages/errors/403"
 
 interface RoleGuardProps {
   allowedRoles: Array<'SUPER_ADMIN' | 'ADMIN' | 'USER'>
+  children?: React.ReactNode
 }
 
-export function RoleGuard({ allowedRoles }: RoleGuardProps) {
+export function RoleGuard({ allowedRoles, children }: RoleGuardProps) {
   const { user } = useAuth()
 
+  // This guard expects AuthGuard to handle authentication check first.
+  // But just in case, redirect to login if no user.
   if (!user) {
-    return <Navigate to="/" replace />
+    return <Navigate to="/login" replace />
   }
 
   if (!allowedRoles.includes(user.role)) {
-    return (
-      <div className="flex h-screen w-full flex-col items-center justify-center bg-background">
-        <h1 className="text-4xl font-extrabold tracking-tight text-foreground">403</h1>
-        <p className="mt-4 text-lg text-muted-foreground">You do not have permission to access this area.</p>
-      </div>
-    )
+    // Return 403 page instead of redirecting to "/"
+    return <Forbidden />
   }
 
-  return <Outlet />
+  return children ? <>{children}</> : <Outlet />
 }

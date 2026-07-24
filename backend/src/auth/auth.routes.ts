@@ -49,7 +49,7 @@ router.get('/google/callback', (req, res, next) => {
   }
 
   // Otherwise, it's a Passport login flow
-  passport.authenticate('google', { failureRedirect: getFrontendUrl(), session: true }, (err, user) => {
+  passport.authenticate('google', { failureRedirect: getFrontendUrl() + '/login', session: true }, (err, user) => {
     console.log("=== CALLBACK FORENSICS ===");
     console.log("req.protocol:", req.protocol);
     console.log("req.secure:", req.secure);
