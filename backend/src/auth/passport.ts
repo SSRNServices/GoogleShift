@@ -18,10 +18,7 @@ passport.deserializeUser(async (id: string, done) => {
 export const configurePassport = () => {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  const isProd = process.env.NODE_ENV === 'production';
-  const callbackURL = isProd 
-    ? 'https://api.migration.ssrnservices.in/auth/login/callback'
-    : 'http://localhost:3000/auth/login/callback';
+  const callbackURL = process.env.GOOGLE_LOGIN_REDIRECT_URI as string;
 
   if (!clientId || !clientSecret) {
     console.warn('Google Client ID or Secret missing. Passport login will fail.');
