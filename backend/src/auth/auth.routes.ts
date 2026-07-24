@@ -11,23 +11,50 @@ const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_for_development';
 
 // --- NEW GLOBAL LOGIN ROUTES ---
 
-router.get('/login', passport.authenticate('google', {
-  scope: ['openid', 'profile', 'email'],
-  session: false
-}));
+router.get('/login', (req, res, next) => {
+  console.log('\n================================');
+  console.log('Passport OAuth Debug');
+  console.log('================================');
+  console.log(`Client ID: ${process.env.GOOGLE_CLIENT_ID}`);
+  console.log(`Callback URL: ${process.env.GOOGLE_LOGIN_REDIRECT_URI}`);
+  console.log(`Scopes: openid, profile, email`);
+  console.log(`Generated OAuth URL: (Handled internally by Passport)`);
+  console.log('================================\n');
+  passport.authenticate('google', {
+    scope: ['openid', 'profile', 'email'],
+    session: false
+  })(req, res, next);
+});
+
+router.get('/debug/oauth', (req, res) => {
+  res.json({
+    clientId: process.env.GOOGLE_CLIENT_ID,
+    callback: process.env.GOOGLE_LOGIN_REDIRECT_URI,
+    generatedAuthUrl: 'Generated at runtime by GoogleStrategy'
+  });
+});
 
 const getFrontendUrl = () => process.env.NODE_ENV === 'production' 
   ? 'https://migration.ssrnservices.in' 
   : 'http://localhost:5173';
 
-router.get('/login/callback', 
-  passport.authenticate('google', { failureRedirect: getFrontendUrl(), session: false }),
-  (req, res) => {
-    if (!req.user) return res.redirect(getFrontendUrl() + '/');
+router.get('/google/callback', (req, res, next) => {
+  const state = req.query.state as string;
+  
+  // If state is source or destination, it's a Drive link flow
+  if (state === 'source' || state === 'destination') {
+    return requireUserAuth(req, res, () => {
+      authController.handleCallback(req, res);
+    });
+  }
+
+  // Otherwise, it's a Passport login flow
+  passport.authenticate('google', { failureRedirect: getFrontendUrl(), session: false }, (err, user) => {
+    if (err || !user) return res.redirect(getFrontendUrl() + '/');
     
-    const user: any = req.user;
+    const userTyped: any = user;
     const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role, status: user.status },
+      { id: userTyped.id, email: userTyped.email, role: userTyped.role, status: userTyped.status },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -41,8 +68,8 @@ router.get('/login/callback',
     });
     
     res.redirect(getFrontendUrl() + '/dashboard');
-  }
-);
+  })(req, res, next);
+});
 
 router.get('/me', (req, res) => {
   const token = req.cookies?.auth_token;
@@ -75,7 +102,7 @@ router.post('/logout', (req, res) => {
 // --- EXISTING DRIVE AUTH ROUTES ---
 // Only logged in users can connect Drive accounts
 
-router.get('/google/callback', requireUserAuth, authController.handleCallback);
+// /google/callback is now handled globally above
 router.get('/:type', requireUserAuth, authController.getAuthUrl);
 router.get('/:type/profile', requireUserAuth, authController.getProfile);
 router.post('/:type/logout', requireUserAuth, authController.logout);

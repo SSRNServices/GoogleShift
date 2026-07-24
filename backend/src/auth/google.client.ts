@@ -31,6 +31,14 @@ export class GoogleClientManager {
     console.log(`\n=== OAuth URL Generation for ${type} ===`);
     console.log(`Redirect URI: ${process.env.GOOGLE_DRIVE_REDIRECT_URI}`);
     console.log(`Generated URL: ${url}\n`);
+    
+    const parsedUrl = new URL(url);
+    console.log(`redirect_uri: ${parsedUrl.searchParams.get('redirect_uri')}`);
+    console.log(`client_id: ${parsedUrl.searchParams.get('client_id')}`);
+    console.log(`scope: ${parsedUrl.searchParams.get('scope')}`);
+    console.log(`response_type: ${parsedUrl.searchParams.get('response_type')}`);
+    console.log(`access_type: ${parsedUrl.searchParams.get('access_type')}`);
+    console.log(`prompt: ${parsedUrl.searchParams.get('prompt')}\n`);
 
     return url;
   }

@@ -15,7 +15,7 @@ dotenv.config();
 console.log('\n=== Application Startup ===');
 console.log(`GOOGLE_CLIENT_ID: ${process.env.GOOGLE_CLIENT_ID ? 'Loaded (starts with ' + process.env.GOOGLE_CLIENT_ID.substring(0, 15) + '...)' : 'MISSING'}`);
 console.log(`GOOGLE_DRIVE_REDIRECT_URI: ${process.env.GOOGLE_DRIVE_REDIRECT_URI || 'MISSING (Defaults to http://localhost:3000/auth/google/callback)'}`);
-console.log(`GOOGLE_LOGIN_REDIRECT_URI: ${process.env.GOOGLE_LOGIN_REDIRECT_URI || 'MISSING (Defaults to http://localhost:3000/auth/login/callback)'}`);
+console.log(`GOOGLE_LOGIN_REDIRECT_URI: ${process.env.GOOGLE_LOGIN_REDIRECT_URI || 'MISSING (Defaults to http://localhost:3000/auth/google/callback)'}`);
 console.log('===========================\n');
 
 import { prisma } from './utils/database';
