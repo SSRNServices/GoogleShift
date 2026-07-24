@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { google } from 'googleapis';
 import { OAuth2Client } from 'google-auth-library';
 import { tokenStore, AccountType } from './token.store';

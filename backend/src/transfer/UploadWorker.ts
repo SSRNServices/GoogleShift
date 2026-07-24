@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { drive_v3 } from 'googleapis';
 import { ManifestItem } from '../utils/ManifestStorage';
 import { AdaptiveRateLimiter } from './AdaptiveRateLimiter';

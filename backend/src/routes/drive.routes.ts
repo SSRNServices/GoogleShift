@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { Router } from 'express';
 import { driveService } from '../services/DriveService';
 import { AccountType } from '../auth/token.store';

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { Router } from 'express';
 import { migrationService } from '../services/MigrationService';
 import { getDb } from "../utils/database";

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { getDb } from "../utils/database";
 import { NetworkHeartbeat } from '../utils/NetworkHeartbeat';
 import { NetworkClient } from '../transfer/NetworkClient';

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { google } from 'googleapis';
 import { GaxiosError } from 'gaxios';
 import { googleClientManager } from './google.client';

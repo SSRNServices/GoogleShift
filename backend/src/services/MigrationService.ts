@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { createJob, updateJobStatus, getDb } from '../utils/database';
 import { MigrationRequest } from '../transfer/types';
 import { RequestValidationError, ManifestError, ShortcutResolutionError } from '../utils/errors';

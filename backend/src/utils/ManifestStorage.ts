@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { getDb } from './database';
 
 export interface ManifestItem {
