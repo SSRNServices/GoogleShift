@@ -1,28 +1,47 @@
 FROM node:22-alpine
 
-WORKDIR /app
-
-# Copy the backend package files to leverage Docker caching
-COPY backend/package*.json ./backend/
-
-# Move into backend to run install
 WORKDIR /app/backend
 
-# Copy Prisma schema and config required by postinstall hook
-COPY backend/prisma ./prisma/
-COPY backend/prisma.config.ts ./
+#
+# Copy package files first
+#
+COPY backend/package*.json ./
 
-RUN npm ci
+#
+# Install dependencies WITHOUT lifecycle scripts
+#
+RUN npm ci --ignore-scripts
 
-# Copy the rest of the backend source
-COPY backend /app/backend
+#
+# Copy the ENTIRE backend
+#
+COPY backend .
 
-# Generate prisma client and build
+#
+# Verify files exist
+#
+RUN ls -R
+RUN ls prisma
+RUN test -f prisma/schema.prisma
+
+#
+# Docker debugging
+#
+RUN pwd
+RUN ls
+RUN ls prisma
+RUN cat prisma/schema.prisma
+
+#
+# Generate Prisma Client
+#
 RUN npx prisma generate
+
+#
+# Build Typescript
+#
 RUN npm run build
 
-# Expose port (default to 3000 if not set)
-EXPOSE ${PORT:-3000}
+EXPOSE 3000
 
-# Start the application
-CMD ["npm", "run", "start:prod"]
+CMD ["npm","run","start:prod"]
