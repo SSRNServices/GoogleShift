@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { API_URL } from '../config/api';
 import { ArrowRight, HardDrive, FolderOpen, File as FileIcon, Loader2 } from 'lucide-react';
 import type { DriveItem } from '../types/drive';
 
@@ -44,7 +45,7 @@ export function TransferSummary({ sourceSelection, destinationFolder, onScanComp
       return `${item.id}:${isFolder ? 'folder' : 'file'}`;
     }).join(',');
 
-    const url = `http://localhost:3000/api/drive/source/summary?items=${encodeURIComponent(itemsParam)}`;
+    const url = `${API_URL}/api/drive/source/summary?items=${encodeURIComponent(itemsParam)}`;
     console.log('[Frontend] Summary request started. URL:', url);
     const eventSource = new EventSource(url, { withCredentials: true });
 

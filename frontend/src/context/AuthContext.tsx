@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import { API_URL } from '../config/api';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 interface User {
@@ -26,7 +27,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const { data, isLoading } = useQuery({
     queryKey: ['auth', 'me'],
     queryFn: async () => {
-      const res = await fetch('http://localhost:3000/auth/me', { credentials: 'include' });
+      const res = await fetch(`${API_URL}/auth/me`, { credentials: 'include' });
       if (!res.ok) {
         if (res.status === 401) return null;
         throw new Error('Failed to fetch user');
@@ -48,12 +49,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [data]);
 
   const login = () => {
-    window.location.href = 'http://localhost:3000/auth/login';
+    window.location.href = `${API_URL}/auth/login`;
   };
 
   const logout = async () => {
     try {
-      await fetch('http://localhost:3000/auth/logout', { method: 'POST', credentials: 'include' });
+      await fetch(`${API_URL}/auth/logout`, { method: 'POST', credentials: 'include' });
       setUser(null);
       setIsAuthenticated(false);
       queryClient.setQueryData(['auth', 'me'], null);

@@ -1,5 +1,6 @@
 import type { DriveItem } from '../types/drive';
 import type { TransferOptionsState } from '../types/transfer';
+import { API_URL } from '../config/api';
 
 export interface StartMigrationPayload {
   sourceSelection: DriveItem[];
@@ -9,7 +10,7 @@ export interface StartMigrationPayload {
 
 export const migrationApi = {
   async startMigration(payload: StartMigrationPayload) {
-    const res = await fetch('http://localhost:3000/api/migrations/start', {
+    const res = await fetch(`${API_URL}/api/migrations/start`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -31,13 +32,13 @@ export const migrationApi = {
   },
 
   async getCurrent() {
-    const res = await fetch('http://localhost:3000/api/migrations/current', { credentials: 'include' });
+    const res = await fetch(`${API_URL}/api/migrations/current`, { credentials: 'include' });
     if (!res.ok) throw new Error('Failed to fetch current migration state');
     return res.json();
   },
 
   async resume(jobId: string) {
-    const res = await fetch(`http://localhost:3000/api/migrations/${jobId}/resume`, {
+    const res = await fetch(`${API_URL}/api/migrations/${jobId}/resume`, {
       method: 'POST',
       credentials: 'include'
     });
@@ -46,7 +47,7 @@ export const migrationApi = {
   },
 
   async discard(jobId: string) {
-    const res = await fetch(`http://localhost:3000/api/migrations/${jobId}/cancel`, {
+    const res = await fetch(`${API_URL}/api/migrations/${jobId}/cancel`, {
       method: 'POST',
       credentials: 'include'
     });

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { API_URL } from '../config/api';
 import { CheckCircle2, AlertTriangle, Loader2, File as FileIcon, FolderOpen, XCircle } from 'lucide-react';
 import { MigrationLogViewer } from './MigrationLogViewer';
 
@@ -49,7 +50,7 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
   const [logs, setLogs] = useState<string[]>([]);
 
   useEffect(() => {
-    const eventSource = new EventSource(`http://localhost:3000/api/migrations/${jobId}/status`, { withCredentials: true });
+    const eventSource = new EventSource(`${API_URL}/api/migrations/${jobId}/status`, { withCredentials: true });
     
     eventSource.onmessage = (event) => {
       try {
@@ -78,7 +79,7 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
 
   const handleCancel = async () => {
     try {
-      await fetch(`http://localhost:3000/api/migrations/${jobId}/cancel`, { method: 'POST', credentials: 'include' });
+      await fetch(`${API_URL}/api/migrations/${jobId}/cancel`, { method: 'POST', credentials: 'include' });
     } catch (err) {}
   };
 

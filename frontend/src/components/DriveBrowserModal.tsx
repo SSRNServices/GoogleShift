@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { API_URL } from '../config/api';
 import { useQuery } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { 
@@ -61,7 +62,7 @@ export function DriveBrowserModal({ isOpen, onClose, type, onSelectionComplete }
       else if (viewMode === 'search') endpoint = `/api/drive/${type}/search?q=${encodeURIComponent(searchQuery)}`;
       else endpoint = `/api/drive/${type}/${viewMode}`;
 
-      const res = await fetch(`http://localhost:3000${endpoint}`, { credentials: 'include' });
+      const res = await fetch(`${API_URL}${endpoint}`, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch drive data');
       return res.json();
     },

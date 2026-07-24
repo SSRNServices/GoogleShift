@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { API_URL } from '../config/api';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { ArrowRight, HardDrive, CheckCircle2, AlertTriangle, FolderSearch } from 'lucide-react';
 import { DriveBrowserModal } from '../components/DriveBrowserModal';
@@ -27,7 +28,7 @@ function AccountSection({ title, type, onBrowseClick }: { title: string; type: '
   const { data, isLoading } = useQuery<ProfileResponse>({
     queryKey: ['auth', type],
     queryFn: async () => {
-      const res = await fetch(`http://localhost:3000/auth/${type}/profile`, { credentials: 'include' });
+      const res = await fetch(`${API_URL}/auth/${type}/profile`, { credentials: 'include' });
       if (!res.ok) {
         throw new Error('Unexpected server error');
       }
@@ -47,11 +48,11 @@ function AccountSection({ title, type, onBrowseClick }: { title: string; type: '
   const queryClient = useQueryClient();
 
   const handleConnect = () => {
-    window.location.href = `http://localhost:3000/auth/${type}`;
+    window.location.href = `${API_URL}/auth/${type}`;
   };
 
   const handleDisconnect = async () => {
-    await fetch(`http://localhost:3000/auth/${type}/logout`, { method: 'POST', credentials: 'include' });
+    await fetch(`${API_URL}/auth/${type}/logout`, { method: 'POST', credentials: 'include' });
     queryClient.invalidateQueries({ queryKey: ['auth', type] });
   };
 
