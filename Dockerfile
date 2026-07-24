@@ -7,6 +7,11 @@ COPY backend/package*.json ./backend/
 
 # Move into backend to run install
 WORKDIR /app/backend
+
+# Copy Prisma schema and config required by postinstall hook
+COPY backend/prisma ./prisma/
+COPY backend/prisma.config.ts ./
+
 RUN npm ci
 
 # Copy the rest of the backend source
