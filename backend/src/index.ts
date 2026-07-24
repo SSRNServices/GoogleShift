@@ -54,10 +54,11 @@ const PORT = Number(process.env.PORT) || 3000;
 
 const allowedOrigins = [
   'http://localhost:5173',
-  'https://migration.ssrnservices.in',
-  'https://admin.ssrnservices.in'
+  'http://127.0.0.1:5173',
+  'https://migration.ssrnservices.in'
 ];
-if (process.env.FRONTEND_URL) {
+
+if (process.env.FRONTEND_URL && !allowedOrigins.includes(process.env.FRONTEND_URL)) {
   allowedOrigins.push(process.env.FRONTEND_URL);
 }
 

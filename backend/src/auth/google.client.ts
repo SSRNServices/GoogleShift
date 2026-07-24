@@ -8,7 +8,10 @@ export class GoogleClientManager {
   public getClient(): OAuth2Client {
     const clientId = process.env.GOOGLE_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-    const redirectUri = process.env.GOOGLE_DRIVE_REDIRECT_URI || 'http://localhost:3000/auth/google/callback';
+    const isProd = process.env.NODE_ENV === 'production';
+    const redirectUri = isProd
+      ? 'https://api.migration.ssrnservices.in/auth/google/callback'
+      : 'http://localhost:3000/auth/google/callback';
 
     return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
   }

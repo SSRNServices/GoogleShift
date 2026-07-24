@@ -16,10 +16,14 @@ router.get('/login', passport.authenticate('google', {
   session: false
 }));
 
+const getFrontendUrl = () => process.env.NODE_ENV === 'production' 
+  ? 'https://migration.ssrnservices.in' 
+  : 'http://localhost:5173';
+
 router.get('/login/callback', 
-  passport.authenticate('google', { failureRedirect: process.env.FRONTEND_URL || 'http://localhost:5173', session: false }),
+  passport.authenticate('google', { failureRedirect: getFrontendUrl(), session: false }),
   (req, res) => {
-    if (!req.user) return res.redirect((process.env.FRONTEND_URL || 'http://localhost:5173') + '/');
+    if (!req.user) return res.redirect(getFrontendUrl() + '/');
     
     const user: any = req.user;
     const token = jwt.sign(
@@ -36,7 +40,7 @@ router.get('/login/callback',
       maxAge: 7 * 24 * 60 * 60 * 1000
     });
     
-    res.redirect((process.env.FRONTEND_URL || 'http://localhost:5173') + '/dashboard');
+    res.redirect(getFrontendUrl() + '/dashboard');
   }
 );
 

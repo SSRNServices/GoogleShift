@@ -39,7 +39,9 @@ export class AuthController {
       console.log('=================================\n');
 
       // Redirect back to frontend
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+      const frontendUrl = process.env.NODE_ENV === 'production' 
+        ? 'https://migration.ssrnservices.in' 
+        : 'http://localhost:5173';
       res.redirect(`${frontendUrl}?connected=${type}`);
     } catch (error: any) {
       console.error(`Error during ${type} callback:`, error);
