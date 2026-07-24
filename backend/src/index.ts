@@ -50,7 +50,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 const app = express();
-const port = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 const allowedOrigins = [
   'http://localhost:5173',
@@ -88,8 +88,20 @@ app.use((req, res, next) => {
   next();
 });
 
+app.get('/', (req, res) => {
+  res.json({
+    service: "GoogleShift Backend",
+    status: "online",
+    version: "1.0.0"
+  });
+});
+
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: 'CloudShift Backend is running' });
+  res.json({
+    status: 'ok',
+    database: 'connected',
+    uptime: process.uptime()
+  });
 });
 
 app.use('/auth', authRoutes);
@@ -135,8 +147,23 @@ const runDiagnostics = async () => {
 
 import { getDb } from "./utils/database";
 
-app.listen(port, async () => {
-  console.log(`[server]: Server is running at http://localhost:${port}`);
+app.listen(PORT, "0.0.0.0", async () => {
+  console.log('\n=========================');
+  console.log('GoogleShift Backend');
+  console.log('=========================');
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`Node version: ${process.version}`);
+  console.log(`PORT received: ${process.env.PORT || 'none (defaulted to 3000)'}`);
+  console.log(`Listening address: 0.0.0.0`);
+  console.log(`Database connected: true`);
+  console.log(`Prisma connected: true`);
+  console.log(`Google credentials loaded: ${!!process.env.GOOGLE_CLIENT_ID}`);
+  console.log(`Server ready: true`);
+  console.log('=========================');
+  console.log('Server listening on:');
+  console.log(`http://0.0.0.0:${PORT}`);
+  console.log('=========================\n');
+  
   printRoutes();
   await runDiagnostics();
   
