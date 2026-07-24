@@ -14,12 +14,13 @@ const sessionConfig = {
     tableName: 'session'
   }),
   secret: process.env.SESSION_SECRET || 'super_secret_fallback',
-  resave: false,
-  saveUninitialized: false,
+  resave: true,
+  saveUninitialized: true,
   proxy: true, // required for secure cookies behind proxy
   cookie: {
     secure: true, // force secure cookies for cross-origin
     sameSite: 'none' as const, // required for cross-origin
+    domain: '.migration.ssrnservices.in', // explicitly allow frontend and backend
     httpOnly: true,
     maxAge: 1000 * 60 * 60 * 24 * 7 // 1 week
   }
