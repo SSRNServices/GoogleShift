@@ -22,22 +22,20 @@ const pool = new Pool({
 
 const adapter = new PrismaPg(pool);
 
-const prismaClient = global.prisma ?? new PrismaClient({ adapter });
+export const prisma = global.prisma ?? new PrismaClient({ adapter });
 
 if (process.env.NODE_ENV !== 'production') {
-  global.prisma = prismaClient;
+  global.prisma = prisma;
 }
 
-export { prismaClient as prisma };
-
 process.on('SIGINT', async () => {
-  await prismaClient.$disconnect();
+  await prisma.$disconnect();
   await pool.end();
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
-  await prismaClient.$disconnect();
+  await prisma.$disconnect();
   await pool.end();
   process.exit(0);
 });
