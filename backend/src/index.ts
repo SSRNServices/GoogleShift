@@ -82,11 +82,20 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 app.use((req, res, next) => {
+  console.log(`\n[Request] ${req.method} ${req.url}`);
+  console.log("Incoming Cookie:", req.headers.cookie);
+  
   const start = Date.now();
-  res.on('finish', () => {
+  
+  const originalEnd = res.end;
+  res.end = function (chunk?: any, encoding?: any, cb?: any) {
+    console.log("Outgoing Set-Cookie:", res.getHeader("Set-Cookie"));
     const duration = Date.now() - start;
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} ${res.statusCode} - ${duration}ms`);
-  });
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} ${res.statusCode} - ${duration}ms\n`);
+    // @ts-ignore
+    return originalEnd.apply(this, arguments);
+  };
+  
   next();
 });
 

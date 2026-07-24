@@ -66,8 +66,21 @@ router.get('/google/callback', (req, res, next) => {
       maxAge: 7 * 24 * 60 * 60 * 1000
     });
     
-    console.log('[Auth] Set-Cookie header generated successfully');
-    res.redirect(getFrontendUrl() + '/dashboard');
+    console.log("=== CALLBACK FORENSICS ===");
+    console.log("req.user exists:", !!req.user);
+    console.log("req.session exists:", !!req.session);
+    console.log("req.sessionID:", req.sessionID);
+    console.log("req.isAuthenticated():", req.isAuthenticated ? req.isAuthenticated() : false);
+    console.log("res.getHeader('Set-Cookie'):", res.getHeader("Set-Cookie"));
+    console.log("===========================");
+    
+    if (req.session && typeof req.session.save === 'function') {
+      req.session.save(() => {
+        res.redirect(getFrontendUrl() + '/dashboard');
+      });
+    } else {
+      res.redirect(getFrontendUrl() + '/dashboard');
+    }
   })(req, res, next);
 });
 

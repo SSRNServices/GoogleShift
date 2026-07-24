@@ -3,10 +3,12 @@ import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import { getUserById, getUserByGoogleId, createUser } from '../utils/database';
 
 passport.serializeUser((user: any, done) => {
+  console.log("serializeUser", user);
   done(null, user.id);
 });
 
 passport.deserializeUser(async (id: string, done) => {
+  console.log("deserializeUser", id);
   try {
     const user = await getUserById(id);
     done(null, user);
