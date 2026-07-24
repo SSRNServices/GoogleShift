@@ -18,6 +18,7 @@
     "@prisma/client": "^7.9.0",
     "@types/passport": "^1.0.17",
     "@types/passport-google-oauth20": "^2.0.17",
+    "connect-pg-simple": "^10.0.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
@@ -33,6 +34,7 @@
     "uuid": "^14.0.1"
   },
   "devDependencies": {
+    "@types/connect-pg-simple": "^7.0.3",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",

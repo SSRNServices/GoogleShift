@@ -50,6 +50,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = Number(process.env.PORT) || 3000;
 
 const allowedOrigins = [
