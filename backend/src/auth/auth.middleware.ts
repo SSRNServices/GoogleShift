@@ -5,35 +5,20 @@ import jwt from 'jsonwebtoken';
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_for_development';
 
 export const requireUserAuth = (req: Request, res: Response, next: NextFunction) => {
-  const token = req.cookies?.auth_token;
-  if (!token) {
-    console.log('[Auth] Cookie exists: false');
-    return res.status(401).json({ authenticated: false, error: 'Unauthorized', message: 'You must be logged in.' });
-  }
+  console.log('[Auth Middleware] Checking req.isAuthenticated():', req.isAuthenticated ? req.isAuthenticated() : false);
   
-  console.log('[Auth] Cookie exists: true');
-  
-  try {
-    const payload = jwt.verify(token, JWT_SECRET) as any;
-    console.log('[Auth] JWT verified: true');
-    console.log('[Auth] User loaded: true');
-    
-    req.user = payload;
+  if (req.isAuthenticated && req.isAuthenticated()) {
+    const user: any = req.user;
     
     // Disallow pending users
-    if (payload.status === 'PENDING') {
+    if (user.status === 'PENDING') {
       return res.status(403).json({ error: 'Forbidden', message: 'Your account is pending administrator approval.' });
     }
     
-    next();
-  } catch (err: any) {
-    if (err.name === 'TokenExpiredError') {
-      console.log('[Auth] JWT expired: true');
-    } else {
-      console.log('[Auth] JWT invalid: true');
-    }
-    res.status(401).json({ authenticated: false, error: 'Unauthorized', message: 'Invalid or expired session.' });
+    return next();
   }
+  
+  return res.status(401).json({ authenticated: false, error: 'Unauthorized', message: 'You must be logged in.' });
 };
 
 export const requireAdmin = (req: Request, res: Response, next: NextFunction) => {

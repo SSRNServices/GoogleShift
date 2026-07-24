@@ -22,7 +22,7 @@ router.get('/login', (req, res, next) => {
   console.log('================================\n');
   passport.authenticate('google', {
     scope: ['openid', 'profile', 'email'],
-    session: false
+    session: true
   })(req, res, next);
 });
 
@@ -49,67 +49,65 @@ router.get('/google/callback', (req, res, next) => {
   }
 
   // Otherwise, it's a Passport login flow
-  passport.authenticate('google', { failureRedirect: getFrontendUrl(), session: false }, (err, user) => {
-    if (err || !user) return res.redirect(getFrontendUrl() + '/');
-    
-    const userTyped: any = user;
-    const token = jwt.sign(
-      { id: userTyped.id, email: userTyped.email, role: userTyped.role, status: userTyped.status },
-      JWT_SECRET,
-      { expiresIn: '7d' }
-    );
-    
-    res.cookie('auth_token', token, {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'none',
-      maxAge: 7 * 24 * 60 * 60 * 1000
-    });
-    
+  passport.authenticate('google', { failureRedirect: getFrontendUrl(), session: true }, (err, user) => {
     console.log("=== CALLBACK FORENSICS ===");
-    console.log("req.user exists:", !!req.user);
-    console.log("req.session exists:", !!req.session);
-    console.log("req.sessionID:", req.sessionID);
-    console.log("req.isAuthenticated():", req.isAuthenticated ? req.isAuthenticated() : false);
-    console.log("res.getHeader('Set-Cookie'):", res.getHeader("Set-Cookie"));
-    console.log("===========================");
+    console.log("Passport err:", err);
+    console.log("Passport user:", user);
     
-    if (req.session && typeof req.session.save === 'function') {
-      req.session.save(() => {
-        res.redirect(getFrontendUrl() + '/dashboard');
-      });
-    } else {
-      res.redirect(getFrontendUrl() + '/dashboard');
+    if (err || !user) {
+      console.log("Authentication failed! Redirecting to /");
+      return res.redirect(getFrontendUrl() + '/');
     }
+    
+    req.login(user, (loginErr) => {
+      console.log("req.login() executed");
+      if (loginErr) {
+        console.error("req.login() error:", loginErr);
+        return res.redirect(getFrontendUrl() + '/');
+      }
+      
+      console.log("req.user exists:", !!req.user);
+      console.log("req.session exists:", !!req.session);
+      console.log("req.sessionID:", req.sessionID);
+      console.log("req.isAuthenticated():", req.isAuthenticated());
+      console.log("===========================");
+      
+      if (req.session && typeof req.session.save === 'function') {
+        req.session.save(() => {
+          res.redirect(getFrontendUrl() + '/dashboard');
+        });
+      } else {
+        res.redirect(getFrontendUrl() + '/dashboard');
+      }
+    });
   })(req, res, next);
 });
 
 router.get('/me', (req, res) => {
-  const token = req.cookies?.auth_token;
-  if (!token) {
-    console.log('[Auth] Cookie exists: false');
+  console.log('[Auth /me] Cookie exists:', !!req.headers.cookie);
+  console.log('[Auth /me] Session ID:', req.sessionID);
+  console.log('[Auth /me] Is Authenticated:', req.isAuthenticated());
+  
+  if (!req.isAuthenticated() || !req.user) {
     return res.status(401).json({ authenticated: false });
   }
   
-  console.log('[Auth] Cookie exists: true');
-  try {
-    const payload = jwt.verify(token, JWT_SECRET);
-    console.log('[Auth] JWT verified: true');
-    console.log('[Auth] User loaded: true');
-    res.status(200).json({ authenticated: true, user: payload });
-  } catch (err: any) {
-    if (err.name === 'TokenExpiredError') {
-      console.log('[Auth] JWT expired: true');
-    } else {
-      console.log('[Auth] JWT invalid: true');
-    }
-    res.status(401).json({ authenticated: false });
-  }
+  res.status(200).json({ authenticated: true, user: req.user });
 });
 
 router.post('/logout', (req, res) => {
-  res.clearCookie('auth_token');
-  res.json({ success: true });
+  req.logout((err) => {
+    if (err) console.error("Logout error:", err);
+    if (req.session && typeof req.session.destroy === 'function') {
+      req.session.destroy(() => {
+        res.clearCookie('connect.sid');
+        res.json({ success: true });
+      });
+    } else {
+      res.clearCookie('connect.sid');
+      res.json({ success: true });
+    }
+  });
 });
 
 // --- EXISTING DRIVE AUTH ROUTES ---
