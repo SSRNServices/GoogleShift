@@ -1,176 +1,236 @@
 import { drive_v3 } from 'googleapis';
-import { ManifestStorage, ManifestItem } from '../utils/ManifestStorage';
-import { RetryHelper } from '../utils/retry';
+import { ManifestItem } from '../utils/ManifestStorage';
 import { AdaptiveRateLimiter } from './AdaptiveRateLimiter';
-import { ProgressAggregator } from './ProgressAggregator';
-import { getDb, saveCheckpoint, getCheckpoint } from '../utils/database';
+import { MigrationStateManager } from '../services/MigrationStateManager';
+import { getCheckpoint, saveCheckpoint } from '../utils/database';
+import { PassThrough, pipeline } from 'stream';
+import { promisify } from 'util';
+import { DownloadError, UploadError, VerifyError, StateError } from '../utils/errors';
+import { MigrationConfig } from './types';
+
+const streamPipeline = promisify(pipeline);
 
 export class UploadWorker {
-  private id: number;
+  public id: number;
   private sourceDrive: drive_v3.Drive;
   private destDrive: drive_v3.Drive;
   private rateLimiter: AdaptiveRateLimiter;
-  private progress: ProgressAggregator;
+  private stateManager: MigrationStateManager;
   private jobId: string;
   private options: any;
-  private isBusy: boolean = false;
   private folderCache: Map<string, string>;
+  private config: MigrationConfig;
+  
+  public affinity: string = 'MEDIUM';
+  public isBusy: boolean = false;
+  public isDead: boolean = false;
+  public currentFile: string | null = null;
+  public currentItem: ManifestItem | null = null;
+  public startedAt: number = 0;
+  public lastActivity: number = 0;
+  
+  private controller: AbortController | null = null;
 
-  constructor(id: number, jobId: string, sourceDrive: drive_v3.Drive, destDrive: drive_v3.Drive, rateLimiter: AdaptiveRateLimiter, progress: ProgressAggregator, options: any, folderCache: Map<string, string>) {
+  constructor(
+    id: number,
+    jobId: string,
+    sourceDrive: drive_v3.Drive,
+    destDrive: drive_v3.Drive,
+    rateLimiter: AdaptiveRateLimiter,
+    stateManager: MigrationStateManager,
+    options: any,
+    folderCache: Map<string, string>,
+    config: MigrationConfig
+  ) {
     this.id = id;
     this.jobId = jobId;
     this.sourceDrive = sourceDrive;
     this.destDrive = destDrive;
     this.rateLimiter = rateLimiter;
-    this.progress = progress;
+    this.stateManager = stateManager;
     this.options = options;
     this.folderCache = folderCache;
+    this.config = config;
   }
 
-  public get isIdle() { return !this.isBusy; }
+  public get isIdle() { return !this.isBusy && !this.isDead; }
 
-  public async processFile(item: ManifestItem) {
+  public abort() {
+     if (this.controller) this.controller.abort();
+  }
+
+  public async processFile(item: ManifestItem, releaseWorker: (workerId: number) => void, retryJob: (item: ManifestItem) => void) {
     this.isBusy = true;
+    this.currentFile = item.name;
+    this.currentItem = item;
+    this.startedAt = Date.now();
+    this.lastActivity = Date.now();
+    
+    console.log(`[Worker ${this.id}] STARTED | Bucket: ${this.affinity} | File: ${item.name} | Size: ${item.size}`);
+    
+    this.controller = new AbortController();
+
     try {
-      await this.uploadFile(item);
+      await this.uploadFile(item, this.controller);
     } catch (e: any) {
-      console.error(`\n[UPLOAD ERROR] Worker: ${this.id}`);
-      console.error(`File: ${item.name} (${item.sourceId})`);
-      console.error(`Message: ${e.message}`);
-      if (e.response) {
-        console.error(`Status: ${e.response.status}`);
-        console.error(`Headers: ${JSON.stringify(e.response.headers)}`);
-        console.error(`Data: ${JSON.stringify(e.response.data)}`);
+      if (e.name === 'AbortError' || e.message === 'The operation was aborted' || e.type === 'aborted') {
+         console.log(`[Worker ${this.id}] CANCELLED | File: ${item.name} | Reason: Aborted by timeout or cancellation`);
+         retryJob(item);
+      } else {
+         console.error(`[Worker ${this.id}] FAILED | File: ${item.name} | Error: ${e.message}`);
+         if (e.response && e.response.status === 429) this.rateLimiter.reportRateLimit();
+         
+         const { eventBus } = await import('./EventBus');
+         eventBus.emitEvent({ type: 'UploadFailed', jobId: this.jobId, sourceId: item.id, error: e.message });
+         
+         retryJob(item);
       }
-      console.error(`Stack: ${e.stack}\n`);
-      
-      const { eventBus } = await import('./EventBus');
-      eventBus.emitEvent({ type: 'UploadFailed', jobId: this.jobId, sourceId: item.id, error: e.message });
-      
-      this.progress.reportFileFailed();
     } finally {
+      this.controller = null;
+      this.currentFile = null;
+      this.currentItem = null;
       this.isBusy = false;
+      releaseWorker(this.id);
     }
   }
 
-  private async uploadFile(item: ManifestItem) {
+  private async uploadFile(item: ManifestItem, controller: AbortController) {
     let destParentId = item.destParentId;
-    
     if (!destParentId) {
-      if (item.sourceParentId === 'root') {
-         destParentId = this.folderCache.get('root_dest');
-      } else {
-         destParentId = this.folderCache.get(item.sourceParentId);
-      }
-      
-      if (!destParentId) {
-         console.log(`[Worker ${this.id}] Skipped file ${item.name} because parent mapping is missing in cache.`);
-         const { eventBus } = await import('./EventBus');
-         eventBus.emitEvent({ type: 'UploadFailed', jobId: this.jobId, sourceId: item.id, error: 'Parent mapping missing in cache' });
-         this.progress.reportFileFailed();
-         return;
-      }
+      destParentId = this.folderCache.get(item.sourceParentId === 'root' ? 'root_dest' : item.sourceParentId);
+      if (!destParentId) throw new Error('Parent mapping missing in cache');
     }
 
-    // Checkpoint check
     const cp = await getCheckpoint(this.jobId, 'file', destParentId, item.sourceId);
     if (cp === 'completed' || cp === 'skipped') {
-       console.log(`[Worker ${this.id}] Resumed past completed file: ${item.name}`);
-       const { eventBus } = await import('./EventBus');
-       eventBus.emitEvent({ type: 'UploadFinished', jobId: this.jobId, sourceId: item.id, bytes: item.size });
-       return; // Already accounted for in progress totals on boot
+       await this.stateManager.commitSuccess(item);
+       return; 
     }
 
-    console.log(`[FILE_STARTED] Worker: ${this.id} | File: ${item.name} | Source ID: ${item.sourceId} | Destination Parent: ${destParentId}`);
+    this.lastActivity = Date.now();
+    let targetMimeType = item.mimeType;
+    let exportMimeType: string | null = null;
+    let downloadRes: any;
 
-    await RetryHelper.withRetry(`Upload ${item.name}`, async () => {
-      let mediaBody: any;
-      let targetMimeType = item.mimeType;
-      let exportMimeType: string | null = null;
+    // Is it a Google Workspace Doc?
+    if (item.mimeType.startsWith('application/vnd.google-apps.')) {
+      if (item.mimeType === 'application/vnd.google-apps.document') {
+        exportMimeType = this.options.transferDocsAsPdf ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+        targetMimeType = this.options.transferDocsAsPdf ? 'application/pdf' : item.mimeType;
+      } else if (item.mimeType === 'application/vnd.google-apps.spreadsheet') {
+        exportMimeType = this.options.transferDocsAsPdf ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+        targetMimeType = this.options.transferDocsAsPdf ? 'application/pdf' : item.mimeType;
+      } else if (item.mimeType === 'application/vnd.google-apps.presentation') {
+        exportMimeType = this.options.transferDocsAsPdf ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+        targetMimeType = this.options.transferDocsAsPdf ? 'application/pdf' : item.mimeType;
+      }
 
-      if (item.mimeType.startsWith('application/vnd.google-apps.')) {
-        if (item.mimeType === 'application/vnd.google-apps.document') {
-          exportMimeType = this.options.transferDocsAsPdf ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-          targetMimeType = this.options.transferDocsAsPdf ? 'application/pdf' : item.mimeType;
-        } else if (item.mimeType === 'application/vnd.google-apps.spreadsheet') {
-          exportMimeType = this.options.transferDocsAsPdf ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-          targetMimeType = this.options.transferDocsAsPdf ? 'application/pdf' : item.mimeType;
-        } else if (item.mimeType === 'application/vnd.google-apps.presentation') {
-          exportMimeType = this.options.transferDocsAsPdf ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
-          targetMimeType = this.options.transferDocsAsPdf ? 'application/pdf' : item.mimeType;
-        }
-
-        if (exportMimeType) {
-          console.log(`[FILE_PROGRESS] Download Started (Export) for ${item.name}`);
-          const res = await this.sourceDrive.files.export({ fileId: item.sourceId, mimeType: exportMimeType }, { responseType: 'stream' });
-          mediaBody = res.data;
-          console.log(`[FILE_PROGRESS] Download Finished (Export) for ${item.name}`);
-        } else {
-          console.log(`[Worker ${this.id}] Skipped unsupported file type: ${item.name}`);
-          await saveCheckpoint(this.jobId, 'file', destParentId!, item.sourceId, 'skipped');
-          return;
-        }
+      if (exportMimeType) {
+        downloadRes = await this.sourceDrive.files.export({ fileId: item.sourceId, mimeType: exportMimeType }, { responseType: 'stream', signal: controller.signal });
       } else {
-        console.log(`[FILE_PROGRESS] Download Started for ${item.name}`);
-        const res = await this.sourceDrive.files.get({ fileId: item.sourceId, alt: 'media' }, { responseType: 'stream' });
-        mediaBody = res.data;
-        console.log(`[FILE_PROGRESS] Download Finished for ${item.name}`);
+        await saveCheckpoint(this.jobId, 'file', destParentId!, item.sourceId, 'skipped');
+        await this.stateManager.commitSuccess(item);
+        return;
       }
+    } else {
+      downloadRes = await this.sourceDrive.files.get({ fileId: item.sourceId, alt: 'media' }, { responseType: 'stream', signal: controller.signal });
+    }
 
-      if (this.options.skipExisting) {
-        const existingRes = await this.destDrive.files.list({
-          q: `name = '${item.name.replace(/'/g, "\\'")}' and '${destParentId}' in parents and trashed = false`,
-          fields: 'files(id)'
-        });
-        if (existingRes.data.files && existingRes.data.files.length > 0) {
-          console.log(`[Worker ${this.id}] Skipped existing file: ${item.name}`);
-          await saveCheckpoint(this.jobId, 'file', destParentId!, item.sourceId, 'skipped');
-          return;
-        }
-      }
+    // Wrap download stream to track bytes
+    const pt = new PassThrough({ highWaterMark: this.config.streamBufferSize });
+    let lastTime = Date.now();
+    let bytesSinceLast = 0;
+    
+    pt.on('data', (chunk: Buffer) => {
+       this.lastActivity = Date.now();
+       bytesSinceLast += chunk.length;
+       const now = Date.now();
+       if (now - lastTime > 1000) {
+          const speed = (bytesSinceLast / (now - lastTime)) * 1000;
+          this.rateLimiter.reportBandwidth(speed);
+          lastTime = now;
+          bytesSinceLast = 0;
+       }
+    });
 
-      console.log(`[FILE_PROGRESS] Uploading:\nFile name: ${item.name}\nSource ID: ${item.sourceId}\nDestination folder ID: ${destParentId}\nMime type: ${targetMimeType}\nSize: ${item.size}`);
-      
-      const createRes = await this.destDrive.files.create({
-        requestBody: {
-          name: item.name,
-          parents: [destParentId!],
-          mimeType: targetMimeType
-        },
-        media: {
-          body: mediaBody
-        },
-        fields: 'id, parents, name, mimeType'
-      });
+    // We do NOT await pipeline here immediately, we await it inside the upload to run concurrently.
+    const pipelinePromise = streamPipeline(downloadRes.data, pt, { signal: controller.signal });
 
-      console.log(`[FILE_PROGRESS] Google Response for ${item.name}:\nID: ${createRes.data.id}\nParents: ${createRes.data.parents?.join(',')}\nName: ${createRes.data.name}\nMimeType: ${createRes.data.mimeType}`);
+    await this.stateManager.updateState(item.id, 'UPLOADING');
+    let uploadedFileId: string;
 
-      if (!createRes.data.id) {
-         throw new Error(`Google Drive API returned success but no file ID was provided in the response.`);
-      }
+    // Resumable Upload (fetch) for >20MB files
+    const MB = 1024 * 1024;
+    const isLarge = item.size !== undefined && item.size > 20 * MB;
 
-      // End-to-End validation check
-      console.log(`[FILE_PROGRESS] Validating ${item.name} existence in Drive...`);
-      const verifyRes = await this.destDrive.files.get({
-        fileId: createRes.data.id,
-        fields: 'id'
-      });
-      
-      if (!verifyRes.data.id) {
-         throw new Error(`Google Drive API created file, but validation fetch failed to find it.`);
-      }
+    if (isLarge && !exportMimeType) {
+       // Direct Fetch Resumable
+       const authContext = (this.destDrive as any).context._options.auth;
+       const accessToken = (await authContext.getAccessToken()).token;
+       
+       const initRes = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', {
+          method: 'POST',
+          headers: {
+             'Authorization': `Bearer ${accessToken}`,
+             'Content-Type': 'application/json',
+             'X-Upload-Content-Type': targetMimeType
+          },
+          body: JSON.stringify({ name: item.name, parents: [destParentId!], mimeType: targetMimeType }),
+          signal: controller.signal
+       });
+       
+       if (!initRes.ok) throw new UploadError(`Failed to initialize resumable session: ${initRes.status}`);
+       const location = initRes.headers.get('location');
+       if (!location) throw new UploadError(`No location header in resumable init`);
 
-      console.log(`[FILE_FINISHED] Google Upload Completed | Destination File ID: ${createRes.data.id}`);
-      
-      await saveCheckpoint(this.jobId, 'file', destParentId!, item.sourceId, 'completed');
-    }, (msg) => { console.log(msg); }, () => this.rateLimiter.reportRateLimit());
+       const uploadRes = await fetch(location, {
+          method: 'PUT',
+          headers: { 'Content-Length': item.size.toString() },
+          body: pt as any, // Node 18 fetch supports Readable/PassThrough via standard streams but might need duplex:'half'
+          duplex: 'half',
+          signal: controller.signal
+       } as any);
+
+       if (!uploadRes.ok) throw new UploadError(`Upload failed with status: ${uploadRes.status}`);
+       const data = await uploadRes.json();
+       uploadedFileId = data.id;
+    } else {
+       // Standard googleapis for small files and docs exports
+       const createRes = await this.destDrive.files.create({
+          requestBody: { name: item.name, parents: [destParentId!], mimeType: targetMimeType },
+          media: { body: pt },
+          fields: 'id'
+       }, { signal: controller.signal, timeout: 24 * 60 * 60 * 1000 });
+       
+       if (!createRes.data.id) throw new UploadError('No ID returned from create');
+       uploadedFileId = createRes.data.id;
+    }
+
+    // Ensure pipeline succeeds
+    await pipelinePromise;
+
+    // Asynchronous Verification
+    await this.stateManager.updateState(item.id, 'VERIFYING');
+    
+    (async () => {
+       try {
+         const verifyRes = await this.destDrive.files.get({ fileId: uploadedFileId, fields: 'id' });
+         if (verifyRes.data.id) {
+            await saveCheckpoint(this.jobId, 'file', destParentId!, item.sourceId, 'completed');
+            await this.stateManager.commitSuccess(item);
+         } else {
+            throw new VerifyError('ID not found in verify fetch');
+         }
+       } catch (e: any) {
+         console.error(`[Worker ${this.id}] Async validation failed for ${item.name}: ${e.message}`);
+         try {
+           await this.stateManager.updateState(item.id, 'FAILED');
+         } catch(err) {
+           console.error(`[Worker ${this.id}] Failed to mark as FAILED:`, err);
+         }
+       }
+    })();
 
     this.rateLimiter.reportSuccess();
-    
-    const { eventBus } = await import('./EventBus');
-    eventBus.emitEvent({ type: 'UploadFinished', jobId: this.jobId, sourceId: item.id, bytes: item.size });
-    this.progress.reportFileCompleted(item.size, item.name);
-    
-    console.log(`[FILE_PROGRESS] Database Write Queued | Progress Updated | Worker Released`);
   }
 }

@@ -29,7 +29,7 @@ export class FolderDAG {
         name: folder.name,
         sourceParentId: folder.sourceParentId,
         destId: folder.createdDestId || null,
-        status: folder.status === 'COMPLETED' ? 'CREATED' : (folder.status === 'FAILED' ? 'FAILED' : 'WAITING'),
+        status: folder.status === 'SUCCESS' ? 'CREATED' : (folder.status === 'FAILED' ? 'FAILED' : 'WAITING'),
         depth: folder.depth,
         children: []
       });

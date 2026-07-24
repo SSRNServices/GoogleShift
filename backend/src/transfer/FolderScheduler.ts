@@ -4,7 +4,7 @@ import { RetryHelper } from '../utils/retry';
 import { AdaptiveRateLimiter } from './AdaptiveRateLimiter';
 import { FolderDAG, DAGNode } from './FolderDAG';
 import { eventBus } from './EventBus';
-import { ProgressAggregator } from './ProgressAggregator';
+import { MigrationStateManager } from '../services/MigrationStateManager';
 
 export class FolderScheduler {
   private destDrive: drive_v3.Drive;
@@ -12,15 +12,15 @@ export class FolderScheduler {
   private options: any;
   private rateLimiter: AdaptiveRateLimiter;
   private dag: FolderDAG;
-  private progress: ProgressAggregator;
+  private stateManager: MigrationStateManager;
   
-  constructor(jobId: string, rootDestId: string, destDrive: drive_v3.Drive, options: any, rateLimiter: AdaptiveRateLimiter, progress: ProgressAggregator) {
+  constructor(jobId: string, rootDestId: string, destDrive: drive_v3.Drive, options: any, rateLimiter: AdaptiveRateLimiter, stateManager: MigrationStateManager) {
     this.jobId = jobId;
     this.destDrive = destDrive;
     this.options = options;
     this.rateLimiter = rateLimiter;
     this.dag = new FolderDAG(rootDestId);
-    this.progress = progress;
+    this.stateManager = stateManager;
   }
 
   public async run() {
@@ -71,10 +71,18 @@ export class FolderScheduler {
          prevReady = readyCount;
          prevActive = activeCount;
       }
-      if (now - lastProgressTime >= 5000) {
-         console.error(`\n[FATAL] FolderScheduler Deadlock Detected! No state changes in 5 seconds.`);
+      if (now - lastProgressTime >= 30000) {
+         console.error(`\n[FATAL] FolderScheduler Deadlock Detected! No state changes in 30 seconds.`);
          console.error(`[Scheduler Status] Workers Running: ${activeCount} | Ready Queue: ${readyCount}`);
          this.dag.dumpDAG();
+         
+         // Final check: did all folders succeed anyway?
+         const pendingFolders = await ManifestStorage.getPendingFoldersByDepth(this.jobId);
+         if (pendingFolders.length === 0) {
+            console.log(`[FolderScheduler] Deadlock detector overriding fatal error: No pending folders remain. Exiting cleanly.`);
+            break;
+         }
+         
          throw new Error('FolderScheduler Deadlock');
       }
 
@@ -154,19 +162,13 @@ export class FolderScheduler {
       }
 
       // Phase 5: Atomic updates
-      // Mark as created in DAG which unlocks children
+      await this.stateManager.commitFolderSuccess(node.id, newDestFolderId);
+
+      // Mark as created in DAG which unlocks children folders
       this.dag.markCreated(node.id, newDestFolderId);
-      
-      // Update progress so deadlock detector sees it
-      this.progress.reportFolderCompleted(node.name);
-      
-      // Emit event to DatabaseWriter
-      eventBus.emitEvent({
-        type: 'FolderCreated',
-        jobId: this.jobId,
-        sourceId: node.id,
-        destId: newDestFolderId
-      });
+
+      // Queue child files in the database
+      await this.stateManager.queueChildren(node.id);
 
     } catch (e: any) {
       console.error(`\n[FOLDER ERROR]`);
@@ -178,12 +180,7 @@ export class FolderScheduler {
       }
       
       this.dag.markFailed(node.id);
-      eventBus.emitEvent({
-        type: 'FolderFailed',
-        jobId: this.jobId,
-        sourceId: node.id,
-        error: e.message
-      });
+      await this.stateManager.commitFolderError(node.id);
     } finally {
       console.log(`[EXIT] processNode() | Node: ${node.name} | Duration: ${Date.now() - pStart}ms`);
     }

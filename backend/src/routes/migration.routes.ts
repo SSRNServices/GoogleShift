@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { migrationService } from '../services/MigrationService';
-import { getDb, updateJobStatus, getJob } from '../utils/database';
+import { getDb } from "../utils/database";
+import { requireBothAuth } from '../auth/auth.middleware';
 
 const router = Router();
 
@@ -28,7 +29,7 @@ router.get('/current', async (req, res) => {
   }
 });
 
-router.post('/start', async (req, res) => {
+router.post('/start', requireBothAuth, async (req, res) => {
   console.log('[Backend] MIGRATION START RECEIVED');
   console.log('Payload:', req.body);
 
@@ -43,7 +44,7 @@ router.post('/start', async (req, res) => {
       return res.status(409).json({ error: 'Migration already running' });
     }
 
-    const job = await migrationService.startMigrationJob(req.body);
+    const job = await migrationService.startMigrationJob(req.sessionID, req.body);
     res.status(200).json(job);
   } catch (error: any) {
     console.error('Error starting migration:', error);
@@ -68,6 +69,10 @@ router.post('/:jobId/resume', async (req, res) => {
     await updateJobStatus(req.params.jobId, 'STARTING');
     
     const { migrationWorker } = await import('../services/MigrationWorker');
+    
+    // Inject the current sessionId into the job so the worker can auth
+    job.sessionId = req.sessionID;
+    
     migrationWorker.executeMigration(job).catch(err => console.error('[FATAL]', err));
 
     res.json({ success: true, status: 'starting' });
@@ -112,9 +117,13 @@ router.get('/:jobId/status', async (req, res) => {
         lastLogId = logs[logs.length - 1].id;
       }
 
+      const transferred = Math.min(job.transferredBytes, job.totalBytes);
+      const completed = Math.min(job.completedFiles, job.totalFiles);
+      const failed = job.failedFiles;
+      
       const percentage = job.totalBytes > 0 
-        ? Math.floor((job.transferredBytes / job.totalBytes) * 100)
-        : (job.totalFiles > 0 ? Math.floor((job.completedFiles / job.totalFiles) * 100) : 0);
+        ? Math.floor((transferred / job.totalBytes) * 100)
+        : (job.totalFiles > 0 ? Math.floor(((completed + failed) / job.totalFiles) * 100) : 0);
         
       const elapsed = Date.now() - job.startedAt;
       const speed = elapsed > 0 ? (job.transferredBytes / (elapsed / 1000)) : 0;
@@ -129,22 +138,26 @@ router.get('/:jobId/status', async (req, res) => {
         retryCount: job.retryCount,
         percentage: Math.min(percentage, 100),
         totalFiles: job.totalFiles,
-        completedFiles: job.completedFiles,
-        failedFiles: job.failedFiles,
+        completedFiles: completed,
+        failedFiles: failed,
         totalBytes: job.totalBytes,
-        transferredBytes: job.transferredBytes,
+        transferredBytes: transferred,
         totalFolders: job.totalFolders,
         completedFolders: job.completedFolders,
         currentFile: job.currentFile,
         currentFolder: job.currentFolder,
         lastSuccessfulFile: job.lastSuccessfulFile,
-        speedBytesPerSecond: speed,
-        remainingSeconds: remainingSeconds,
+        speedBytesPerSecond: job.currentSpeed || speed,
+        remainingSeconds: job.eta || remainingSeconds,
+        activeWorkers: job.busyWorkers,
+        pendingQueue: job.queueLength,
+        pendingDBWrites: job.pendingDBWrites || 0,
+        deadWorkers: job.deadWorkers,
         logs: logs.map(l => l.message),
         elapsed: elapsed
       })}\n\n`);
 
-      if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
+      if (job.status === 'completed' || job.status === 'completed_with_errors' || job.status === 'failed' || job.status === 'cancelled') {
         clearInterval(interval);
         res.end();
       }
@@ -157,6 +170,40 @@ router.get('/:jobId/status', async (req, res) => {
   req.on('close', () => {
     clearInterval(interval);
   });
+});
+
+router.get('/debug', async (req, res) => {
+  try {
+    const db = await getDb();
+    const job = await db.get(`
+      SELECT jobId, status, currentWorkers, idleWorkers, busyWorkers, deadWorkers, 
+             queueLength, currentSpeed, averageSpeed, retryCount, transferredBytes, 
+             completedFiles, totalFiles, totalBytes, pendingDBWrites
+      FROM migration_jobs 
+      WHERE status NOT IN ('completed', 'completed_with_errors', 'failed', 'cancelled')
+      ORDER BY startedAt DESC LIMIT 1
+    `);
+    
+    if (job) {
+      res.json({
+        jobId: job.jobId,
+        status: job.status,
+        workers: job.currentWorkers,
+        busy: job.busyWorkers,
+        idle: job.idleWorkers,
+        dead: job.deadWorkers,
+        queue: job.queueLength,
+        pendingDBWrites: job.pendingDBWrites || 0,
+        retries: job.retryCount,
+        speed: job.currentSpeed,
+        memory: process.memoryUsage()
+      });
+    } else {
+      res.json({ status: 'idle', memory: process.memoryUsage() });
+    }
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 export default router;

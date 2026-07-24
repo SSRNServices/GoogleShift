@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { driveService } from '../services/DriveService';
-import { AccountType } from '../oauth/OAuthService';
+import { AccountType } from '../auth/token.store';
+import { requireAuth } from '../auth/auth.middleware';
 
 const router = Router();
 
@@ -13,6 +14,9 @@ router.use('/:type', (req, res, next) => {
   }
   next();
 });
+
+// Protect all drive routes
+router.use('/:type', requireAuth());
 
 router.get('/:type/summary', async (req, res) => {
   const type = req.params.type as AccountType;
@@ -41,7 +45,7 @@ router.get('/:type/summary', async (req, res) => {
   };
 
   try {
-    const summary = await driveService.getSelectionSummary(type, items, onProgress);
+    const summary = await driveService.getSelectionSummary(req.sessionID, type, items, onProgress);
     res.write(`data: ${JSON.stringify({ ...summary, complete: true })}\n\n`);
   } catch (error: any) {
     console.error(`Error calculating summary for ${type}:`, error.message);
@@ -56,7 +60,7 @@ router.get('/:type/root', async (req, res) => {
   const pageToken = req.query.pageToken as string | undefined;
 
   try {
-    const data = await driveService.getRoot(type, pageToken);
+    const data = await driveService.getRoot(req.sessionID, type, pageToken);
     res.json(data);
   } catch (error: any) {
     console.error(`Error fetching root for ${type}:`, error.message);
@@ -70,7 +74,7 @@ router.get('/:type/folder/:id', async (req, res) => {
   const pageToken = req.query.pageToken as string | undefined;
 
   try {
-    const data = await driveService.getFolderContents(type, folderId, pageToken);
+    const data = await driveService.getFolderContents(req.sessionID, type, folderId, pageToken);
     res.json(data);
   } catch (error: any) {
     console.error(`Error fetching folder ${folderId}:`, error.message);
@@ -83,7 +87,7 @@ router.get('/:type/folder-info/:id', async (req, res) => {
   const folderId = req.params.id;
 
   try {
-    const data = await driveService.getFolderInfo(type, folderId);
+    const data = await driveService.getFolderInfo(req.sessionID, type, folderId);
     res.json(data);
   } catch (error: any) {
     console.error(`Error fetching folder info ${folderId}:`, error.message);
@@ -102,7 +106,7 @@ router.get('/:type/search', async (req, res) => {
   }
 
   try {
-    const data = await driveService.search(type, query, pageToken);
+    const data = await driveService.search(req.sessionID, type, query, pageToken);
     res.json(data);
   } catch (error: any) {
     console.error('Error searching drive:', error.message);
@@ -115,7 +119,7 @@ router.get('/:type/shared', async (req, res) => {
   const pageToken = req.query.pageToken as string | undefined;
 
   try {
-    const data = await driveService.getSharedWithMe(type, pageToken);
+    const data = await driveService.getSharedWithMe(req.sessionID, type, pageToken);
     res.json(data);
   } catch (error: any) {
     res.status(500).json({ error: 'Failed to fetch shared files' });
@@ -127,7 +131,7 @@ router.get('/:type/recent', async (req, res) => {
   const pageToken = req.query.pageToken as string | undefined;
 
   try {
-    const data = await driveService.getRecent(type, pageToken);
+    const data = await driveService.getRecent(req.sessionID, type, pageToken);
     res.json(data);
   } catch (error: any) {
     res.status(500).json({ error: 'Failed to fetch recent files' });
@@ -139,7 +143,7 @@ router.get('/:type/starred', async (req, res) => {
   const pageToken = req.query.pageToken as string | undefined;
 
   try {
-    const data = await driveService.getStarred(type, pageToken);
+    const data = await driveService.getStarred(req.sessionID, type, pageToken);
     res.json(data);
   } catch (error: any) {
     res.status(500).json({ error: 'Failed to fetch starred files' });
@@ -161,7 +165,7 @@ router.post('/:type/create-folder', async (req, res) => {
   }
 
   try {
-    const data = await driveService.createFolder(type, name, parentId);
+    const data = await driveService.createFolder(req.sessionID, type, name, parentId);
     res.json(data);
   } catch (error: any) {
     console.error('Error creating folder:', error.message);

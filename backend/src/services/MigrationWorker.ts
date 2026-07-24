@@ -1,11 +1,10 @@
-import { getDb, updateJobProgress, logJobEvent } from '../utils/database';
+import { getDb } from "../utils/database";
 import { NetworkHeartbeat } from '../utils/NetworkHeartbeat';
 import { NetworkClient } from '../transfer/NetworkClient';
 import { FolderScheduler } from '../transfer/FolderScheduler';
 import { FileScheduler } from '../transfer/FileScheduler';
 import { AdaptiveRateLimiter } from '../transfer/AdaptiveRateLimiter';
-import { ProgressAggregator } from '../transfer/ProgressAggregator';
-import { DatabaseWriter } from '../transfer/DatabaseWriter';
+import { MigrationStateManager } from '../services/MigrationStateManager';
 import { DEFAULT_MIGRATION_CONFIG } from '../transfer/types';
 
 import { MigrationJob } from '../transfer/types';
@@ -29,52 +28,19 @@ export class MigrationWorker {
         SUM(CASE WHEN isFolder = 0 THEN 1 ELSE 0 END) as completedFiles,
         SUM(CASE WHEN isFolder = 0 THEN size ELSE 0 END) as transferredBytes
       FROM migration_manifest 
-      WHERE jobId = ? AND status = 'COMPLETED'
+      WHERE jobId = ? AND status = 'SUCCESS'
     `, [job.jobId]);
 
-    const progress = new ProgressAggregator(job.jobId, {
-      totalFolders: job.totalFolders || 0,
-      totalFiles: job.totalFiles || 0,
-      totalBytes: job.totalBytes || 0,
-      completedFolders: completedStats?.completedFolders || 0,
-      completedFiles: completedStats?.completedFiles || 0,
-      transferredBytes: completedStats?.transferredBytes || 0,
-      failedFiles: job.failedFiles || 0,
-      lastSuccessfulFile: job.lastSuccessfulFile || '',
-    }, DEFAULT_MIGRATION_CONFIG.progressInterval, DEFAULT_MIGRATION_CONFIG.resumeInterval);
-
-    // Watchdog for deadlock detection (30 seconds)
-    let lastTransferred = -1;
-    let stuckCycles = 0;
-    const watchdog = setInterval(() => {
-      const metrics = progress.getMetrics();
-      if (lastTransferred === metrics.transferredBytes + metrics.completedFolders + metrics.completedFiles) {
-        stuckCycles++;
-        if (stuckCycles >= 6) { // 30 seconds
-          console.error(`\n[DEADLOCK DETECTED] Migration ${job.jobId} has been stuck for 30 seconds.`);
-          console.error(`Active state dump:`);
-          console.error(`Busy Workers: ${metrics.busyWorkers}`);
-          console.error(`Queue Length: ${metrics.queueLength}`);
-          console.error(`Completed: Folders ${metrics.completedFolders}, Files ${metrics.completedFiles}`);
-          console.error(`Pending items not advancing.`);
-          
-          logJobEvent(job.jobId, `[STATE] FAILED - Deadlock detected. Workers: ${metrics.busyWorkers}, Queue: ${metrics.queueLength}`);
-          updateJobProgress(job.jobId, { status: 'failed' });
-          
-          clearInterval(watchdog);
-          process.exit(1); // Force crash to allow pm2 or docker to restart, or just throw.
-        }
-      } else {
-        stuckCycles = 0;
-        lastTransferred = metrics.transferredBytes + metrics.completedFolders + metrics.completedFiles;
-      }
-    }, 5000);
+    const stateManager = new MigrationStateManager(job.jobId);
 
     try {
-      progress.start();
 
-      const sourceDrive = NetworkClient.getDriveClient('source');
-      const destDrive = NetworkClient.getDriveClient('destination');
+      if (!job.sessionId) {
+        throw new Error('Missing session ID for migration job');
+      }
+      
+      const sourceDrive = await NetworkClient.getDriveClient(job.sessionId, 'source');
+      const destDrive = await NetworkClient.getDriveClient(job.sessionId, 'destination');
       const rateLimiter = new AdaptiveRateLimiter(DEFAULT_MIGRATION_CONFIG.workerCount, 2, 20);
 
       const actualDestId = destinationFolder.id === 'root' ? 'root' : destinationFolder.id;
@@ -83,27 +49,19 @@ export class MigrationWorker {
       // Seed root folder
       await ManifestStorage.updateDestParentId(job.jobId, 'root', actualDestId);
 
-      // Start database writer
-      const dbWriter = new DatabaseWriter(job.jobId);
-
       // Phase 1: Folders
       console.log(`\n[STATE] CREATING_FOLDERS\nMigration: ${job.jobId}\nReason: Folder Scheduler Initiated`);
       await logJobEvent(job.jobId, `[STATE] CREATING_FOLDERS`);
       await updateJobProgress(job.jobId, { status: 'creating_tree' });
-      const folderScheduler = new FolderScheduler(job.jobId, actualDestId, destDrive, options, rateLimiter, progress);
+      const folderScheduler = new FolderScheduler(job.jobId, actualDestId, destDrive, options, rateLimiter, stateManager);
       const phase1Start = Date.now();
       await folderScheduler.run();
       console.log(`[EXIT] FolderScheduler.run() | Duration: ${Date.now() - phase1Start}ms`);
 
-      // Ensure all DB writes from folder creation are committed
-      const drainStart = Date.now();
-      await dbWriter.drain();
-      console.log(`[EXIT] DatabaseWriter.drain() | Duration: ${Date.now() - drainStart}ms`);
-
       // Generate mapping cache
       const folderCache = new Map<string, string>();
       folderCache.set('root_dest', actualDestId);
-      const manifestRows = await db.all(`SELECT id, createdDestId FROM migration_manifest WHERE jobId = ? AND isFolder = 1 AND status = 'COMPLETED'`, [job.jobId]);
+      const manifestRows = await db.all(`SELECT id, createdDestId FROM migration_manifest WHERE jobId = ? AND isFolder = 1 AND status = 'SUCCESS'`, [job.jobId]);
       for (const row of manifestRows) {
          if (row.createdDestId) folderCache.set(row.id, row.createdDestId);
       }
@@ -112,21 +70,19 @@ export class MigrationWorker {
       console.log(`\n[STATE] COPYING_FILES\nMigration: ${job.jobId}\nReason: File Scheduler Initiated`);
       await logJobEvent(job.jobId, `[STATE] COPYING_FILES`);
       await updateJobProgress(job.jobId, { status: 'uploading_files' });
-      const fileScheduler = new FileScheduler(job.jobId, sourceDrive, destDrive, options, rateLimiter, progress, folderCache);
+      const fileScheduler = new FileScheduler(job.jobId, sourceDrive, destDrive, options, rateLimiter, stateManager, folderCache);
       const phase2Start = Date.now();
       await fileScheduler.run();
       console.log(`[EXIT] FileScheduler.run() | Duration: ${Date.now() - phase2Start}ms`);
-      
-      // Ensure all DB writes from files are committed
-      await dbWriter.drain();
-      dbWriter.stop();
 
       console.log(`\n[STATE] VERIFYING\nMigration: ${job.jobId}\nReason: Transfers completed, verifying final state`);
       await logJobEvent(job.jobId, `[STATE] VERIFYING`);
       await updateJobProgress(job.jobId, { status: 'verifying' });
       
-      progress.stop();
-      clearInterval(watchdog);
+      // The file scheduler finalization handles terminal state reporting via stateManager
+      // So no need to explicitly emit completion here unless it's just finalizing.
+      // Final verification might be unnecessary if fileScheduler.run() returned,
+      // because fileScheduler invokes stateManager.finalizeMigration()
       
       const finalStatus = 'completed';
       console.log(`\n[STATE] COMPLETED\nMigration: ${job.jobId}\nReason: All phases verified and completed successfully`);
@@ -134,9 +90,7 @@ export class MigrationWorker {
       await updateJobProgress(job.jobId, { status: finalStatus, networkStatus: 'online' });
       console.log(`[EXIT] MigrationWorker.executeMigration | Total Duration: ${Date.now() - startTime}ms`);
     } catch (e: any) {
-      progress.stop();
-      clearInterval(watchdog);
-      
+
       const errorPayload = {
         name: e.name || 'WorkerError',
         message: e.message,

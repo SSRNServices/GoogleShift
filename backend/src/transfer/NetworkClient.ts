@@ -1,6 +1,6 @@
 import { google, drive_v3 } from 'googleapis';
 import https from 'https';
-import { oauthService } from '../oauth/OAuthService';
+import { googleClientManager } from '../auth/google.client';
 
 export class NetworkClient {
   private static agent = new https.Agent({
@@ -10,8 +10,8 @@ export class NetworkClient {
     timeout: 60000 // 60s timeout
   });
 
-  public static getDriveClient(type: 'source' | 'destination'): drive_v3.Drive {
-    const auth = oauthService.getAuthenticatedClient(type);
+  public static async getDriveClient(sessionId: string, type: 'source' | 'destination'): Promise<drive_v3.Drive> {
+    const auth = await googleClientManager.getAuthenticatedClient(sessionId, type);
     if (!auth) throw new Error(`Account ${type} not authenticated`);
     
     // googleapis uses gaxios under the hood. We can set the default adapter options globally

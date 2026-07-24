@@ -28,6 +28,9 @@ describe('Migration Lifecycle State Machine', () => {
       destinationFolder: { id: 'dst_1' },
       options: { skipExisting: true }
     };
+    
+    const db = await getDb();
+    await db.run(`INSERT INTO migration_manifest (jobId, id, status, isFolder) VALUES (?, ?, ?, ?)`, ['test_manifest_1', 'item_1', 'PENDING', 0]);
 
     const res = await migrationService.startMigrationJob(payload);
     expect(res.status).toBe('starting');

@@ -1,5 +1,6 @@
 import { google, drive_v3 } from 'googleapis';
-import { oauthService, AccountType } from '../oauth/OAuthService';
+import { googleClientManager } from '../auth/google.client';
+import { AccountType } from '../auth/token.store';
 import { pLimit } from '../utils/pLimit';
 
 export interface DriveItem {
@@ -17,8 +18,8 @@ export interface DriveItem {
 }
 
 export class DriveService {
-  private getDriveClient(type: AccountType): drive_v3.Drive {
-    const auth = oauthService.getAuthenticatedClient(type);
+  private async getDriveClient(sessionId: string, type: AccountType): Promise<drive_v3.Drive> {
+    const auth = await googleClientManager.getAuthenticatedClient(sessionId, type);
     if (!auth) {
       throw new Error(`Account ${type} is not authenticated`);
     }
@@ -44,8 +45,8 @@ export class DriveService {
     };
   }
 
-  public async getFolderContents(type: AccountType, folderId: string, pageToken?: string) {
-    const drive = this.getDriveClient(type);
+  public async getFolderContents(sessionId: string, type: AccountType, folderId: string, pageToken?: string) {
+    const drive = await this.getDriveClient(sessionId, type);
     
     // Resolve 'root' to the actual root ID
     const queryId = folderId === 'root' ? 'root' : folderId;
@@ -64,8 +65,8 @@ export class DriveService {
     };
   }
 
-  public async search(type: AccountType, query: string, pageToken?: string) {
-    const drive = this.getDriveClient(type);
+  public async search(sessionId: string, type: AccountType, query: string, pageToken?: string) {
+    const drive = await this.getDriveClient(sessionId, type);
     
     const res = await drive.files.list({
       q: `fullText contains '${query.replace(/'/g, "\\'")}' and trashed = false`,
@@ -81,8 +82,8 @@ export class DriveService {
     };
   }
 
-  public async getSharedWithMe(type: AccountType, pageToken?: string) {
-    const drive = this.getDriveClient(type);
+  public async getSharedWithMe(sessionId: string, type: AccountType, pageToken?: string) {
+    const drive = await this.getDriveClient(sessionId, type);
     
     const res = await drive.files.list({
       q: `sharedWithMe = true and trashed = false`,
@@ -98,8 +99,8 @@ export class DriveService {
     };
   }
 
-  public async getRecent(type: AccountType, pageToken?: string) {
-    const drive = this.getDriveClient(type);
+  public async getRecent(sessionId: string, type: AccountType, pageToken?: string) {
+    const drive = await this.getDriveClient(sessionId, type);
     
     const res = await drive.files.list({
       q: `trashed = false`,
@@ -115,8 +116,8 @@ export class DriveService {
     };
   }
 
-  public async getStarred(type: AccountType, pageToken?: string) {
-    const drive = this.getDriveClient(type);
+  public async getStarred(sessionId: string, type: AccountType, pageToken?: string) {
+    const drive = await this.getDriveClient(sessionId, type);
     
     const res = await drive.files.list({
       q: `starred = true and trashed = false`,
@@ -132,8 +133,8 @@ export class DriveService {
     };
   }
 
-  public async createFolder(type: AccountType, name: string, parentId?: string) {
-    const drive = this.getDriveClient(type);
+  public async createFolder(sessionId: string, type: AccountType, name: string, parentId?: string) {
+    const drive = await this.getDriveClient(sessionId, type);
     
     const fileMetadata: any = {
       name,
@@ -152,8 +153,8 @@ export class DriveService {
     return this.mapFile(res.data);
   }
   
-  public async getFolderInfo(type: AccountType, folderId: string) {
-    const drive = this.getDriveClient(type);
+  public async getFolderInfo(sessionId: string, type: AccountType, folderId: string) {
+    const drive = await this.getDriveClient(sessionId, type);
     const res = await drive.files.get({
         fileId: folderId === 'root' ? 'root' : folderId,
         fields: 'id, name, mimeType, size, modifiedTime, createdTime, owners, iconLink, thumbnailLink, parents, shortcutDetails'
@@ -163,8 +164,8 @@ export class DriveService {
     return this.mapFile(res.data);
   }
 
-  public async getRoot(type: AccountType, pageToken?: string) {
-    const drive = this.getDriveClient(type);
+  public async getRoot(sessionId: string, type: AccountType, pageToken?: string) {
+    const drive = await this.getDriveClient(sessionId, type);
     
     // 1. Fetch real root metadata
     const rootMetaRes = await drive.files.get({
@@ -173,7 +174,7 @@ export class DriveService {
     });
     
     // 2. Fetch root children
-    const contents = await this.getFolderContents(type, 'root', pageToken);
+    const contents = await this.getFolderContents(sessionId, type, 'root', pageToken);
 
     return {
       folder: this.mapFile(rootMetaRes.data),
@@ -183,11 +184,12 @@ export class DriveService {
   }
 
   public async getSelectionSummary(
+    sessionId: string,
     type: AccountType, 
     items: { id: string, isFolder: boolean }[], 
     onProgress: (folders: number, files: number, bytes: number, currentAction: string) => void
   ) {
-    const drive = this.getDriveClient(type);
+    const drive = await this.getDriveClient(sessionId, type);
     
     let totalFolders = 0;
     let totalFiles = 0;

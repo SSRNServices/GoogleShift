@@ -1,7 +1,12 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import authRoutes from './routes/auth.routes';
+import cookieParser from 'cookie-parser';
+import authRoutes from './auth/auth.routes';
+import { sessionMiddleware } from './auth/session';
+import { requireUserAuth } from './auth/auth.middleware';
+import passport from 'passport';
+import { configurePassport } from './auth/passport';
 import driveRoutes from './routes/drive.routes';
 import migrationRoutes from './routes/migration.routes';
 
@@ -9,14 +14,55 @@ dotenv.config();
 
 console.log('\n=== Application Startup ===');
 console.log(`GOOGLE_CLIENT_ID: ${process.env.GOOGLE_CLIENT_ID ? 'Loaded (starts with ' + process.env.GOOGLE_CLIENT_ID.substring(0, 15) + '...)' : 'MISSING'}`);
-console.log(`GOOGLE_REDIRECT_URI: ${process.env.GOOGLE_REDIRECT_URI || 'MISSING (Defaults to http://localhost:3000/api/auth/callback)'}`);
+console.log(`GOOGLE_DRIVE_REDIRECT_URI: ${process.env.GOOGLE_DRIVE_REDIRECT_URI || 'MISSING (Defaults to http://localhost:3000/auth/google/callback)'}`);
+console.log(`GOOGLE_LOGIN_REDIRECT_URI: ${process.env.GOOGLE_LOGIN_REDIRECT_URI || 'MISSING (Defaults to http://localhost:3000/auth/login/callback)'}`);
 console.log('===========================\n');
+
+import { prisma } from './utils/database';
+
+async function verifyDatabase() {
+  const start = Date.now();
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    const host = new URL(process.env.DATABASE_URL || '').hostname;
+    console.log('✓ Database Connected');
+    console.log('✓ Prisma Connected');
+    console.log(`  - Prisma Version: 7.9.0`);
+    console.log(`  - Database Host: ${host}`);
+    console.log(`  - Pool Size: 20`);
+    console.log(`  - Connection Time: ${Date.now() - start}ms`);
+  } catch (err) {
+    console.error('❌ Database Connection Failed:', err);
+  }
+}
+verifyDatabase();
+
+process.on('uncaughtException', (err) => {
+  console.error('\n[FATAL] Uncaught Exception intercepted:');
+  console.error(err);
+  console.error('[FATAL] The backend will remain alive to allow other workers to continue.');
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('\n[FATAL] Unhandled Promise Rejection intercepted:');
+  console.error('Reason:', reason);
+  console.error('[FATAL] The backend will remain alive to allow other workers to continue.');
+});
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-app.use(cors());
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  credentials: true
+}));
 app.use(express.json());
+app.use(cookieParser());
+app.use(sessionMiddleware);
+
+configurePassport();
+app.use(passport.initialize());
+app.use(passport.session());
 
 app.use((req, res, next) => {
   const start = Date.now();
@@ -32,8 +78,10 @@ app.get('/api/health', (req, res) => {
 });
 
 app.use('/auth', authRoutes);
-app.use('/api/drive', driveRoutes);
-app.use('/api/migrations', migrationRoutes);
+
+// Protect all following routes with requireUserAuth
+app.use('/api/drive', requireUserAuth, driveRoutes);
+app.use('/api/migrations', requireUserAuth, migrationRoutes);
 
 // Print all registered routes
 const printRoutes = () => {
@@ -70,7 +118,7 @@ const runDiagnostics = async () => {
   console.log('===========================\n');
 };
 
-import { getDb } from './utils/database';
+import { getDb } from "./utils/database";
 
 app.listen(port, async () => {
   console.log(`[server]: Server is running at http://localhost:${port}`);

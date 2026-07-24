@@ -61,7 +61,7 @@ export function DriveBrowserModal({ isOpen, onClose, type, onSelectionComplete }
       else if (viewMode === 'search') endpoint = `/api/drive/${type}/search?q=${encodeURIComponent(searchQuery)}`;
       else endpoint = `/api/drive/${type}/${viewMode}`;
 
-      const res = await fetch(`http://localhost:3000${endpoint}`);
+      const res = await fetch(`http://localhost:3000${endpoint}`, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch drive data');
       return res.json();
     },

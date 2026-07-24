@@ -1,2 +1,6 @@
 migration.db
 migration.db-journal
+migration.db-shm
+migration.db-wal
+
+/src/generated/prisma

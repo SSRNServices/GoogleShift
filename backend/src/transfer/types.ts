@@ -8,6 +8,17 @@ export interface MigrationConfig {
   adaptiveConcurrency: boolean;
   maxSockets: number;
   resumeInterval: number;
+  
+  // Performance tuning
+  maxDownloadWorkers: number;
+  maxUploadWorkers: number;
+  smallFileWorkers: number;
+  largeFileWorkers: number;
+  streamBufferSize: number;
+  uploadChunkSize: number;
+  downloadChunkSize: number;
+  http2: boolean;
+  maxMemory: number;
 }
 
 export const DEFAULT_MIGRATION_CONFIG: MigrationConfig = {
@@ -20,6 +31,16 @@ export const DEFAULT_MIGRATION_CONFIG: MigrationConfig = {
   adaptiveConcurrency: true,
   maxSockets: 100,
   resumeInterval: 5000, // 5 seconds
+  
+  maxDownloadWorkers: 50,
+  maxUploadWorkers: 50,
+  smallFileWorkers: 40,
+  largeFileWorkers: 4,
+  streamBufferSize: 16 * 1024 * 1024,
+  uploadChunkSize: 16 * 1024 * 1024,
+  downloadChunkSize: 16 * 1024 * 1024,
+  http2: true,
+  maxMemory: 1024 * 1024 * 1024 * 2 // 2GB
 };
 
 export interface ProgressMetrics {
@@ -42,6 +63,8 @@ export interface ProgressMetrics {
   currentSpeed: number; // bytes per sec
   averageSpeed: number; // bytes per sec
   eta: number; // seconds
+  deadWorkers: number;
+  retryCount: number;
   status: string;
   networkStatus: string;
 }
@@ -89,4 +112,5 @@ export interface MigrationJob extends MigrationRequest {
   totalBytes: number;
   failedFiles: number;
   lastSuccessfulFile: string;
+  sessionId?: string;
 }

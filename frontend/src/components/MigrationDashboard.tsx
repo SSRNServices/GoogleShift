@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ArrowRight, CheckCircle2, AlertTriangle, Loader2, HardDrive, File as FileIcon, FolderOpen, Play, Pause, XCircle } from 'lucide-react';
-import { useQueryClient } from '@tanstack/react-query';
+import { CheckCircle2, AlertTriangle, Loader2, File as FileIcon, FolderOpen, XCircle } from 'lucide-react';
 import { MigrationLogViewer } from './MigrationLogViewer';
 
 interface MigrationDashboardProps {
@@ -50,7 +49,7 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
   const [logs, setLogs] = useState<string[]>([]);
 
   useEffect(() => {
-    const eventSource = new EventSource(`http://localhost:3000/api/migrations/${jobId}/status`);
+    const eventSource = new EventSource(`http://localhost:3000/api/migrations/${jobId}/status`, { withCredentials: true });
     
     eventSource.onmessage = (event) => {
       try {
@@ -79,7 +78,7 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
 
   const handleCancel = async () => {
     try {
-      await fetch(`http://localhost:3000/api/migrations/${jobId}/cancel`, { method: 'POST' });
+      await fetch(`http://localhost:3000/api/migrations/${jobId}/cancel`, { method: 'POST', credentials: 'include' });
     } catch (err) {}
   };
 
@@ -121,13 +120,13 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
         {/* Progress Bar */}
         <div className="space-y-3">
           <div className="flex justify-between items-end">
-            <span className="text-4xl font-light text-foreground">{status.percentage}%</span>
-            <span className="text-sm font-medium text-muted-foreground uppercase tracking-wider">{formatBytes(status.transferredBytes)} / {formatBytes(status.totalBytes)}</span>
+            <span className="text-4xl font-light text-foreground">{Math.min(status.percentage, 100)}%</span>
+            <span className="text-sm font-medium text-muted-foreground uppercase tracking-wider">{formatBytes(Math.min(status.transferredBytes, status.totalBytes))} / {formatBytes(status.totalBytes)}</span>
           </div>
           <div className="h-4 w-full bg-secondary rounded-full overflow-hidden border border-border/50">
             <div 
               className={`h-full transition-all duration-500 ${status.status === 'failed' ? 'bg-destructive' : status.status === 'completed' ? 'bg-emerald-500' : 'bg-primary'}`}
-              style={{ width: `${status.percentage}%` }}
+              style={{ width: `${Math.min(status.percentage, 100)}%` }}
             />
           </div>
         </div>
@@ -178,7 +177,7 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
             <div className="flex items-center gap-2 text-sm text-muted-foreground uppercase font-medium">
               <FileIcon className="w-4 h-4" /> Files
             </div>
-            <div className="text-2xl font-semibold">{status.completedFiles} <span className="text-muted-foreground text-base font-normal">/ {status.totalFiles || '?'}</span></div>
+            <div className="text-2xl font-semibold">{Math.min(status.completedFiles, status.totalFiles)} <span className="text-muted-foreground text-base font-normal">/ {status.totalFiles || '?'}</span></div>
             <div className="text-xs text-muted-foreground truncate" title={status.currentFile}>
               {status.currentFile ? `${status.currentFile}` : '...'}
             </div>
@@ -195,6 +194,22 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
           </div>
 
         </div>
+        
+        {isTerminal && (
+          <div className={`mt-6 p-4 rounded-xl flex items-center gap-3 ${status.failedFiles > 0 ? 'bg-destructive/10 text-destructive' : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'}`}>
+            {status.failedFiles > 0 ? (
+              <>
+                <AlertTriangle className="w-6 h-6" />
+                <div className="font-medium">Migration completed with {status.failedFiles} exact failed file{status.failedFiles !== 1 ? 's' : ''}.</div>
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-6 h-6" />
+                <div className="font-medium">✓ All files successfully migrated</div>
+              </>
+            )}
+          </div>
+        )}
 
       </div>
 

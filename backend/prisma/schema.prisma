@@ -1,0 +1,148 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  USER
+}
+
+enum Status {
+  ACTIVE
+  PENDING
+  DISABLED
+}
+
+enum MigrationState {
+  QUEUED
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum ItemStatus {
+  PENDING
+  QUEUED
+  DOWNLOADING
+  UPLOADING
+  SUCCESS
+  FAILED
+}
+
+model User {
+  id          String   @id @default(uuid())
+  googleId    String?  @unique
+  email       String   @unique
+  name        String
+  avatar      String?
+  role        Role     @default(USER)
+  status      Status   @default(PENDING)
+  timezone    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  lastLogin   DateTime?
+
+  oauthAccounts OAuthAccount[]
+  migrations    MigrationJob[]
+  auditLogs     AuditLog[]
+  activityLogs  ActivityLog[]
+
+  @@index([email])
+  @@index([googleId])
+  @@index([createdAt])
+}
+
+model OAuthAccount {
+  id                String   @id @default(uuid())
+  userId            String
+  provider          String
+  providerAccountId String
+  accessToken       String?
+  refreshToken      String?
+  expiresAt         DateTime?
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model MigrationJob {
+  id                  String   @id
+  ownerId             String
+  manifestId          String?
+  state               MigrationState @default(QUEUED)
+  sourceEmail         String?
+  destinationEmail    String?
+  sourceFolderId      String?
+  destinationFolderId String?
+  
+  totalFiles          Int      @default(0)
+  completedFiles      Int      @default(0)
+  failedFiles         Int      @default(0)
+  
+  totalBytes          BigInt   @default(0)
+  transferredBytes    BigInt   @default(0)
+  
+  speed               Float    @default(0)
+  eta                 Float    @default(0)
+  
+  startedAt           DateTime?
+  completedAt         DateTime?
+  cancelledAt         DateTime?
+
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  items MigrationItem[]
+
+  @@index([ownerId])
+  @@index([state])
+}
+
+model MigrationItem {
+  id        String   @id @default(uuid())
+  jobId     String
+  fileId    String
+  fileName  String?
+  mimeType  String?
+  status    ItemStatus @default(PENDING)
+  size      BigInt   @default(0)
+  error     String?
+
+  job MigrationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, fileId])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  userId      String
+  action      String
+  description String?
+  ip          String?
+  browser     String?
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ActivityLog {
+  id        String   @id @default(uuid())
+  userId    String
+  title     String
+  message   String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model SystemSetting {
+  id    String @id @default(uuid())
+  key   String @unique
+  value String
+}

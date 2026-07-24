@@ -12,9 +12,10 @@ export interface ManifestItem {
   size: number;
   originalId: string | null;
   originalMimeType: string | null;
-  status: 'PENDING' | 'COMPLETED' | 'FAILED' | 'SKIPPED';
+  status: 'PENDING' | 'QUEUED' | 'DOWNLOADING' | 'UPLOADING' | 'VERIFYING' | 'SUCCESS' | 'FAILED';
   isFolder: boolean;
   depth: number;
+  retryCount: number;
 }
 
 export class ManifestStorage {
@@ -36,6 +37,7 @@ export class ManifestStorage {
         status TEXT,
         isFolder INTEGER,
         depth INTEGER,
+        retryCount INTEGER DEFAULT 0,
         PRIMARY KEY (jobId, id)
       );
       CREATE INDEX IF NOT EXISTS idx_manifest_status ON migration_manifest(jobId, status);
@@ -49,18 +51,21 @@ export class ManifestStorage {
     try {
       await db.exec(`ALTER TABLE migration_manifest ADD COLUMN depth INTEGER DEFAULT 0;`);
     } catch (e: any) {}
+    try {
+      await db.exec(`ALTER TABLE migration_manifest ADD COLUMN retryCount INTEGER DEFAULT 0;`);
+    } catch (e: any) {}
   }
 
   public static async insertItem(item: ManifestItem) {
     const db = await getDb();
     await db.run(`
       INSERT OR REPLACE INTO migration_manifest 
-      (jobId, id, sourceId, sourceParentId, destParentId, createdDestId, name, mimeType, size, originalId, originalMimeType, status, isFolder, depth)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (jobId, id, sourceId, sourceParentId, destParentId, createdDestId, name, mimeType, size, originalId, originalMimeType, status, isFolder, depth, retryCount)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       item.jobId, item.id, item.sourceId, item.sourceParentId, item.destParentId, item.createdDestId,
       item.name, item.mimeType, item.size, item.originalId, item.originalMimeType,
-      item.status, item.isFolder ? 1 : 0, item.depth || 0
+      item.status, item.isFolder ? 1 : 0, item.depth || 0, item.retryCount || 0
     ]);
   }
 
@@ -69,9 +74,26 @@ export class ManifestStorage {
     await db.run(`UPDATE migration_manifest SET destParentId = ? WHERE jobId = ? AND sourceParentId = ?`, [destParentId, jobId, sourceParentId]);
   }
 
-  public static async updateItemStatus(jobId: string, id: string, status: 'COMPLETED' | 'FAILED' | 'SKIPPED') {
+  public static async updateItemStatus(jobId: string, id: string, status: ManifestItem['status']) {
     const db = await getDb();
+    const row = await db.get(`SELECT status FROM migration_manifest WHERE jobId = ? AND id = ?`, [jobId, id]);
+    if (!row) return;
+
+    if (row.status === 'SUCCESS' || row.status === 'FAILED') {
+       if (status !== 'SUCCESS' && status !== 'FAILED') {
+          // Illegal transition from terminal state
+          return;
+       }
+    }
+    
     await db.run(`UPDATE migration_manifest SET status = ? WHERE jobId = ? AND id = ?`, [status, jobId, id]);
+  }
+
+  public static async incrementRetryCount(jobId: string, id: string): Promise<number> {
+    const db = await getDb();
+    await db.run(`UPDATE migration_manifest SET retryCount = retryCount + 1 WHERE jobId = ? AND id = ?`, [jobId, id]);
+    const row = await db.get(`SELECT retryCount FROM migration_manifest WHERE jobId = ? AND id = ?`, [jobId, id]);
+    return row ? row.retryCount : 0;
   }
 
   public static async getNextPendingItem(jobId: string): Promise<ManifestItem | null> {
@@ -124,7 +146,7 @@ export class ManifestStorage {
     const db = await getDb();
     const rows = await db.all(`
       SELECT * FROM migration_manifest 
-      WHERE jobId = ? AND isFolder = 0 AND status = 'PENDING'
+      WHERE jobId = ? AND isFolder = 0 AND status = 'QUEUED'
       ORDER BY depth ASC
       LIMIT ?
     `, [jobId, limit]);

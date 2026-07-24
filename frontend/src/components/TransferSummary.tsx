@@ -46,7 +46,7 @@ export function TransferSummary({ sourceSelection, destinationFolder, onScanComp
 
     const url = `http://localhost:3000/api/drive/source/summary?items=${encodeURIComponent(itemsParam)}`;
     console.log('[Frontend] Summary request started. URL:', url);
-    const eventSource = new EventSource(url);
+    const eventSource = new EventSource(url, { withCredentials: true });
 
     eventSource.onopen = () => {
       console.log('[Frontend] SSE connection opened successfully.');

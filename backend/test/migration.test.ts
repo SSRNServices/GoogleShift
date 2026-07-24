@@ -101,6 +101,15 @@ describe('MigrationService Validation and Serialization', () => {
       destinationFolder: { id: 'dest1', name: 'Dest', mimeType: 'folder' },
       options: validOptions
     };
+    const mockDbLocal = {
+      get: vi.fn().mockImplementation((query) => {
+         if (query.includes('count(*)')) return Promise.resolve({ count: 1 });
+         if (query.includes('SUM')) return Promise.resolve({ folders: 1, files: 1, bytes: 100 });
+         return Promise.resolve(null);
+      }),
+      run: vi.fn()
+    };
+    (database.getDb as any).mockResolvedValue(mockDbLocal);
 
     const res = await migrationService.startMigrationJob(payload);
 
@@ -116,7 +125,12 @@ describe('MigrationService Validation and Serialization', () => {
 
   it('should throw ShortcutResolutionError if shortcut lacks targetId', async () => {
     const mockDb = {
-      get: vi.fn().mockResolvedValue({ count: 1 })
+      get: vi.fn().mockImplementation((query) => {
+         if (query.includes('count(*)')) return Promise.resolve({ count: 1 });
+         if (query.includes('SUM')) return Promise.resolve({ folders: 1, files: 1, bytes: 100 });
+         return Promise.resolve(null);
+      }),
+      run: vi.fn()
     };
     (database.getDb as any).mockResolvedValue(mockDb);
 

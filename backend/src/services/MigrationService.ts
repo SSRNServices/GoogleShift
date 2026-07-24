@@ -4,7 +4,7 @@ import { RequestValidationError, ManifestError, ShortcutResolutionError } from '
 import { driveService } from './DriveService';
 
 export class MigrationService {
-  public async startMigrationJob(payload: MigrationRequest) {
+  public async startMigrationJob(sessionId: string, payload: MigrationRequest) {
     // 1. Validate the payload structure
     if (!payload.sourceSelection || !Array.isArray(payload.sourceSelection) || payload.sourceSelection.length === 0) {
       throw new RequestValidationError('Missing source selection');
@@ -56,7 +56,7 @@ export class MigrationService {
         
         console.log(`[SHORTCUT] Shortcut detected | Original ID: ${item.id} | Target ID: ${targetId}`);
         try {
-            const realFolder = await driveService.getFolderInfo('source', targetId);
+            const realFolder = await driveService.getFolderInfo(sessionId, 'source', targetId);
             payload.sourceSelection[i] = {
                ...realFolder,
                parentId: item.parentId
@@ -86,7 +86,8 @@ export class MigrationService {
       totalFiles,
       totalBytes,
       failedFiles: 0,
-      lastSuccessfulFile: ''
+      lastSuccessfulFile: '',
+      sessionId
     }).catch(err => console.error('[FATAL]', err));
 
     return {
