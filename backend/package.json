@@ -8,7 +8,6 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "start:prod": "node dist/index.js",
-    "postinstall": "prisma generate",
     "test": "vitest run"
   },
   "keywords": [],
@@ -46,7 +45,7 @@
     "prisma": "^7.9.0",
     "ts-node": "^10.9.2",
     "tsx": "^4.23.1",
-    "typescript": "^7.0.2",
+    "typescript": "^5.5.4",
     "vitest": "^4.1.10"
   }
 }
