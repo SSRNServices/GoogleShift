@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import adminRoutes from './routes/admin.routes';
 import cookieParser from 'cookie-parser';
 import authRoutes from './auth/auth.routes';
 import { sessionMiddleware } from './auth/session';
@@ -106,6 +107,9 @@ app.get('/', (req, res) => {
     version: "1.0.0"
   });
 });
+
+app.use('/auth', authRoutes);
+app.use('/api/admin', adminRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({
