@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { getDb } from "../utils/database";
+import { prisma, logJobEvent, updateJobProgress } from "../utils/database";
 import { NetworkHeartbeat } from '../utils/NetworkHeartbeat';
 import { NetworkClient } from '../transfer/NetworkClient';
 import { FolderScheduler } from '../transfer/FolderScheduler';
@@ -22,15 +22,8 @@ export class MigrationWorker {
     await logJobEvent(job.jobId, `[STATE] STARTING`);
     await updateJobProgress(job.jobId, { status: 'running', networkStatus: 'online', retryCount: 0 });
 
-    const db = await getDb();
-    const completedStats = await db.get(`
-      SELECT 
-        SUM(CASE WHEN isFolder = 1 THEN 1 ELSE 0 END) as completedFolders,
-        SUM(CASE WHEN isFolder = 0 THEN 1 ELSE 0 END) as completedFiles,
-        SUM(CASE WHEN isFolder = 0 THEN size ELSE 0 END) as transferredBytes
-      FROM migration_manifest 
-      WHERE jobId = ? AND status = 'SUCCESS'
-    `, [job.jobId]);
+    // removed getDb
+    // initialization will depend on the state manager which already has accurate Prisma queries
 
     const stateManager = new MigrationStateManager(job.jobId);
 
@@ -62,7 +55,10 @@ export class MigrationWorker {
       // Generate mapping cache
       const folderCache = new Map<string, string>();
       folderCache.set('root_dest', actualDestId);
-      const manifestRows = await db.all(`SELECT id, createdDestId FROM migration_manifest WHERE jobId = ? AND isFolder = 1 AND status = 'SUCCESS'`, [job.jobId]);
+      const manifestRows = await prisma.migrationManifest.findMany({
+        where: { jobId: job.jobId, isFolder: true, status: 'SUCCESS' },
+        select: { id: true, createdDestId: true }
+      });
       for (const row of manifestRows) {
          if (row.createdDestId) folderCache.set(row.id, row.createdDestId);
       }

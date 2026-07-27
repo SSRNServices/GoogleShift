@@ -102,21 +102,19 @@ export class FileScheduler {
   public async run() {
     console.log(`[FileScheduler] Starting bucketing scheduler...`);
 
-    const { getDb } = await import('../utils/database');
-    const db = await getDb();
-    const manifestStats = await db.get(`
-       SELECT 
-         SUM(CASE WHEN isFolder = 0 THEN 1 ELSE 0 END) as totalFiles,
-         SUM(CASE WHEN isFolder = 0 AND status = 'QUEUED' THEN 1 ELSE 0 END) as queuedFiles
-       FROM migration_manifest WHERE jobId = ?
-    `, [this.jobId]);
+    const { prisma } = await import('../utils/database');
+    const totalFiles = await prisma.migrationManifest.count({
+       where: { jobId: this.jobId, isFolder: false }
+    });
+    const queuedFiles = await prisma.migrationManifest.count({
+       where: { jobId: this.jobId, isFolder: false, status: 'QUEUED' }
+    });
     
-    if (manifestStats && manifestStats.totalFiles > 0) {
-       const folderStats = await db.get(`
-          SELECT SUM(CASE WHEN isFolder = 1 AND status != 'SUCCESS' AND status != 'FAILED' THEN 1 ELSE 0 END) as pendingFolders
-          FROM migration_manifest WHERE jobId = ?
-       `, [this.jobId]);
-       if (manifestStats.queuedFiles === 0 && (!folderStats || folderStats.pendingFolders === 0)) {
+    if (totalFiles > 0) {
+       const pendingFolders = await prisma.migrationManifest.count({
+          where: { jobId: this.jobId, isFolder: true, status: { notIn: ['SUCCESS', 'FAILED'] } }
+       });
+       if (queuedFiles === 0 && pendingFolders === 0) {
           throw new Error(`[FATAL] Queue size is zero but manifest contains files and no folders pending.`);
        }
     }

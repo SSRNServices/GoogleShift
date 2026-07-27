@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { ManifestStorage, ManifestItem } from '../utils/ManifestStorage';
-import { getDb } from "../utils/database";
+import { prisma, updateJobStatus, updateJobProgress, logJobEvent } from "../utils/database";
 
 export class MigrationStateManager {
   private jobId: string;
@@ -77,14 +77,14 @@ export class MigrationStateManager {
 
   public commitFolderSuccess(sourceId: string, destId: string): Promise<void> {
     return this.enqueueMutationAndWait(async () => {
-      const db = await getDb();
       try {
-        await db.run('BEGIN TRANSACTION');
-        await ManifestStorage.updateCreatedDestId(this.jobId, sourceId, destId);
-        await ManifestStorage.updateItemStatus(this.jobId, sourceId, 'SUCCESS');
-        await db.run('COMMIT');
+        await prisma.$transaction([
+          prisma.migrationManifest.update({
+            where: { jobId_id: { jobId: this.jobId, id: sourceId } },
+            data: { createdDestId: destId, status: 'SUCCESS' }
+          })
+        ]);
       } catch (e: any) {
-        try { await db.run('ROLLBACK'); } catch (err) {}
         console.error(`[MigrationStateManager] Failed to commit folder SUCCESS for ${sourceId}: ${e.message}`);
         throw e;
       }
@@ -99,13 +99,12 @@ export class MigrationStateManager {
 
   public queueChildren(sourceParentId: string): Promise<void> {
     return this.enqueueMutationAndWait(async () => {
-      const db = await getDb();
-      const res = await db.run(
-        `UPDATE migration_manifest SET status = 'QUEUED' WHERE jobId = ? AND sourceParentId = ? AND status = 'PENDING'`,
-        [this.jobId, sourceParentId]
-      );
-      if (res && res.changes && res.changes > 0) {
-         console.log(`[MigrationStateManager] Queued ${res.changes} items for parent folder ${sourceParentId}`);
+      const res = await prisma.migrationManifest.updateMany({
+        where: { jobId: this.jobId, sourceParentId, status: 'PENDING' },
+        data: { status: 'QUEUED' }
+      });
+      if (res && res.count > 0) {
+         console.log(`[MigrationStateManager] Queued ${res.count} items for parent folder ${sourceParentId}`);
       }
     });
   }
@@ -120,30 +119,41 @@ export class MigrationStateManager {
     if (this.isFinalized || this.invariantViolation) return;
     
     try {
-      const db = await getDb();
-      const stats = await db.get(`
-        SELECT 
-          SUM(CASE WHEN isFolder = 1 AND status = 'SUCCESS' THEN 1 ELSE 0 END) as completedFolders,
-          SUM(CASE WHEN isFolder = 0 AND status = 'SUCCESS' THEN 1 ELSE 0 END) as completedFiles,
-          SUM(CASE WHEN isFolder = 0 AND status = 'SUCCESS' THEN size ELSE 0 END) as transferredBytes,
-          SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) as failedFiles,
-          SUM(CASE WHEN isFolder = 1 THEN 1 ELSE 0 END) as totalFolders,
-          SUM(CASE WHEN isFolder = 0 THEN 1 ELSE 0 END) as totalFiles,
-          SUM(CASE WHEN isFolder = 0 THEN size ELSE 0 END) as totalBytes
-        FROM migration_manifest 
-        WHERE jobId = ?
-      `, [this.jobId]);
+      const stats = await prisma.migrationManifest.groupBy({
+        by: ['status', 'isFolder'],
+        where: { jobId: this.jobId },
+        _count: { id: true },
+        _sum: { size: true }
+      });
 
-      if (!stats) return;
+      let completedFolders = 0, completedFiles = 0, transferredBytes = BigInt(0);
+      let failedFiles = 0, totalFolders = 0, totalFiles = 0, totalBytes = BigInt(0);
+
+      for (const stat of stats) {
+        if (stat.isFolder) {
+          totalFolders += stat._count.id;
+          if (stat.status === 'SUCCESS') completedFolders += stat._count.id;
+        } else {
+          totalFiles += stat._count.id;
+          totalBytes += stat._sum.size || BigInt(0);
+          if (stat.status === 'SUCCESS') {
+            completedFiles += stat._count.id;
+            transferredBytes += stat._sum.size || BigInt(0);
+          }
+          if (stat.status === 'FAILED') {
+            failedFiles += stat._count.id;
+          }
+        }
+      }
 
       const updates: any = {
-        completedFolders: stats.completedFolders || 0,
-        completedFiles: stats.completedFiles || 0,
-        transferredBytes: stats.transferredBytes || 0,
-        failedFiles: stats.failedFiles || 0,
-        totalFolders: stats.totalFolders || 0,
-        totalFiles: stats.totalFiles || 0,
-        totalBytes: stats.totalBytes || 0,
+        completedFolders,
+        completedFiles,
+        transferredBytes,
+        failedFiles,
+        totalFolders,
+        totalFiles,
+        totalBytes,
         pendingDBWrites: this.writeQueue.length
       };
 
@@ -156,24 +166,30 @@ export class MigrationStateManager {
 
   private async validateManifestConsistency() {
     try {
-      const db = await getDb();
-      const res = await db.get(`
-        SELECT 
-          SUM(CASE WHEN status = 'QUEUED' THEN 1 ELSE 0 END) as queued,
-          SUM(CASE WHEN status = 'UPLOADING' THEN 1 ELSE 0 END) as uploading,
-          SUM(CASE WHEN status = 'VERIFYING' THEN 1 ELSE 0 END) as verifying,
-          SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) as success,
-          SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) as failed,
-          SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END) as pending,
-          COUNT(*) as total
-        FROM migration_manifest WHERE jobId = ?
-      `, [this.jobId]);
+      const stats = await prisma.migrationManifest.groupBy({
+        by: ['status'],
+        where: { jobId: this.jobId },
+        _count: { id: true }
+      });
 
-      if (res && res.total > 0) {
-        const sum = (res.queued || 0) + (res.uploading || 0) + (res.verifying || 0) + (res.success || 0) + (res.failed || 0) + (res.pending || 0);
-        if (sum !== res.total) {
+      let queued = 0, uploading = 0, verifying = 0, success = 0, failed = 0, pending = 0;
+      let total = 0;
+
+      for (const stat of stats) {
+        total += stat._count.id;
+        if (stat.status === 'QUEUED') queued += stat._count.id;
+        else if (stat.status === 'UPLOADING') uploading += stat._count.id;
+        else if (stat.status === 'VERIFYING') verifying += stat._count.id;
+        else if (stat.status === 'SUCCESS') success += stat._count.id;
+        else if (stat.status === 'FAILED') failed += stat._count.id;
+        else if (stat.status === 'PENDING') pending += stat._count.id;
+      }
+
+      if (total > 0) {
+        const sum = queued + uploading + verifying + success + failed + pending;
+        if (sum !== total) {
            this.invariantViolation = true;
-           throw new Error(`[INVARIANT VIOLATION] Manifest states do not sum to total! Sum: ${sum}, Total: ${res.total}`);
+           throw new Error(`[INVARIANT VIOLATION] Manifest states do not sum to total! Sum: ${sum}, Total: ${total}`);
         }
       }
     } catch(e: any) {
@@ -202,23 +218,26 @@ export class MigrationStateManager {
       
       if (activeWorkers === 0 && queueLength === 0) {
         try {
-          const db = await getDb();
-          const pendingCount = await db.get(`
-            SELECT 
-              SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END) as pending,
-              SUM(CASE WHEN status = 'QUEUED' THEN 1 ELSE 0 END) as queued,
-              SUM(CASE WHEN status = 'UPLOADING' THEN 1 ELSE 0 END) as uploading,
-              SUM(CASE WHEN status = 'VERIFYING' THEN 1 ELSE 0 END) as verifying,
-              SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) as failed
-            FROM migration_manifest 
-            WHERE jobId = ?
-          `, [this.jobId]);
+          const stats = await prisma.migrationManifest.groupBy({
+            by: ['status'],
+            where: { jobId: this.jobId },
+            _count: { id: true }
+          });
 
-          const unresolved = (pendingCount.pending || 0) + (pendingCount.queued || 0) + (pendingCount.uploading || 0) + (pendingCount.verifying || 0);
+          let pending = 0, queued = 0, uploading = 0, verifying = 0, failed = 0;
+          for (const stat of stats) {
+            if (stat.status === 'PENDING') pending += stat._count.id;
+            else if (stat.status === 'QUEUED') queued += stat._count.id;
+            else if (stat.status === 'UPLOADING') uploading += stat._count.id;
+            else if (stat.status === 'VERIFYING') verifying += stat._count.id;
+            else if (stat.status === 'FAILED') failed += stat._count.id;
+          }
+
+          const unresolved = pending + queued + uploading + verifying;
 
           if (unresolved > 0) {
             this.invariantViolation = true;
-            const msg = `[INVARIANT VIOLATION] Attempted to finalize but found ${unresolved} non-terminal items (Pending: ${pendingCount.pending}, Queued: ${pendingCount.queued}, Uploading: ${pendingCount.uploading}, Verifying: ${pendingCount.verifying}).`;
+            const msg = `[INVARIANT VIOLATION] Attempted to finalize but found ${unresolved} non-terminal items (Pending: ${pending}, Queued: ${queued}, Uploading: ${uploading}, Verifying: ${verifying}).`;
             console.error(msg);
             await updateJobStatus(this.jobId, 'failed');
             throw new Error(msg);
@@ -227,8 +246,11 @@ export class MigrationStateManager {
           this.isFinalized = true;
           clearInterval(this.intervalId);
           
-          const finalStatus = (pendingCount.failed || 0) > 0 ? 'completed_with_errors' : 'completed';
-          await updateJobStatus(this.jobId, finalStatus);
+          const finalStatus = failed > 0 ? 'completed_with_errors' : 'completed';
+          await prisma.migrationJob.update({
+            where: { id: this.jobId },
+            data: { state: finalStatus === 'completed_with_errors' ? 'COMPLETED' : 'COMPLETED', completedAt: new Date() } // Mapped to valid enum
+          });
           await logJobEvent(this.jobId, `[STATE] COMPLETED - Final Status: ${finalStatus}`);
         } catch (e: any) {
           console.error(`[MigrationStateManager] Finalization failed: ${e.message}`);

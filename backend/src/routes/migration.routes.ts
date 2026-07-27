@@ -1,27 +1,44 @@
-// @ts-nocheck
 import { Router } from 'express';
 import { migrationService } from '../services/MigrationService';
-import { getDb, prisma } from "../utils/database";
+import { prisma } from "../utils/database";
 import { requireBothAuth, requireUserAuth } from '../auth/auth.middleware';
 
 const router = Router();
 
-router.get('/current', async (req, res) => {
+const serializeBigInt = (obj: any) => {
+  return JSON.parse(
+    JSON.stringify(obj, (key, value) =>
+      typeof value === 'bigint' ? Number(value) : value
+    )
+  );
+};
+
+router.get('/current', requireUserAuth, async (req, res) => {
   try {
-    const db = await getDb();
-    const job = await db.get(`
-      SELECT jobId, status, startedAt 
-      FROM migration_jobs 
-      WHERE status NOT IN ('completed', 'completed_with_errors', 'failed', 'cancelled')
-      ORDER BY startedAt DESC LIMIT 1
-    `);
+    const userId = (req as any).user.id;
+    const job = await prisma.migrationJob.findFirst({
+      where: {
+        ownerId: userId,
+        state: { notIn: ['COMPLETED', 'FAILED', 'CANCELLED'] }
+      },
+      orderBy: { startedAt: 'desc' }
+    });
     
     if (job) {
-      res.json({
-        jobId: job.jobId,
-        status: job.status === 'paused' ? 'paused' : 'running',
-        resumeAvailable: job.status === 'paused'
-      });
+      res.json(serializeBigInt({
+        jobId: job.id,
+        status: job.state.toLowerCase(),
+        resumeAvailable: job.state === 'PAUSED',
+        progress: {
+          totalFiles: job.totalFiles,
+          completedFiles: job.completedFiles,
+          failedFiles: job.failedFiles,
+          totalBytes: job.totalBytes,
+          transferredBytes: job.transferredBytes,
+          speed: job.speed,
+          eta: job.eta
+        }
+      }));
     } else {
       res.json({ status: 'idle' });
     }
@@ -32,18 +49,26 @@ router.get('/current', async (req, res) => {
 
 router.get('/history', requireUserAuth, async (req, res) => {
   try {
-    const user = (req as any).user;
-    if (!user) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
+    const userId = (req as any).user.id;
     const history = await prisma.migrationJob.findMany({
-      where: { ownerId: user.id },
+      where: { ownerId: userId },
       orderBy: { startedAt: 'desc' },
       take: 50
     });
 
-    res.json({ migrations: history });
+    const mappedHistory = history.map(job => ({
+       jobId: job.id,
+       status: job.state.toLowerCase(),
+       createdAt: job.startedAt,
+       endedAt: job.completedAt,
+       completedFiles: job.completedFiles,
+       totalFiles: job.totalFiles,
+       failedFiles: job.failedFiles,
+       totalBytes: job.totalBytes,
+       transferredBytes: job.transferredBytes
+    }));
+
+    res.json(serializeBigInt({ migrations: mappedHistory }));
   } catch (error: any) {
     console.error('Error fetching history:', error);
     res.status(500).json({ error: 'Failed to fetch migration history' });
@@ -52,20 +77,21 @@ router.get('/history', requireUserAuth, async (req, res) => {
 
 router.post('/start', requireBothAuth, async (req, res) => {
   console.log('[Backend] MIGRATION START RECEIVED');
-  console.log('Payload:', req.body);
-
   try {
     const userId = (req as any).user.id;
-    // Validate no running migration for this user
     const active = await prisma.migrationJob.findFirst({
       where: { 
         ownerId: userId,
-        state: { notIn: ['COMPLETED', 'FAILED', 'CANCELLED', 'PAUSED'] } 
+        state: { notIn: ['COMPLETED', 'FAILED', 'CANCELLED'] } 
       }
     });
     
     if (active) {
-      return res.status(409).json({ error: 'Migration already running' });
+      return res.status(200).json(serializeBigInt({
+        jobId: active.id,
+        status: active.state.toLowerCase(),
+        message: 'Existing migration found and resumed.'
+      }));
     }
 
     const job = await migrationService.startMigrationJob(userId, req.body);
@@ -80,24 +106,18 @@ router.post('/start', requireBothAuth, async (req, res) => {
   }
 });
 
-router.post('/:jobId/resume', async (req, res) => {
+router.post('/:jobId/resume', requireUserAuth, async (req, res) => {
   try {
-    const job = await getJob(req.params.jobId);
-    if (!job) {
-      return res.status(404).json({ error: 'Job not found' });
-    }
-    if (job.status !== 'paused') {
-      return res.status(400).json({ error: 'Job is not paused' });
-    }
+    const jobId = req.params.jobId as string;
+    const job = await prisma.migrationJob.findUnique({ where: { id: jobId } });
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    if (job.state !== 'PAUSED') return res.status(400).json({ error: 'Job is not paused' });
     
-    await updateJobStatus(req.params.jobId, 'STARTING');
-    
+    await prisma.migrationJob.update({ where: { id: jobId }, data: { state: 'RUNNING' } });
     const { migrationWorker } = await import('../services/MigrationWorker');
     
-    // Inject the current sessionId into the job so the worker can auth
-    job.sessionId = req.sessionID;
-    
-    migrationWorker.executeMigration(job).catch(err => console.error('[FATAL]', err));
+    const jobPayload = { ...job, sessionId: (req as any).sessionID };
+    migrationWorker.executeMigration(jobPayload as any).catch(err => console.error('[FATAL]', err));
 
     res.json({ success: true, status: 'starting' });
   } catch (error: any) {
@@ -105,9 +125,10 @@ router.post('/:jobId/resume', async (req, res) => {
   }
 });
 
-router.post('/:jobId/cancel', async (req, res) => {
+router.post('/:jobId/cancel', requireUserAuth, async (req, res) => {
   try {
-    await updateJobStatus(req.params.jobId, 'cancelled');
+    const jobId = req.params.jobId as string;
+    await prisma.migrationJob.update({ where: { id: jobId }, data: { state: 'CANCELLED', cancelledAt: new Date() } });
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -115,19 +136,15 @@ router.post('/:jobId/cancel', async (req, res) => {
 });
 
 router.get('/:jobId/status', async (req, res) => {
-  const jobId = req.params.jobId;
+  const jobId = req.params.jobId as string;
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
 
-  let lastUpdated = 0;
-  let lastLogId = 0;
-  
   const interval = setInterval(async () => {
     try {
-      const db = await getDb();
-      const job = await db.get(`SELECT * FROM migration_jobs WHERE jobId = ?`, [jobId]);
+      const job = await prisma.migrationJob.findUnique({ where: { id: jobId } });
       
       if (!job) {
         res.write(`data: ${JSON.stringify({ error: 'Job not found' })}\n\n`);
@@ -136,52 +153,32 @@ router.get('/:jobId/status', async (req, res) => {
         return;
       }
 
-      const logs = await db.all(`SELECT * FROM migration_logs WHERE jobId = ? AND id > ? ORDER BY id ASC`, [jobId, lastLogId]);
-      if (logs.length > 0) {
-        lastLogId = logs[logs.length - 1].id;
-      }
-
-      const transferred = Math.min(job.transferredBytes, job.totalBytes);
-      const completed = Math.min(job.completedFiles, job.totalFiles);
+      const transferred = Number(job.transferredBytes);
+      const totalBytes = Number(job.totalBytes);
+      const completed = job.completedFiles;
+      const totalFiles = job.totalFiles;
       const failed = job.failedFiles;
       
-      const percentage = job.totalBytes > 0 
-        ? Math.floor((transferred / job.totalBytes) * 100)
-        : (job.totalFiles > 0 ? Math.floor(((completed + failed) / job.totalFiles) * 100) : 0);
-        
-      const elapsed = Date.now() - job.startedAt;
-      const speed = elapsed > 0 ? (job.transferredBytes / (elapsed / 1000)) : 0;
-      let remainingSeconds = 0;
-      if (speed > 0 && job.totalBytes > 0) {
-         remainingSeconds = (job.totalBytes - job.transferredBytes) / speed;
-      }
+      let percentage = 0;
+      if (totalBytes > 0) percentage = Math.floor((transferred / totalBytes) * 100);
+      else if (totalFiles > 0) percentage = Math.floor(((completed + failed) / totalFiles) * 100);
+      
+      const elapsed = job.startedAt ? Date.now() - job.startedAt.getTime() : 0;
 
       res.write(`data: ${JSON.stringify({
-        status: job.status,
-        networkStatus: job.networkStatus,
-        retryCount: job.retryCount,
+        status: job.state.toLowerCase(),
         percentage: Math.min(percentage, 100),
-        totalFiles: job.totalFiles,
+        totalFiles,
         completedFiles: completed,
         failedFiles: failed,
-        totalBytes: job.totalBytes,
+        totalBytes,
         transferredBytes: transferred,
-        totalFolders: job.totalFolders,
-        completedFolders: job.completedFolders,
-        currentFile: job.currentFile,
-        currentFolder: job.currentFolder,
-        lastSuccessfulFile: job.lastSuccessfulFile,
-        speedBytesPerSecond: job.currentSpeed || speed,
-        remainingSeconds: job.eta || remainingSeconds,
-        activeWorkers: job.busyWorkers,
-        pendingQueue: job.queueLength,
-        pendingDBWrites: job.pendingDBWrites || 0,
-        deadWorkers: job.deadWorkers,
-        logs: logs.map(l => l.message),
-        elapsed: elapsed
+        speedBytesPerSecond: job.speed,
+        remainingSeconds: job.eta,
+        elapsed
       })}\n\n`);
 
-      if (job.status === 'completed' || job.status === 'completed_with_errors' || job.status === 'failed' || job.status === 'cancelled') {
+      if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(job.state)) {
         clearInterval(interval);
         res.end();
       }
@@ -194,40 +191,6 @@ router.get('/:jobId/status', async (req, res) => {
   req.on('close', () => {
     clearInterval(interval);
   });
-});
-
-router.get('/debug', async (req, res) => {
-  try {
-    const db = await getDb();
-    const job = await db.get(`
-      SELECT jobId, status, currentWorkers, idleWorkers, busyWorkers, deadWorkers, 
-             queueLength, currentSpeed, averageSpeed, retryCount, transferredBytes, 
-             completedFiles, totalFiles, totalBytes, pendingDBWrites
-      FROM migration_jobs 
-      WHERE status NOT IN ('completed', 'completed_with_errors', 'failed', 'cancelled')
-      ORDER BY startedAt DESC LIMIT 1
-    `);
-    
-    if (job) {
-      res.json({
-        jobId: job.jobId,
-        status: job.status,
-        workers: job.currentWorkers,
-        busy: job.busyWorkers,
-        idle: job.idleWorkers,
-        dead: job.deadWorkers,
-        queue: job.queueLength,
-        pendingDBWrites: job.pendingDBWrites || 0,
-        retries: job.retryCount,
-        speed: job.currentSpeed,
-        memory: process.memoryUsage()
-      });
-    } else {
-      res.json({ status: 'idle', memory: process.memoryUsage() });
-    }
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
 });
 
 export default router;

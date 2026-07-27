@@ -40,13 +40,7 @@ process.on('SIGTERM', async () => {
   process.exit(0);
 });
 
-export async function getDb() {
-  return {
-    run: async (...args: any[]) => ({ changes: 0 }),
-    get: async (...args: any[]) => null,
-    all: async (...args: any[]) => []
-  };
-}
+// getDb removed
 
 export async function createJob(jobId: string, payload: MigrationRequest, ownerId: string) {
   // Assume stats are pre-calculated or default to 0 for now
