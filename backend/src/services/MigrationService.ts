@@ -4,9 +4,9 @@ import { MigrationRequest } from '../transfer/types';
 import { RequestValidationError, ManifestError, ShortcutResolutionError } from '../utils/errors';
 
 export class MigrationService {
-  public async startMigrationJob(sessionId: string, payload: { manifestId: string, destinationFolderId: string, options: any }) {
-    if (!payload.manifestId) {
-      throw new RequestValidationError('Missing manifest ID. Source scan has not completed.');
+  public async startMigrationJob(sessionId: string, payload: { sourceSelection: any[], destinationFolderId: string, options: any }) {
+    if (!payload.sourceSelection || payload.sourceSelection.length === 0) {
+      throw new RequestValidationError('Missing source selection.');
     }
     if (!payload.destinationFolderId) {
       throw new RequestValidationError('Missing destination folder');
@@ -15,36 +15,17 @@ export class MigrationService {
       throw new RequestValidationError('Missing transfer options');
     }
 
-    const jobId = payload.manifestId;
+    const jobId = 'manifest_' + Date.now();
 
-    // 2. Validate Manifest via Prisma
-    const manifestStats = await prisma.migrationManifest.aggregate({
-      where: { jobId },
-      _count: { id: true },
-      _sum: { size: true }
-    });
-
-    if (manifestStats._count.id === 0) {
-      throw new ManifestError('Manifest validation failed: No items found for this manifest. Please rescan.');
-    }
-
-    const folderStats = await prisma.migrationManifest.count({
-      where: { jobId, isFolder: true }
-    });
-
-    const fileStats = await prisma.migrationManifest.count({
-      where: { jobId, isFolder: false }
-    });
-
-    const totalFolders = folderStats;
-    const totalFiles = fileStats;
-    const totalBytes = Number(manifestStats._sum.size || 0);
+    const totalFolders = 0;
+    const totalFiles = 0;
+    const totalBytes = 0;
 
     console.log(`[Backend] Creating migration job ${jobId}`);
 
     // Create a payload for createJob that mimics MigrationRequest
     const migrationRequest: MigrationRequest = {
-      sourceSelection: [], // Deprecated in favor of DB manifest
+      sourceSelection: payload.sourceSelection, // Pass the real source selection to the worker
       destinationFolder: { id: payload.destinationFolderId, name: 'Destination' },
       options: payload.options,
       manifestId: jobId,

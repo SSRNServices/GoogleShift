@@ -21,6 +21,7 @@ enum Status {
 
 enum MigrationState {
   QUEUED
+  SCANNING
   RUNNING
   PAUSED
   COMPLETED
@@ -86,7 +87,7 @@ model MigrationJob {
   destinationEmail    String?
   sourceFolderId      String?
   destinationFolderId String?
-  
+  totalFolders        Int      @default(0)
   totalFiles          Int      @default(0)
   completedFiles      Int      @default(0)
   failedFiles         Int      @default(0)
@@ -96,6 +97,7 @@ model MigrationJob {
   
   speed               Float    @default(0)
   eta                 Float    @default(0)
+  currentAction       String?
   
   startedAt           DateTime?
   completedAt         DateTime?

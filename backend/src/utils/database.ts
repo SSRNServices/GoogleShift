@@ -75,6 +75,7 @@ export async function getJob(jobId: string): Promise<any | null> {
 export async function updateJobStatus(jobId: string, status: string) {
   const stateMap: Record<string, MigrationState> = {
     'queued': MigrationState.QUEUED,
+    'scanning': MigrationState.SCANNING,
     'running': MigrationState.RUNNING,
     'paused': MigrationState.PAUSED,
     'completed': MigrationState.COMPLETED,
@@ -97,6 +98,10 @@ export async function updateJobProgress(jobId: string, updates: any) {
   if (updates.completedFiles !== undefined) data.completedFiles = updates.completedFiles;
   if (updates.failedFiles !== undefined) data.failedFiles = updates.failedFiles;
   if (updates.transferredBytes !== undefined) data.transferredBytes = updates.transferredBytes;
+  if (updates.totalFiles !== undefined) data.totalFiles = updates.totalFiles;
+  if (updates.totalFolders !== undefined) data.totalFolders = updates.totalFolders;
+  if (updates.totalBytes !== undefined) data.totalBytes = updates.totalBytes;
+  if (updates.currentAction !== undefined) data.currentAction = updates.currentAction;
   if (updates.speed !== undefined) data.speed = updates.speed;
   if (updates.eta !== undefined) data.eta = updates.eta;
 

@@ -6,6 +6,7 @@ import { FolderScheduler } from '../transfer/FolderScheduler';
 import { FileScheduler } from '../transfer/FileScheduler';
 import { AdaptiveRateLimiter } from '../transfer/AdaptiveRateLimiter';
 import { MigrationStateManager } from '../services/MigrationStateManager';
+import { driveService } from '../services/DriveService';
 import { DEFAULT_MIGRATION_CONFIG } from '../transfer/types';
 
 import { MigrationJob } from '../transfer/types';
@@ -20,7 +21,8 @@ export class MigrationWorker {
     console.log(`\n[ENTRY] MigrationWorker.executeMigration | Job: ${job.jobId} | Input: ${JSON.stringify(options)}`);
     console.log(`[STATE] STARTING\nMigration: ${job.jobId}\nReason: Explicit Start/Resume`);
     await logJobEvent(job.jobId, `[STATE] STARTING`);
-    await updateJobProgress(job.jobId, { status: 'running', networkStatus: 'online', retryCount: 0 });
+    await updateJobStatus(job.jobId, 'SCANNING');
+    await updateJobProgress(job.jobId, { currentAction: 'Initializing scan...', networkStatus: 'online', retryCount: 0 });
 
     // removed getDb
     // initialization will depend on the state manager which already has accurate Prisma queries
@@ -39,6 +41,34 @@ export class MigrationWorker {
 
       const actualDestId = destinationFolder.id === 'root' ? 'root' : destinationFolder.id;
       const { ManifestStorage } = await import('../utils/ManifestStorage');
+
+      // Phase 0: Scanning
+      console.log(`\n[STATE] SCANNING\nMigration: ${job.jobId}\nReason: Building Manifest from Source`);
+      await logJobEvent(job.jobId, `[STATE] SCANNING - Building manifest`);
+      
+      let lastEmitTime = 0;
+      await driveService.getSelectionSummary(
+        job.sessionId,
+        'source',
+        sourceSelection,
+        async (folders, files, bytes, currentAction) => {
+          const now = Date.now();
+          if (now - lastEmitTime > 1000 || currentAction === 'Complete') {
+             lastEmitTime = now;
+             await updateJobProgress(job.jobId, {
+               totalFolders: folders,
+               totalFiles: files,
+               totalBytes: bytes,
+               currentAction
+             });
+          }
+        },
+        job.jobId // Pass jobId down so DriveService uses it for manifest items
+      );
+      
+      console.log(`[STATE] SCAN COMPLETE`);
+      await updateJobStatus(job.jobId, 'RUNNING');
+      await updateJobProgress(job.jobId, { currentAction: 'Scan complete. Preparing folders...' });
 
       // Seed root folder
       await ManifestStorage.updateDestParentId(job.jobId, 'root', actualDestId);

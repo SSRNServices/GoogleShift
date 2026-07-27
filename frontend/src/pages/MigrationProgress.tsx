@@ -8,12 +8,14 @@ interface MigrationStatus {
   status: string;
   percentage: number;
   totalFiles: number;
+  totalFolders?: number;
   completedFiles: number;
   failedFiles: number;
   totalBytes: number;
   transferredBytes: number;
   currentFile: string;
   currentFolder: string;
+  currentAction?: string;
   speedBytesPerSecond: number;
   remainingSeconds: number;
   retryCount?: number;
@@ -26,6 +28,7 @@ export default function MigrationProgress() {
   const [status, setStatus] = useState<MigrationStatus>({
     status: 'idle',
     percentage: 0,
+    totalFolders: 0,
     totalFiles: 0,
     completedFiles: 0,
     failedFiles: 0,
@@ -33,6 +36,7 @@ export default function MigrationProgress() {
     transferredBytes: 0,
     currentFile: '',
     currentFolder: '',
+    currentAction: '',
     speedBytesPerSecond: 0,
     remainingSeconds: 0,
     retryCount: 0,
@@ -94,11 +98,19 @@ export default function MigrationProgress() {
           return;
         }
         
-        setStatus((prev: MigrationStatus) => ({
-          ...prev,
-          ...data,
-          logs: data.logs ? [...prev.logs, ...data.logs].slice(-50) : prev.logs
-        }));
+        setStatus((prev: MigrationStatus) => {
+          const newLogs = [...prev.logs];
+          if (data.currentAction && data.currentAction !== prev.currentAction) {
+             newLogs.push(`[${new Date().toLocaleTimeString()}] ${data.currentAction}`);
+          }
+          if (data.logs) newLogs.push(...data.logs);
+
+          return {
+            ...prev,
+            ...data,
+            logs: newLogs.slice(-50)
+          };
+        });
         
         setLoading(false);
         setConnectionError(null);
@@ -259,8 +271,8 @@ export default function MigrationProgress() {
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-8">
         <div className="mb-6 flex justify-between items-end">
           <div>
-            <div className="text-sm text-gray-500 mb-1">Overall Progress</div>
-            <div className="text-3xl font-bold text-gray-900 dark:text-white">{status.percentage}%</div>
+            <div className="text-sm text-gray-500 mb-1">{status.status === 'scanning' ? 'Scan Progress' : 'Overall Progress'}</div>
+            <div className="text-3xl font-bold text-gray-900 dark:text-white">{status.status === 'scanning' ? 'SCANNING...' : `${status.percentage}%`}</div>
           </div>
           <div className="text-right">
             <div className="text-sm text-gray-500 mb-1">Estimated Time Remaining</div>
@@ -282,11 +294,11 @@ export default function MigrationProgress() {
           </div>
           <div>
             <div className="text-xs text-gray-500 mb-1">Files Copied</div>
-            <div className="font-semibold">{status.completedFiles} / {status.totalFiles}</div>
+            <div className="font-semibold">{status.status === 'scanning' ? `Found: ${status.totalFiles}` : `${status.completedFiles} / ${status.totalFiles}`}</div>
           </div>
           <div>
-            <div className="text-xs text-gray-500 mb-1">Current Speed</div>
-            <div className="font-semibold">{formatBytes(status.speedBytesPerSecond)}/s</div>
+            <div className="text-xs text-gray-500 mb-1">Folders Discovered</div>
+            <div className="font-semibold">{status.totalFolders || 0}</div>
           </div>
           <div>
             <div className="text-xs text-gray-500 mb-1">Failed / Retries</div>

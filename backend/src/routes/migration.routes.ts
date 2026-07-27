@@ -176,6 +176,7 @@ router.get('/:jobId/status', async (req, res) => {
       res.write(`data: ${JSON.stringify({
         status: job.state.toLowerCase(),
         percentage: Math.min(percentage, 100),
+        totalFolders: job.totalFolders,
         totalFiles,
         completedFiles: completed,
         failedFiles: failed,
@@ -183,7 +184,8 @@ router.get('/:jobId/status', async (req, res) => {
         transferredBytes: transferred,
         speedBytesPerSecond: job.speed,
         remainingSeconds: job.eta,
-        elapsed
+        elapsed,
+        currentAction: job.currentAction
       })}\n\n`);
 
       if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(job.state)) {

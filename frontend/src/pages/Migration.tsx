@@ -115,12 +115,6 @@ export default function Migration() {
   });
 
   const [starting, setStarting] = useState(false);
-  
-  // Scan State
-  const [manifestId, setManifestId] = useState<string | null>(null);
-  const [isScanning, setIsScanning] = useState(false);
-  const [scanStats, setScanStats] = useState<{folders: number, files: number, bytes: number, currentAction?: string} | null>(null);
-  const [scanError, setScanError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchProfiles = async () => {
@@ -138,62 +132,17 @@ export default function Migration() {
     fetchProfiles();
   }, []);
 
-  const startScan = () => {
-    if (isScanning || manifestId || !sourceSelected) return;
-    
-    setIsScanning(true);
-    setScanError(null);
-    setScanStats({ folders: 0, files: 0, bytes: 0, currentAction: 'Starting scan...' });
-    
-    const es = new EventSource(`${API_URL}/api/drive/source/summary?items=${sourceSelected.id}:folder`, { withCredentials: true });
-    
-    es.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data.error) {
-           console.error('Scan error:', data.error);
-           setScanError(data.error);
-           es.close();
-           setIsScanning(false);
-           return;
-        }
-        if (data.complete) {
-           setManifestId(data.manifestId);
-           setScanStats({ folders: data.folders, files: data.files, bytes: data.bytes, currentAction: 'Complete' });
-           es.close();
-           setIsScanning(false);
-        } else {
-           setScanStats(data);
-        }
-      } catch {
-        // Ignored parse error
-      }
-    };
-    es.onerror = () => {
-      setScanError('Failed to connect to scan stream');
-      es.close();
-      setIsScanning(false);
-    };
-  };
-
   const handleNext = () => {
-    if (step === 3 && sourceSelected) {
-      startScan();
-    }
     setStep((s) => Math.min(s + 1, 6) as Step);
   };
   
   const handleBack = () => setStep((s) => Math.max(s - 1, 1) as Step);
 
   const startMigration = async () => {
-    if (!manifestId) {
-      alert("Source scan has not completed. Please wait until scanning finishes before starting migration.");
-      return;
-    }
     setStarting(true);
     try {
       await migrationApi.startMigration({
-        manifestId,
+        sourceSelection: [{ id: sourceSelected?.id || '', isFolder: true }],
         destinationFolderId: destSelected?.id || "",
         options: {
           ...options,
@@ -255,28 +204,6 @@ export default function Migration() {
           ))}
         </div>
       </div>
-
-      {(isScanning || scanStats) && step > 3 && (
-        <div className="mb-6 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 rounded-lg p-4">
-          <div className="flex justify-between items-center mb-2">
-            <h3 className="font-semibold text-indigo-900 dark:text-indigo-300 flex items-center">
-              {isScanning ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Check className="w-4 h-4 mr-2" />}
-              {isScanning ? 'Scanning Source Folder...' : 'Scan Complete'}
-            </h3>
-            {scanStats && (
-              <span className="text-sm text-indigo-700 dark:text-indigo-400">
-                {scanStats.folders} Folders | {scanStats.files} Files | {formatBytes(scanStats.bytes || 0)}
-              </span>
-            )}
-          </div>
-          {isScanning && scanStats?.currentAction && (
-             <p className="text-xs text-indigo-600 dark:text-indigo-400 truncate">{scanStats.currentAction}</p>
-          )}
-          {scanError && (
-             <p className="text-xs text-red-600 dark:text-red-400">Error: {scanError}</p>
-          )}
-        </div>
-      )}
 
       <div className="bg-white dark:bg-gray-900 shadow rounded-lg p-6 border border-gray-200 dark:border-gray-700 min-h-[400px]">
         {step === 1 && (
@@ -384,16 +311,8 @@ export default function Migration() {
                 <span className="font-medium text-gray-900 dark:text-white">{options.skipExisting ? 'Yes' : 'No'}</span>
               </div>
               <div className="flex justify-between border-b border-gray-200 dark:border-gray-700 pb-2">
-                <span className="text-gray-500">Total Folders:</span>
-                <span className="font-medium text-gray-900 dark:text-white">{scanStats?.folders || 0}</span>
-              </div>
-              <div className="flex justify-between border-b border-gray-200 dark:border-gray-700 pb-2">
-                <span className="text-gray-500">Total Files:</span>
-                <span className="font-medium text-gray-900 dark:text-white">{scanStats?.files || 0}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">Total Size:</span>
-                <span className="font-medium text-gray-900 dark:text-white">{formatBytes(scanStats?.bytes || 0)}</span>
+                <span className="text-gray-500">Scan:</span>
+                <span className="font-medium text-gray-900 dark:text-white">Will run before copying</span>
               </div>
             </div>
           </div>
@@ -420,9 +339,8 @@ export default function Migration() {
         ) : (
           <button
             onClick={startMigration}
-            disabled={starting || isScanning || !manifestId || !destSelected}
+            disabled={starting || !destSelected}
             className="flex items-center px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50"
-            title={(!manifestId || isScanning) ? "Scan must complete first" : ""}
           >
             {starting ? <Loader2 className="w-5 h-5 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
             Start Migration

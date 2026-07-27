@@ -188,7 +188,8 @@ export class DriveService {
     userId: string,
     type: AccountType, 
     items: { id: string, isFolder: boolean }[], 
-    onProgress: (folders: number, files: number, bytes: number, currentAction: string) => void
+    onProgress: (folders: number, files: number, bytes: number, currentAction: string) => Promise<void> | void,
+    manifestId: string
   ) {
     const drive = await this.getDriveClient(userId, type);
     
@@ -196,7 +197,6 @@ export class DriveService {
     let totalFiles = 0;
     let totalBytes = 0;
 
-    const manifestId = 'manifest_' + Date.now();
     const startTime = Date.now();
     console.log(`[Backend] Recursive scan started for ${type} account, ${items.length} items. Manifest: ${manifestId}`);
 
@@ -252,7 +252,7 @@ export class DriveService {
            depth: context.depth,
            retryCount: 0
         });
-        onProgress(totalFolders, totalFiles, totalBytes, `Scanned file: ${file.name}`);
+        await onProgress(totalFolders, totalFiles, totalBytes, `Scanned file: ${file.name}`);
       }
     }, apiWrapper);
 
@@ -274,7 +274,7 @@ export class DriveService {
     console.log(`[Backend] Persistence completed in ${persistenceElapsed}ms`);
 
     // Final update
-    onProgress(totalFolders, totalFiles, totalBytes, 'Complete');
+    await onProgress(totalFolders, totalFiles, totalBytes, 'Complete');
 
     return {
       manifestId,
