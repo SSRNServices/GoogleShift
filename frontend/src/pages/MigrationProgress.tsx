@@ -40,23 +40,27 @@ export default function MigrationProgress() {
   });
 
   const [loading, setLoading] = useState(true);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
 
-  useEffect(() => {
-    // 1. Fetch current job ID
-    const fetchCurrentJob = async () => {
-      try {
-        const data = await migrationApi.getCurrent();
-        if (data && data.jobId) {
-          setJobId(data.jobId);
-        } else {
-          // No active job
-          setLoading(false);
-        }
-      } catch (err) {
-        console.error(err);
+  const fetchCurrentJob = async () => {
+    try {
+      setLoading(true);
+      setConnectionError(null);
+      const data = await migrationApi.getCurrent();
+      if (data && data.jobId) {
+        setJobId(data.jobId);
+      } else {
+        // No active job
         setLoading(false);
       }
-    };
+    } catch (err: any) {
+      console.error(err);
+      setConnectionError(err.message || 'Failed to fetch current migration job');
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
     fetchCurrentJob();
   }, []);
 
@@ -64,13 +68,28 @@ export default function MigrationProgress() {
     if (!jobId) return;
     
     // 2. Connect SSE
-    const eventSource = new EventSource(`${API_URL}/api/migrations/${jobId}/status`);
+    const eventSource = new EventSource(`${API_URL}/api/migrations/${jobId}/status`, {
+      withCredentials: true
+    });
+    
+    const timeoutId = setTimeout(() => {
+      if (loading) {
+        setConnectionError('Connection timed out while waiting for migration service.');
+        setLoading(false);
+        eventSource.close();
+      }
+    }, 10000);
     
     eventSource.onmessage = (event) => {
       try {
+        clearTimeout(timeoutId);
+        if (event.data === 'heartbeat') return;
+
         const data = JSON.parse(event.data);
         if (data.error) {
           console.error('SSE Error:', data.error);
+          setConnectionError(data.error);
+          setLoading(false);
           eventSource.close();
           return;
         }
@@ -82,6 +101,7 @@ export default function MigrationProgress() {
         }));
         
         setLoading(false);
+        setConnectionError(null);
 
         if (['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(data.status)) {
           eventSource.close();
@@ -93,10 +113,14 @@ export default function MigrationProgress() {
 
     eventSource.onerror = (err) => {
       console.error('EventSource failed', err);
+      clearTimeout(timeoutId);
+      setConnectionError('Lost connection to migration service. Please retry.');
+      setLoading(false);
       eventSource.close();
     };
 
     return () => {
+      clearTimeout(timeoutId);
       eventSource.close();
     };
   }, [jobId]);
@@ -151,6 +175,32 @@ export default function MigrationProgress() {
       <div className="flex flex-col items-center justify-center min-h-[400px]">
         <Loader2 className="w-10 h-10 animate-spin text-indigo-600 mb-4" />
         <p className="text-gray-500">Connecting to migration service...</p>
+      </div>
+    );
+  }
+
+  if (connectionError) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[400px]">
+        <AlertCircle className="w-12 h-12 text-red-500 mb-4" />
+        <h2 className="text-xl font-bold mb-2">Connection Error</h2>
+        <p className="text-gray-500 mb-6">{connectionError}</p>
+        <button 
+          onClick={() => {
+            setLoading(true);
+            setConnectionError(null);
+            if (jobId) {
+              const currentJobId = jobId;
+              setJobId(null);
+              setTimeout(() => setJobId(currentJobId), 100);
+            } else {
+              fetchCurrentJob();
+            }
+          }}
+          className="bg-indigo-600 text-white px-6 py-2 rounded-md hover:bg-indigo-700"
+        >
+          Retry Connection
+        </button>
       </div>
     );
   }

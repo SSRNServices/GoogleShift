@@ -142,8 +142,16 @@ router.get('/:jobId/status', async (req, res) => {
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
 
+  let heartbeatCount = 0;
+
   const interval = setInterval(async () => {
     try {
+      heartbeatCount++;
+      // Send a ping every 5 seconds to prevent reverse proxy disconnects
+      if (heartbeatCount % 5 === 0) {
+        res.write('data: heartbeat\n\n');
+      }
+
       const job = await prisma.migrationJob.findUnique({ where: { id: jobId } });
       
       if (!job) {
@@ -183,8 +191,11 @@ router.get('/:jobId/status', async (req, res) => {
         res.end();
       }
 
-    } catch (e) {
+    } catch (e: any) {
       console.error('SSE Error:', e);
+      res.write(`data: ${JSON.stringify({ error: 'Internal server error while fetching job status' })}\n\n`);
+      clearInterval(interval);
+      res.end();
     }
   }, 1000);
 
