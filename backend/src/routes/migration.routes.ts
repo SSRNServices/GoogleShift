@@ -116,7 +116,7 @@ router.post('/:jobId/resume', requireUserAuth, async (req, res) => {
     await prisma.migrationJob.update({ where: { id: jobId }, data: { state: 'RUNNING' } });
     const { migrationWorker } = await import('../services/MigrationWorker');
     
-    const jobPayload = { ...job, sessionId: (req as any).user.id };
+    const jobPayload = { ...job, jobId: job.id, sessionId: (req as any).user.id };
     migrationWorker.executeMigration(jobPayload as any).catch(err => console.error('[FATAL]', err));
 
     res.json({ success: true, status: 'starting' });

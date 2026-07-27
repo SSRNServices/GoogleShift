@@ -42,39 +42,45 @@ export class MigrationWorker {
       const actualDestId = destinationFolder.id === 'root' ? 'root' : destinationFolder.id;
       const { ManifestStorage } = await import('../utils/ManifestStorage');
 
-      // Phase 0: Scanning
-      console.log(`\n[STATE] SCANNING\nMigration: ${job.jobId}\nReason: Building Manifest from Source`);
-      await logJobEvent(job.jobId, `[STATE] SCANNING - Building manifest`);
-      
-      let lastEmitTime = 0;
-      await driveService.getSelectionSummary(
-        job.sessionId,
-        'source',
-        sourceSelection,
-        async (folders, files, bytes, currentAction) => {
-          const now = Date.now();
-          if (now - lastEmitTime > 1000 || currentAction === 'Complete') {
-             lastEmitTime = now;
-             await updateJobProgress(job.jobId, {
-               totalFolders: folders,
-               totalFiles: files,
-               totalBytes: bytes,
-               currentAction
-             });
-          }
-        },
-        job.jobId // Pass jobId down so DriveService uses it for manifest items
-      );
-      
-      console.log(`[STATE] SCAN COMPLETE`);
-      await updateJobStatus(job.jobId, 'RUNNING');
-      await updateJobProgress(job.jobId, { currentAction: 'Scan complete. Preparing folders...' });
+      // Phase 0: Scanning (Only if sourceSelection is provided, i.e., NEW job)
+      if (sourceSelection && sourceSelection.length > 0) {
+        console.log(`\n[STATE] SCANNING\nMigration: ${job.jobId}\nReason: Building Manifest from Source`);
+        await logJobEvent(job.jobId, `[STATE] SCANNING - Building manifest`);
+        
+        let lastEmitTime = 0;
+        await driveService.getSelectionSummary(
+          job.sessionId,
+          'source',
+          sourceSelection,
+          async (folders, files, bytes, currentAction) => {
+            const now = Date.now();
+            if (now - lastEmitTime > 1000 || currentAction === 'Complete') {
+               lastEmitTime = now;
+               await updateJobProgress(job.jobId, {
+                 totalFolders: folders,
+                 totalFiles: files,
+                 totalBytes: bytes,
+                 currentAction
+               });
+            }
+          },
+          job.jobId // Pass jobId down so DriveService uses it for manifest items
+        );
+        
+        console.log(`[STATE] SCAN COMPLETE`);
+        await updateJobStatus(job.jobId, 'RUNNING');
+        await updateJobProgress(job.jobId, { currentAction: 'Scan complete. Preparing folders...' });
 
-      // Seed root folder
-      await ManifestStorage.updateDestParentId(job.jobId, 'root', actualDestId);
-      
-      // Queue root files immediately so FileScheduler doesn't think the queue is empty
-      await stateManager.queueChildren('root');
+        // Seed root folder
+        await ManifestStorage.updateDestParentId(job.jobId, 'root', actualDestId);
+        
+        // Queue root files immediately so FileScheduler doesn't think the queue is empty
+        await stateManager.queueChildren('root');
+      } else {
+        console.log(`\n[STATE] RESUMING\nMigration: ${job.jobId}\nReason: Skipping scan phase, manifest already exists.`);
+        await logJobEvent(job.jobId, `[STATE] RESUMING - Skipping manifest scan`);
+        await updateJobStatus(job.jobId, 'RUNNING');
+      }
 
       // Phase 1: Folders
       console.log(`\n[STATE] CREATING_FOLDERS\nMigration: ${job.jobId}\nReason: Folder Scheduler Initiated`);

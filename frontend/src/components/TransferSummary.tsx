@@ -1,6 +1,4 @@
-import { useState, useEffect } from 'react';
-import { API_URL } from '../config/api';
-import { ArrowRight, HardDrive, FolderOpen, File as FileIcon, Loader2 } from 'lucide-react';
+import { ArrowRight, HardDrive, FolderOpen, File as FileIcon } from 'lucide-react';
 import type { DriveItem } from '../types/drive';
 
 export interface TransferSummaryProps {
@@ -9,102 +7,21 @@ export interface TransferSummaryProps {
   onScanComplete?: (manifestId: string, stats: { folders: number, files: number, bytes: number }) => void;
 }
 
-const formatBytes = (bytes: number) => {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-};
-
 export function TransferSummary({ sourceSelection, destinationFolder, onScanComplete }: TransferSummaryProps) {
-  const [isScanning, setIsScanning] = useState(false);
-  const [scanStats, setScanStats] = useState({ folders: 0, files: 0, bytes: 0 });
-  const [currentAction, setCurrentAction] = useState<string>('');
+  // We simply pass the actual manifest generation to the backend `/start` route.
+  // There is no pre-scan needed anymore! We just notify the parent that they can proceed.
+  // Wait, if we call onScanComplete here immediately, the parent will enable the Start button.
+  // So we call it whenever sourceSelection or destinationFolder changes.
+  
+  // Actually, we don't even need onScanComplete to pass a manifestId anymore!
+  // We'll just pass a dummy string so the parent's `manifestId !== null` check passes, 
+  // or we'll modify the parent to ignore manifestId.
+  // Let's call it with a dummy ID just to keep the prop signature compatible for now.
 
-  useEffect(() => {
-    if (sourceSelection.length === 0) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setScanStats({ folders: 0, files: 0, bytes: 0 });
-      setCurrentAction('');
-      setIsScanning(false);
-      return;
-    }
-
-    setIsScanning(true);
-    setScanStats({ folders: 0, files: 0, bytes: 0 });
-    setCurrentAction('Starting scan...');
-
-    console.log('[Frontend] Folder selected for scan. Item count:', sourceSelection.length);
-
-    // Convert selection into items parameter: id1:folder,id2:file
-    const itemsParam = sourceSelection.map(item => {
-      const isFolder = item.mimeType === 'application/vnd.google-apps.folder' 
-                    || item.mimeType === 'application/vnd.google-apps.shortcut'
-                    || item.mimeType?.includes('folder');
-      return `${item.id}:${isFolder ? 'folder' : 'file'}`;
-    }).join(',');
-
-    const url = `${API_URL}/api/drive/source/summary?items=${encodeURIComponent(itemsParam)}`;
-    console.log('[Frontend] Summary request started. URL:', url);
-    const eventSource = new EventSource(url, { withCredentials: true });
-
-    eventSource.onopen = () => {
-      console.log('[Frontend] SSE connection opened successfully.');
-    };
-
-    eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        
-        if (data.error) {
-          console.error('Scan error:', data.error);
-          setCurrentAction(`Error: ${data.error}`);
-          setIsScanning(false);
-          eventSource.close();
-          return;
-        }
-
-        if (data.complete) {
-          console.log('[Frontend] Scanning completed. Final summary received:', data);
-          setIsScanning(false);
-          setCurrentAction('');
-          setScanStats({
-            folders: data.folders,
-            files: data.files,
-            bytes: data.bytes
-          });
-          if (onScanComplete && data.manifestId) {
-             onScanComplete(data.manifestId, { folders: data.folders, files: data.files, bytes: data.bytes });
-          }
-          eventSource.close();
-          return;
-        }
-
-        setScanStats({
-          folders: data.folders,
-          files: data.files,
-          bytes: data.bytes
-        });
-        if (data.currentAction) {
-          setCurrentAction(data.currentAction);
-        }
-
-      } catch (err) {
-        console.error('Error parsing SSE data', err);
-      }
-    };
-
-    eventSource.onerror = (err) => {
-      console.error('[Frontend] Summary failed / SSE Error:', err);
-      setIsScanning(false);
-      eventSource.close();
-    };
-
-    return () => {
-      eventSource.close();
-    };
-  }, [sourceSelection]);
+  if (sourceSelection.length > 0 && destinationFolder && onScanComplete) {
+     // Delay slightly to prevent render loop warnings if called directly in render
+     setTimeout(() => onScanComplete('ready', { folders: 0, files: 0, bytes: 0 }), 0);
+  }
 
   return (
     <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
@@ -121,25 +38,13 @@ export function TransferSummary({ sourceSelection, destinationFolder, onScanComp
               <div className="space-y-2">
                 <div className="flex items-center gap-2 text-sm">
                   <FolderOpen className="w-4 h-4 text-blue-500" />
-                  <span className="font-medium text-foreground">{scanStats.folders} Folders</span>
+                  <span className="font-medium text-foreground">{sourceSelection.length} Items Selected</span>
                 </div>
-                <div className="flex items-center gap-2 text-sm">
-                  <FileIcon className="w-4 h-4 text-muted-foreground" />
-                  <span className="font-medium text-foreground">{scanStats.files} Files</span>
-                </div>
-                <div className="flex items-center gap-2 text-sm">
-                  <HardDrive className="w-4 h-4 text-emerald-500" />
-                  <span className="font-medium text-foreground">Estimated Size: {formatBytes(scanStats.bytes)}</span>
-                </div>
-                {isScanning && (
-                  <div className="pt-2 border-t border-border mt-2">
-                    <div className="flex items-center gap-2 text-xs text-primary font-medium mb-1">
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      Scanning Drive...
+                <div className="pt-2 border-t border-border mt-2">
+                    <div className="text-xs text-muted-foreground">
+                      Full deep scan will occur automatically after starting the migration.
                     </div>
-                    {currentAction && <div className="text-[10px] text-muted-foreground truncate" title={currentAction}>{currentAction}</div>}
-                  </div>
-                )}
+                </div>
               </div>
           )}
         </div>
@@ -177,3 +82,4 @@ export function TransferSummary({ sourceSelection, destinationFolder, onScanComp
     </div>
   );
 }
+
