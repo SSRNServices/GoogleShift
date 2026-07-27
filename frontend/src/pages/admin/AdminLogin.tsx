@@ -44,8 +44,12 @@ export default function AdminLogin() {
       }
 
       window.location.href = '/admin'; // Force reload to refresh auth state
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError('Login failed');
+      }
       setSubmitting(false);
     }
   };

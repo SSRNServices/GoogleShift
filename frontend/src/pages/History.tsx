@@ -13,6 +13,18 @@ const formatDate = (dateString: string) => {
   }).format(new Date(dateString));
 };
 
+interface MigrationJob {
+  jobId: string;
+  status: string;
+  createdAt: string;
+  endedAt?: string;
+  sourceSelection?: {name?: string}[];
+  destinationFolder?: {name?: string};
+  completedFiles?: number;
+  totalFiles?: number;
+  failedFiles?: number;
+  totalBytes?: number;
+}
 export default function History() {
   const { data: migrations, isLoading } = useQuery({
     queryKey: ['migrations', 'history'],
@@ -48,7 +60,7 @@ export default function History() {
           </div>
         ) : (
           <div className="divide-y divide-border">
-            {migrations?.map((job: any) => (
+            {migrations?.map((job: MigrationJob) => (
               <div key={job.jobId} className="p-6 hover:bg-muted/50 transition-colors">
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                   

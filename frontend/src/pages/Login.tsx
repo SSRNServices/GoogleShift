@@ -29,8 +29,12 @@ export default function Login() {
         body: JSON.stringify({ email: formData.email, password: formData.password })
       });
       setAuth(data.user, data.accessToken, data.refreshToken);
-    } catch (err: any) {
-      setError(err.message || 'Login failed');
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setError(err.message || 'Login failed');
+      } else {
+        setError('Login failed');
+      }
     } finally {
       setLoading(false);
     }

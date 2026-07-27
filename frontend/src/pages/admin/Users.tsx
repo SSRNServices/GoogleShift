@@ -2,32 +2,33 @@ import { useState, useEffect } from 'react';
 import { apiClient } from '../../api/apiClient';
 import { Loader2, Plus, Edit2, Trash2, Search } from 'lucide-react';
 
+interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  isActive: boolean;
+  createdAt: string;
+}
+
 export default function Users() {
-  const [users, setUsers] = useState<any[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
 
   useEffect(() => {
-    fetchUsers();
+    apiClient('/api/admin/users')
+      .then(data => setUsers(data as User[]))
+      .catch(() => console.error('Failed to fetch users'))
+      .finally(() => setLoading(false));
   }, []);
-
-  const fetchUsers = async () => {
-    try {
-      const data = await apiClient('/api/admin/users');
-      setUsers(data);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleDelete = async (id: string) => {
     if (!confirm('Are you sure you want to delete this user?')) return;
     try {
       await apiClient(`/api/admin/users/${id}`, { method: 'DELETE' });
       setUsers(users.filter(u => u.id !== id));
-    } catch (e) {
+    } catch {
       alert('Failed to delete user');
     }
   };
@@ -39,7 +40,7 @@ export default function Users() {
         body: JSON.stringify({ isActive: !currentStatus })
       });
       setUsers(users.map(u => (u.id === id ? data : u)));
-    } catch (e) {
+    } catch {
       alert('Failed to update user status');
     }
   };

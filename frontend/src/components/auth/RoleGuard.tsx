@@ -14,7 +14,7 @@ export function RoleGuard({ allowedRoles, children }: RoleGuardProps) {
     return <Navigate to="/login" replace />;
   }
 
-  if (!allowedRoles.includes(user.role as any)) {
+  if (!allowedRoles.includes(user.role as 'SUPER_ADMIN' | 'ADMIN' | 'SUPERVISOR' | 'USER')) {
     return <Forbidden />;
   }
 

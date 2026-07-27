@@ -4,10 +4,26 @@ import { migrationApi } from '../api/migrationApi';
 import { Play, Pause, XCircle, ArrowLeft, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 import { API_URL } from '../config/api';
 
+interface MigrationStatus {
+  status: string;
+  percentage: number;
+  totalFiles: number;
+  completedFiles: number;
+  failedFiles: number;
+  totalBytes: number;
+  transferredBytes: number;
+  currentFile: string;
+  currentFolder: string;
+  speedBytesPerSecond: number;
+  remainingSeconds: number;
+  retryCount?: number;
+  logs: string[];
+}
+
 export default function MigrationProgress() {
   const navigate = useNavigate();
   const [jobId, setJobId] = useState<string | null>(null);
-  const [status, setStatus] = useState<any>({
+  const [status, setStatus] = useState<MigrationStatus>({
     status: 'idle',
     percentage: 0,
     totalFiles: 0,
@@ -19,6 +35,7 @@ export default function MigrationProgress() {
     currentFolder: '',
     speedBytesPerSecond: 0,
     remainingSeconds: 0,
+    retryCount: 0,
     logs: []
   });
 
@@ -58,7 +75,7 @@ export default function MigrationProgress() {
           return;
         }
         
-        setStatus((prev: any) => ({
+        setStatus((prev: MigrationStatus) => ({
           ...prev,
           ...data,
           logs: data.logs ? [...prev.logs, ...data.logs].slice(-50) : prev.logs

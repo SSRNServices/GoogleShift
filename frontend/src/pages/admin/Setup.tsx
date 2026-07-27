@@ -66,8 +66,12 @@ export default function Setup() {
 
       // Success, automatically logged in
       window.location.href = '/admin/dashboard';
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError('Setup failed');
+      }
       setSubmitting(false);
     }
   };

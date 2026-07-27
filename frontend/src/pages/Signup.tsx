@@ -58,8 +58,12 @@ export default function Signup() {
       });
       setAuth(data.user, data.accessToken, data.refreshToken);
       navigate('/dashboard');
-    } catch (err: any) {
-      setError(err.message || 'Failed to sign up');
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setError(err.message || 'Failed to sign up');
+      } else {
+        setError('Failed to sign up');
+      }
     } finally {
       setLoading(false);
     }

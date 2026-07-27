@@ -5,11 +5,23 @@ import { Cloud, HardDrive, Play, History, Settings, ExternalLink, Loader2, Alert
 import { apiClient } from '../api/apiClient';
 import { API_URL } from '../config/api';
 
+interface UserProfile {
+  state?: string;
+  profile?: {
+    picture?: string;
+    email?: string;
+    storage?: {
+      used?: number;
+      limit?: number;
+    };
+  };
+}
+
 export default function UserDashboard() {
   const { user } = useAuthStore();
   
-  const [sourceProfile, setSourceProfile] = useState<any>(null);
-  const [destProfile, setDestProfile] = useState<any>(null);
+  const [sourceProfile, setSourceProfile] = useState<UserProfile | null>(null);
+  const [destProfile, setDestProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -19,8 +31,8 @@ export default function UserDashboard() {
           apiClient('/auth/source/profile').catch(() => ({ state: 'NOT_CONNECTED' })),
           apiClient('/auth/destination/profile').catch(() => ({ state: 'NOT_CONNECTED' }))
         ]);
-        setSourceProfile(srcRes);
-        setDestProfile(destRes);
+        setSourceProfile(srcRes as UserProfile);
+        setDestProfile(destRes as UserProfile);
       } catch (e) {
         console.error(e);
       } finally {
@@ -119,7 +131,7 @@ export default function UserDashboard() {
                 <div>
                   <p className="text-sm font-medium text-gray-900 dark:text-white">{sourceProfile.profile?.email}</p>
                   <p className="text-xs text-gray-500">
-                    Storage: {formatBytes(sourceProfile.profile?.storage?.used)} / {formatBytes(sourceProfile.profile?.storage?.limit)}
+                    Storage: {formatBytes(sourceProfile.profile?.storage?.used || 0)} / {formatBytes(sourceProfile.profile?.storage?.limit || 0)}
                   </p>
                 </div>
               </div>
@@ -173,7 +185,7 @@ export default function UserDashboard() {
                 <div>
                   <p className="text-sm font-medium text-gray-900 dark:text-white">{destProfile.profile?.email}</p>
                   <p className="text-xs text-gray-500">
-                    Storage: {formatBytes(destProfile.profile?.storage?.used)} / {formatBytes(destProfile.profile?.storage?.limit)}
+                    Storage: {formatBytes(destProfile.profile?.storage?.used || 0)} / {formatBytes(destProfile.profile?.storage?.limit || 0)}
                   </p>
                 </div>
               </div>
@@ -242,8 +254,7 @@ export default function UserDashboard() {
   );
 }
 
-// Inline ArrowRight since it was missing import
-function ArrowRight(props: any) {
+function ArrowRight(props: React.SVGProps<SVGSVGElement>) {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
       <path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>

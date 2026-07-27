@@ -5,12 +5,13 @@ import { API_URL } from '../config/api';
 import { Check, ChevronRight, Folder, Loader2, ArrowLeft, Cloud, HardDrive, Settings, Play } from 'lucide-react';
 import { migrationApi } from '../api/migrationApi';
 import type { TransferOptionsState } from '../types/transfer';
+import type { DriveItem } from '../types/drive';
 
 type Step = 1 | 2 | 3 | 4 | 5 | 6;
 
-function TreeItem({ item, type, onSelect, selectedId }: { item: any, type: string, onSelect: (it: any) => void, selectedId: string }) {
+function TreeItem({ item, type, onSelect, selectedId }: { item: DriveItem, type: string, onSelect: (it: DriveItem) => void, selectedId?: string }) {
   const [expanded, setExpanded] = useState(false);
-  const [children, setChildren] = useState<any[]>([]);
+  const [children, setChildren] = useState<DriveItem[]>([]);
   const [loading, setLoading] = useState(false);
 
   const isFolder = item.mimeType === 'application/vnd.google-apps.folder';
@@ -55,8 +56,8 @@ function TreeItem({ item, type, onSelect, selectedId }: { item: any, type: strin
   );
 }
 
-function FolderTree({ type, onSelect, selectedId }: { type: 'source' | 'destination', onSelect: (it: any) => void, selectedId: string }) {
-  const [rootItems, setRootItems] = useState<any[]>([]);
+function FolderTree({ type, onSelect, selectedId }: { type: 'source' | 'destination', onSelect: (it: DriveItem) => void, selectedId?: string | undefined }) {
+  const [rootItems, setRootItems] = useState<DriveItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
@@ -92,11 +93,11 @@ function FolderTree({ type, onSelect, selectedId }: { type: 'source' | 'destinat
 export default function Migration() {
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>(1);
-  const [sourceProfile, setSourceProfile] = useState<any>(null);
-  const [destProfile, setDestProfile] = useState<any>(null);
+  const [sourceProfile, setSourceProfile] = useState<{state?: string; profile?: {email?: string}} | null>(null);
+  const [destProfile, setDestProfile] = useState<{state?: string; profile?: {email?: string}} | null>(null);
   
-  const [sourceSelected, setSourceSelected] = useState<any>(null);
-  const [destSelected, setDestSelected] = useState<any>(null);
+  const [sourceSelected, setSourceSelected] = useState<DriveItem | null>(null);
+  const [destSelected, setDestSelected] = useState<DriveItem | null>(null);
   
   const [options, setOptions] = useState<TransferOptionsState>({
     preserveStructure: true,
@@ -118,7 +119,7 @@ export default function Migration() {
   // Scan State
   const [manifestId, setManifestId] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState(false);
-  const [scanStats, setScanStats] = useState<any>(null);
+  const [scanStats, setScanStats] = useState<{folders: number, files: number, bytes: number, currentAction?: string} | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -164,7 +165,9 @@ export default function Migration() {
         } else {
            setScanStats(data);
         }
-      } catch (err) {}
+      } catch {
+        // Ignored parse error
+      }
     };
     es.onerror = () => {
       setScanError('Failed to connect to scan stream');
@@ -191,16 +194,19 @@ export default function Migration() {
     try {
       await migrationApi.startMigration({
         manifestId,
-        destinationFolderId: destSelected.id,
+        destinationFolderId: destSelected?.id || "",
         options: {
           ...options,
           renameConflicts: !options.overwriteExisting && !options.skipExisting
         }
       });
       navigate('/migration/progress');
-    } catch (err: any) {
-      console.error(err);
-      alert(err.message || 'Failed to start migration');
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        alert(err.message || 'Failed to start migration');
+      } else {
+        alert('Failed to start migration');
+      }
     } finally {
       setStarting(false);
     }

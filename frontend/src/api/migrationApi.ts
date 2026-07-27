@@ -1,4 +1,3 @@
-import type { DriveItem } from '../types/drive';
 import type { TransferOptionsState } from '../types/transfer';
 import { API_URL } from '../config/api';
 

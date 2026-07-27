@@ -26,8 +26,28 @@ const formatTime = (seconds: number) => {
   return `${s}s`;
 };
 
+interface MigrationStatus {
+  status: string;
+  networkStatus: string;
+  retryCount: number;
+  percentage: number;
+  totalFiles: number;
+  completedFiles: number;
+  failedFiles: number;
+  totalBytes: number;
+  transferredBytes: number;
+  totalFolders: number;
+  completedFolders: number;
+  currentFile: string;
+  currentFolder: string;
+  lastSuccessfulFile: string;
+  speedBytesPerSecond: number;
+  remainingSeconds: number;
+  elapsed: number;
+}
+
 export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) {
-  const [status, setStatus] = useState<any>({
+  const [status, setStatus] = useState<MigrationStatus>({
     status: 'queued',
     networkStatus: 'online',
     retryCount: 0,
@@ -61,7 +81,7 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
            return;
         }
         
-        setStatus((prev: any) => ({ ...prev, ...data }));
+        setStatus((prev: MigrationStatus) => ({ ...prev, ...data }));
         if (data.logs && data.logs.length > 0) {
            setLogs(prev => [...prev, ...data.logs]);
         }
@@ -69,7 +89,7 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
         if (data.status === 'completed' || data.status === 'completed_with_errors' || data.status === 'failed' || data.status === 'cancelled') {
            eventSource.close();
         }
-      } catch (err) {}
+      } catch { /* ignored */ }
     };
 
     return () => {
@@ -80,7 +100,7 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
   const handleCancel = async () => {
     try {
       await fetch(`${API_URL}/api/migrations/${jobId}/cancel`, { method: 'POST', credentials: 'include' });
-    } catch (err) {}
+    } catch { /* ignored */ }
   };
 
   const isTerminal = status.status === 'completed' || status.status === 'completed_with_errors' || status.status === 'failed' || status.status === 'cancelled';

@@ -204,7 +204,7 @@ export default function Dashboard() {
 
   const resumeMutation = useMutation({
     mutationFn: migrationApi.resume,
-    onSuccess: (_data: any, variables: string) => {
+    onSuccess: (_data: unknown, variables: string) => {
       setActiveJobId(variables);
     },
     onError: (e) => toast.error('Failed to resume migration: ' + e.message)
@@ -225,7 +225,7 @@ export default function Dashboard() {
 
   const migrationMutation = useMutation({
     mutationFn: migrationApi.startMigration,
-    onSuccess: (data: any) => {
+    onSuccess: (data: { jobId: string }) => {
       console.log('Migration started successfully:', data);
       toast.success('Migration job initialized successfully!');
       if (data.jobId) {
@@ -259,14 +259,15 @@ export default function Dashboard() {
 
     const payload = {
       manifestId,
-      sourceSelection,
-      destinationFolder,
+      destinationFolderId: destinationFolder.id,
       options: transferOptions
     };
 
     try {
       await migrationMutation.mutateAsync(payload);
-    } catch (e) {}
+    } catch {
+      // Error handled by onError in mutation
+    }
   };
 
   if (activeJobId) {
