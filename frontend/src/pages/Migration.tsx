@@ -142,7 +142,7 @@ export default function Migration() {
     setStarting(true);
     try {
       await migrationApi.startMigration({
-        sourceSelection: [{ id: sourceSelected?.id || '', isFolder: true }],
+        sourceSelection: sourceSelected ? [sourceSelected] : [],
         destinationFolderId: destSelected?.id || "",
         options: {
           ...options,
@@ -170,14 +170,6 @@ export default function Migration() {
     if (step === 3) return !!sourceSelected;
     if (step === 4) return !!destSelected;
     return true;
-  };
-
-  const formatBytes = (bytes: number) => {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
   return (

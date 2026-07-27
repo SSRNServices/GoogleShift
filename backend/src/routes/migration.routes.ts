@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { migrationService } from '../services/MigrationService';
 import { prisma } from "../utils/database";
 import { requireBothAuth, requireUserAuth } from '../auth/auth.middleware';
+import { StartMigrationPayload } from '../transfer/types';
 
 const router = Router();
 
@@ -94,7 +95,8 @@ router.post('/start', requireBothAuth, async (req, res) => {
       }));
     }
 
-    const job = await migrationService.startMigrationJob(userId, req.body);
+    const payload: StartMigrationPayload = req.body;
+    const job = await migrationService.startMigrationJob(userId, payload);
     res.status(200).json(job);
   } catch (error: any) {
     console.error('Error starting migration:', error);

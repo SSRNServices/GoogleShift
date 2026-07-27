@@ -1,10 +1,10 @@
 // @ts-nocheck
 import { createJob, updateJobStatus, prisma } from '../utils/database';
-import { MigrationRequest } from '../transfer/types';
+import { MigrationRequest, StartMigrationPayload } from '../transfer/types';
 import { RequestValidationError, ManifestError, ShortcutResolutionError } from '../utils/errors';
 
 export class MigrationService {
-  public async startMigrationJob(sessionId: string, payload: { manifestId?: string, sourceSelection: any[], destinationFolderId: string, options: any }) {
+  public async startMigrationJob(sessionId: string, payload: StartMigrationPayload) {
     if (!payload.sourceSelection || payload.sourceSelection.length === 0) {
       throw new RequestValidationError('Missing source selection.');
     }

@@ -135,3 +135,10 @@ export interface ScanSummaryResult {
   manifestId?: string;
   jobId?: string;
 }
+
+export interface StartMigrationPayload {
+  manifestId?: string;
+  sourceSelection: DriveItem[];
+  destinationFolderId: string;
+  options: TransferOptionsState;
+}

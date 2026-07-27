@@ -1,4 +1,4 @@
-import type { DriveFolder, DriveFile } from './drive';
+import type { DriveFolder, DriveFile, DriveItem } from './drive';
 
 export interface TransferOptionsState {
   preserveStructure: boolean;
@@ -32,3 +32,10 @@ export interface TransferManifest {
 }
 
 export type ConflictStrategy = 'OVERWRITE' | 'SKIP' | 'RENAME';
+
+export interface StartMigrationPayload {
+  manifestId?: string;
+  sourceSelection: DriveItem[];
+  destinationFolderId: string;
+  options: TransferOptionsState;
+}

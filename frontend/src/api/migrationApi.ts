@@ -1,11 +1,5 @@
-import type { TransferOptionsState } from '../types/transfer';
+import type { StartMigrationPayload } from '../types/transfer';
 import { API_URL } from '../config/api';
-
-export interface StartMigrationPayload {
-  manifestId: string;
-  destinationFolderId: string;
-  options: TransferOptionsState;
-}
 
 export const migrationApi = {
   async startMigration(payload: StartMigrationPayload) {

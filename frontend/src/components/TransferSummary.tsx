@@ -38,6 +38,7 @@ export function TransferSummary({ sourceSelection, destinationFolder, onScanComp
 
   useEffect(() => {
     if (sourceSelection.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setScanState('Idle');
       return;
     }

@@ -57,14 +57,15 @@ export default function MigrationProgress() {
         // No active job
         setLoading(false);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
-      setConnectionError(err.message || 'Failed to fetch current migration job');
+      setConnectionError(err instanceof Error ? err.message : 'Failed to fetch current migration job');
       setLoading(false);
     }
   };
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchCurrentJob();
   }, []);
 
