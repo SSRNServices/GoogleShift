@@ -4,7 +4,7 @@ import { MigrationRequest } from '../transfer/types';
 import { RequestValidationError, ManifestError, ShortcutResolutionError } from '../utils/errors';
 
 export class MigrationService {
-  public async startMigrationJob(sessionId: string, payload: { sourceSelection: any[], destinationFolderId: string, options: any }) {
+  public async startMigrationJob(sessionId: string, payload: { manifestId?: string, sourceSelection: any[], destinationFolderId: string, options: any }) {
     if (!payload.sourceSelection || payload.sourceSelection.length === 0) {
       throw new RequestValidationError('Missing source selection.');
     }
@@ -15,7 +15,7 @@ export class MigrationService {
       throw new RequestValidationError('Missing transfer options');
     }
 
-    const jobId = 'manifest_' + Date.now();
+    const jobId = payload.manifestId || 'manifest_' + Date.now();
 
     const totalFolders = 0;
     const totalFiles = 0;

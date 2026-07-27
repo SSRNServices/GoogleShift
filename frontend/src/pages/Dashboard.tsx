@@ -178,17 +178,19 @@ export default function Dashboard() {
   const [sourceSelection, setSourceSelection] = useState<DriveItem[]>([]);
   const [destinationFolder, setDestinationFolder] = useState<DriveItem | null>(null);
   const [transferOptions, setTransferOptions] = useState<TransferOptionsState>(defaultOptions);
+  const [manifestId, setManifestId] = useState<string | null>(null);
 
   const handleSelectionComplete = (selection: DriveItem | DriveItem[]) => {
     if (modalType === 'source') {
       setSourceSelection(Array.isArray(selection) ? selection : [selection]);
+      setManifestId(null);
     } else if (modalType === 'destination') {
       setDestinationFolder(Array.isArray(selection) ? selection[0] : selection);
     }
     setModalType(null);
   };
 
-  const isReadyToTransfer = sourceSelection.length > 0 && destinationFolder !== null;
+  const isReadyToTransfer = sourceSelection.length > 0 && destinationFolder !== null && manifestId !== null;
 
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
@@ -249,9 +251,14 @@ export default function Dashboard() {
       toast.error('Please select a destination folder');
       return;
     }
+    if (!manifestId) {
+      toast.error('Please wait for the summary scan to complete');
+      return;
+    }
     if (migrationMutation.isPending) return;
 
     const payload = {
+      manifestId,
       sourceSelection,
       destinationFolderId: destinationFolder.id,
       options: transferOptions
@@ -373,6 +380,7 @@ export default function Dashboard() {
             <TransferSummary 
               sourceSelection={sourceSelection}
               destinationFolder={destinationFolder}
+              onScanComplete={(id) => setManifestId(id)}
             />
             <TransferOptions 
               options={transferOptions}

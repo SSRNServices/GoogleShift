@@ -188,7 +188,7 @@ export class DriveService {
     userId: string,
     type: AccountType, 
     items: { id: string, isFolder: boolean }[], 
-    onProgress: (folders: number, files: number, bytes: number, currentAction: string) => Promise<void> | void,
+    onProgress: (folders: number, files: number, bytes: number, currentAction: string, summary?: any) => Promise<void> | void,
     manifestId: string
   ) {
     const drive = await this.getDriveClient(userId, type);
@@ -196,6 +196,13 @@ export class DriveService {
     let totalFolders = 0;
     let totalFiles = 0;
     let totalBytes = 0;
+    let googleDocs = 0;
+    let googleSheets = 0;
+    let googleSlides = 0;
+    let unsupported = 0;
+    let duplicates = 0;
+    let largestFile = 0;
+    const fileHashes = new Set<string>();
 
     const startTime = Date.now();
     console.log(`[Backend] Recursive scan started for ${type} account, ${items.length} items. Manifest: ${manifestId}`);
@@ -235,6 +242,21 @@ export class DriveService {
       onFile: async (file, context) => {
         totalFiles++;
         totalBytes += file.size;
+        
+        if (file.size > largestFile) largestFile = file.size;
+        
+        if (file.mimeType === 'application/vnd.google-apps.document') googleDocs++;
+        else if (file.mimeType === 'application/vnd.google-apps.spreadsheet') googleSheets++;
+        else if (file.mimeType === 'application/vnd.google-apps.presentation') googleSlides++;
+        else if (file.mimeType?.includes('vnd.google-apps') && file.mimeType !== 'application/vnd.google-apps.shortcut') unsupported++;
+
+        const hash = `${file.name}-${file.size}-${file.mimeType}`;
+        if (fileHashes.has(hash)) {
+          duplicates++;
+        } else {
+          fileHashes.add(hash);
+        }
+
         manifestItems.push({
            jobId: manifestId,
            id: file.id,
@@ -252,7 +274,23 @@ export class DriveService {
            depth: context.depth,
            retryCount: 0
         });
-        await onProgress(totalFolders, totalFiles, totalBytes, `Scanned file: ${file.name}`);
+        
+        const summaryObj = { 
+          selectedItems: items.length,
+          folderCount: totalFolders, 
+          fileCount: totalFiles, 
+          totalBytes, 
+          googleDocs, 
+          googleSheets, 
+          googleSlides, 
+          unsupported, 
+          duplicates, 
+          largestFile,
+          scanStatus: 'Scanning' as const,
+          manifestId,
+          jobId: manifestId
+        };
+        await onProgress(totalFolders, totalFiles, totalBytes, `Scanned file: ${file.name}`, summaryObj);
       }
     }, apiWrapper);
 
@@ -273,15 +311,26 @@ export class DriveService {
     const persistenceElapsed = Date.now() - persistenceStart;
     console.log(`[Backend] Persistence completed in ${persistenceElapsed}ms`);
 
-    // Final update
-    await onProgress(totalFolders, totalFiles, totalBytes, 'Complete');
-
-    return {
+    const summaryObj = { 
+      selectedItems: items.length,
+      folderCount: totalFolders, 
+      fileCount: totalFiles, 
+      totalBytes, 
+      googleDocs, 
+      googleSheets, 
+      googleSlides, 
+      unsupported, 
+      duplicates, 
+      largestFile,
+      scanStatus: 'Completed' as const,
       manifestId,
-      folders: totalFolders,
-      files: totalFiles,
-      bytes: totalBytes
+      jobId: manifestId
     };
+
+    // Final update
+    await onProgress(totalFolders, totalFiles, totalBytes, 'Complete', summaryObj);
+
+    return summaryObj;
   }
 }
 

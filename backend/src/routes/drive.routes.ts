@@ -19,7 +19,61 @@ router.use('/:type', (req, res, next) => {
 // Protect all drive routes
 router.use('/:type', requireAuth());
 
+router.get('/:type/summary', async (req, res) => {
+  const type = req.params.type as AccountType;
+  const itemsParam = req.query.items as string; // format: "id:type,id:type" e.g., "123:folder,456:file"
 
+  console.log(`[DriveRoutes] /${type}/summary requested. Items:`, itemsParam);
+
+  if (!itemsParam) {
+    res.status(400).json({ error: 'Missing items parameter' });
+    return;
+  }
+
+  const items = itemsParam.split(',').map(part => {
+    const [id, itemType] = part.split(':');
+    return { id, isFolder: itemType === 'folder' };
+  });
+
+  // Setup SSE headers
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no' // Prevent NGINX/proxies from buffering SSE
+  });
+
+  // Flush headers immediately if possible
+  if (res.flushHeaders) {
+    res.flushHeaders();
+  }
+  
+  res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
+
+  const manifestId = 'manifest_scan_' + Date.now();
+
+  const onProgress = (folders: number, files: number, bytes: number, currentAction: string, summary?: any) => {
+    // Send progress updates with the aggregated summary payload
+    const payload = summary || {
+      scanStatus: 'Scanning',
+      folderCount: folders,
+      fileCount: files,
+      totalBytes: bytes,
+    };
+    res.write(`data: ${JSON.stringify({ ...payload, currentAction })}\n\n`);
+  };
+
+  try {
+    const summary = await driveService.getSelectionSummary((req as any).user.id, type, items, onProgress, manifestId);
+    console.log(`[DriveRoutes] Scan complete for ${manifestId}. Sending complete event.`);
+    res.write(`data: ${JSON.stringify({ ...summary, complete: true, scanStatus: 'Completed' })}\n\n`);
+  } catch (error: any) {
+    console.error(`[DriveRoutes] Error calculating summary for ${type}:`, error.message);
+    res.write(`data: ${JSON.stringify({ error: error.message, scanStatus: 'Failed' })}\n\n`);
+  } finally {
+    res.end();
+  }
+});
 
 router.get('/:type/root', async (req, res) => {
   const type = req.params.type as AccountType;

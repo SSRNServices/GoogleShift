@@ -21,3 +21,19 @@ export interface FolderSelection {
 export interface FileSelection {
   files: DriveFile[];
 }
+
+export interface ScanSummaryResult {
+  selectedItems: number;
+  folderCount: number;
+  fileCount: number;
+  totalBytes: number;
+  googleDocs: number;
+  googleSheets: number;
+  googleSlides: number;
+  unsupported: number;
+  duplicates: number;
+  largestFile: number;
+  scanStatus: 'Idle' | 'Scanning' | 'Completed' | 'Failed' | 'Disconnected';
+  manifestId?: string;
+  jobId?: string;
+}
