@@ -57,45 +57,50 @@ export const requireSuperAdmin = (req: Request, res: Response, next: NextFunctio
   });
 };
 
-// Drive auth middlewares remain similar, they check the session token store.
 export const requireAuth = (explicitType?: AccountType) => {
   return async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const type = explicitType || (req.params.type as AccountType);
-      
-      if (type !== 'source' && type !== 'destination') {
-        res.status(400).json({ error: 'Bad Request', message: 'Invalid account type' });
-        return;
-      }
+    requireUserAuth(req, res, async () => {
+      try {
+        const type = explicitType || (req.params.type as AccountType);
+        
+        if (type !== 'source' && type !== 'destination') {
+          res.status(400).json({ error: 'Bad Request', message: 'Invalid account type' });
+          return;
+        }
 
-      const tokens = await tokenStore.getTokens(req.sessionID, type);
+        const userId = (req as any).user.id;
+        const tokens = await tokenStore.getTokens(userId, type);
+        
+        if (!tokens || !tokens.access_token) {
+          res.status(401).json({ error: 'Unauthorized', message: `Missing authentication tokens for ${type} account` });
+          return;
+        }
+        
+        next();
+      } catch (error) {
+        console.error(`Auth Middleware Error (${explicitType || 'dynamic'}):`, error);
+        res.status(500).json({ error: 'Internal Server Error', message: 'Failed to authenticate request' });
+      }
+    });
+  };
+};
+
+export const requireBothAuth = async (req: Request, res: Response, next: NextFunction) => {
+  requireUserAuth(req, res, async () => {
+    try {
+      const userId = (req as any).user.id;
+      const sourceTokens = await tokenStore.getTokens(userId, 'source');
+      const destTokens = await tokenStore.getTokens(userId, 'destination');
       
-      if (!tokens || !tokens.access_token) {
-        res.status(401).json({ error: 'Unauthorized', message: `Missing authentication tokens for ${type} account` });
+      if (!sourceTokens || !sourceTokens.access_token || !destTokens || !destTokens.access_token) {
+        res.status(401).json({ error: 'Unauthorized', message: `Missing authentication tokens for source or destination` });
         return;
       }
       
       next();
     } catch (error) {
-      console.error(`Auth Middleware Error (${explicitType || 'dynamic'}):`, error);
+      console.error(`Auth Middleware Error (Both):`, error);
       res.status(500).json({ error: 'Internal Server Error', message: 'Failed to authenticate request' });
     }
-  };
-};
-
-export const requireBothAuth = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const sourceTokens = await tokenStore.getTokens(req.sessionID, 'source');
-    const destTokens = await tokenStore.getTokens(req.sessionID, 'destination');
-    
-    if (!sourceTokens || !sourceTokens.access_token || !destTokens || !destTokens.access_token) {
-      res.status(401).json({ error: 'Unauthorized', message: `Missing authentication tokens for source or destination` });
-      return;
-    }
-    
-    next();
-  } catch (error) {
-    console.error(`Auth Middleware Error (Both):`, error);
-    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to authenticate request' });
-  }
+  });
 };

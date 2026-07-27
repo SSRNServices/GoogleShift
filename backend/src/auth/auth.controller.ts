@@ -166,54 +166,55 @@ export class AuthController {
     const code = req.query.code as string;
     const state = req.query.state as string;
     const type = state as AccountType;
-    
     if (!code || !state || (type !== 'source' && type !== 'destination')) {
       res.status(400).send('Invalid code or state');
       return;
     }
 
     try {
-      await authService.handleCallback(req.sessionID, type, code);
-      
+      const userId = (req as any).user.id;
+      await authService.handleCallback(userId, type, code);
+
       // Immediately retrieve Profile and Quota to verify token works
-      const profileResponse = await authService.getProfile(req.sessionID, type);
-      
+      const profileResponse = await authService.getProfile(userId, type);
+
       console.log(`\n=== OAuth Success for ${type} ===`);
-      console.log(`Name: ${profileResponse.profile?.name}`);
-      console.log(`Email: ${profileResponse.profile?.email}`);
-      console.log(`Storage Used: ${profileResponse.profile?.storage.used}`);
+      console.log(`Account Name: ${profileResponse.profile?.name}`);
+      console.log(`Account Email: ${profileResponse.profile?.email}`);
       console.log(`Storage Limit: ${profileResponse.profile?.storage.limit}`);
-      console.log('=================================\n');
+      console.log(`Storage Used: ${profileResponse.profile?.storage.used}`);
+      console.log(`=================================\n`);
 
       // Redirect back to frontend migration page
       const frontendUrl = process.env.NODE_ENV === 'production' 
         ? 'https://migration.ssrnservices.in' 
         : 'http://localhost:5173';
       res.redirect(`${frontendUrl}/migration?connected=${type}`);
-    } catch (error: any) {
-      console.error(`Error during ${type} callback:`, error);
-      if (error.name === 'NetworkError') {
-        res.status(502).send("Unable to reach Google's OAuth servers. Please check your internet connection or try again.");
-      } else {
-        res.status(500).send("Authentication failed");
-      }
+    } catch (error) {
+      console.error(`Callback error for ${type}:`, error);
+      res.redirect('/migration?error=auth_failed');
     }
   };
 
   public getProfile = async (req: Request, res: Response): Promise<void> => {
     const type = req.params.type as AccountType;
+    if (type !== 'source' && type !== 'destination') {
+      res.status(400).json({ error: 'Bad Request', message: 'Invalid account type' });
+      return;
+    }
+
     try {
-      const profileResponse = await authService.getProfile(req.sessionID, type);
+      const userId = (req as any).user.id;
+      const profileResponse = await authService.getProfile(userId, type);
       res.json(profileResponse);
     } catch (error) {
-      console.error(`Unexpected server error fetching profile for ${type}:`, error);
-      res.status(500).json({ state: ConnectionState.NOT_CONNECTED, error: 'Internal Server Error' });
+      console.error(`Get profile error for ${type}:`, error);
+      res.status(500).json({ error: 'Internal Server Error', message: 'Failed to fetch profile' });
     }
   };
 
   public logout = async (req: Request, res: Response): Promise<void> => {
     const type = req.params.type as AccountType;
-    await authService.logout(req.sessionID, type);
     res.json({ success: true });
   };
 }

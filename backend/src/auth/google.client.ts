@@ -43,8 +43,8 @@ export class GoogleClientManager {
     return url;
   }
 
-  public async getAuthenticatedClient(sessionId: string, type: AccountType): Promise<OAuth2Client | null> {
-    const tokens = await tokenStore.getTokens(sessionId, type);
+  public async getAuthenticatedClient(userId: string, type: AccountType): Promise<OAuth2Client | null> {
+    const tokens = await tokenStore.getTokens(userId, type);
     if (!tokens) {
       return null;
     }
@@ -55,8 +55,8 @@ export class GoogleClientManager {
     // Listen for automatic token refreshes and persist them
     client.on('tokens', async (newTokens) => {
       console.log(`[GoogleClient] Tokens refreshed for ${type}`);
-      const currentTokens = await tokenStore.getTokens(sessionId, type) || {};
-      await tokenStore.saveTokens(sessionId, type, { ...currentTokens, ...newTokens });
+      const currentTokens = await tokenStore.getTokens(userId, type) || {};
+      await tokenStore.saveTokens(userId, type, { ...currentTokens, ...newTokens });
     });
 
     return client;

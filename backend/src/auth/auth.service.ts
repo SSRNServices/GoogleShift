@@ -37,7 +37,7 @@ export class AuthService {
     return transientCodes.includes(error.code) || error.message?.includes('network timeout');
   }
 
-  public async handleCallback(sessionId: string, type: AccountType, code: string): Promise<void> {
+  public async handleCallback(userId: string, type: AccountType, code: string): Promise<void> {
     const client = googleClientManager.getClient();
     let attempt = 1;
     const maxAttempts = 5;
@@ -51,7 +51,7 @@ export class AuthService {
         const { tokens } = await client.getToken(code);
         
         // Persist tokens securely in TokenStore
-        await tokenStore.saveTokens(sessionId, type, tokens);
+        await tokenStore.saveTokens(userId, type, tokens);
         
         if (attempt > 1) {
           console.log(`[Auth Retry] Success on attempt ${attempt}!`);
@@ -78,8 +78,8 @@ export class AuthService {
     }
   }
 
-  public async getProfile(sessionId: string, type: AccountType): Promise<ProfileResponse> {
-    const client = await googleClientManager.getAuthenticatedClient(sessionId, type);
+  public async getProfile(userId: string, type: AccountType): Promise<ProfileResponse> {
+    const client = await googleClientManager.getAuthenticatedClient(userId, type);
     if (!client) {
       return { state: ConnectionState.NOT_CONNECTED };
     }
@@ -125,10 +125,10 @@ export class AuthService {
     }
   }
 
-  public async logout(sessionId: string, type: AccountType) {
+  public async logout(userId: string, type: AccountType) {
     // Optionally revoke the token from Google if we want to force re-consent, 
     // but usually just deleting from our store is enough for "logout".
-    await tokenStore.deleteTokens(sessionId, type);
+    await tokenStore.deleteTokens(userId, type);
   }
 }
 
