@@ -180,3 +180,47 @@ model MigrationManifest {
   @@index([jobId, status])
   @@index([jobId, sourceParentId])
 }
+
+model ScanSummary {
+  id                      String   @id @default(uuid())
+  manifestId              String   @unique
+  totalFolders            Int      @default(0)
+  totalFiles              Int      @default(0)
+  totalBytes              BigInt   @default(0)
+  destinationStorageLimit BigInt   @default(0)
+  destinationStorageUsed  BigInt   @default(0)
+  estimatedTimeSeconds    Int      @default(0)
+  largestFile             BigInt   @default(0)
+  createdAt               DateTime @default(now())
+  
+  mimeStats               MimeStats?
+  warnings                ScanWarning[]
+}
+
+model MimeStats {
+  id           String @id @default(uuid())
+  summaryId    String @unique
+  googleDocs   Int    @default(0)
+  googleSheets Int    @default(0)
+  googleSlides Int    @default(0)
+  pdf          Int    @default(0)
+  images       Int    @default(0)
+  videos       Int    @default(0)
+  archives     Int    @default(0)
+  unsupported  Int    @default(0)
+  duplicates   Int    @default(0)
+  other        Int    @default(0)
+
+  summary ScanSummary @relation(fields: [summaryId], references: [id], onDelete: Cascade)
+}
+
+model ScanWarning {
+  id          String @id @default(uuid())
+  summaryId   String
+  type        String // e.g. "LARGE_FILE", "UNSUPPORTED_MIME", "DUPLICATE_NAME"
+  message     String
+  fileId      String?
+  fileName    String?
+
+  summary ScanSummary @relation(fields: [summaryId], references: [id], onDelete: Cascade)
+}

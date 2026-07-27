@@ -19,9 +19,11 @@ router.use('/:type', (req, res, next) => {
 // Protect all drive routes
 router.use('/:type', requireAuth());
 
+import { DiscoveryService } from '../services/DiscoveryService';
+
 router.get('/:type/summary', async (req, res) => {
   const type = req.params.type as AccountType;
-  const itemsParam = req.query.items as string; // format: "id:type,id:type" e.g., "123:folder,456:file"
+  const itemsParam = req.query.items as string;
 
   console.log(`[DriveRoutes] /${type}/summary requested. Items:`, itemsParam);
 
@@ -35,15 +37,13 @@ router.get('/:type/summary', async (req, res) => {
     return { id, isFolder: itemType === 'folder' };
   });
 
-  // Setup SSE headers
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
-    'X-Accel-Buffering': 'no' // Prevent NGINX/proxies from buffering SSE
+    'X-Accel-Buffering': 'no'
   });
 
-  // Flush headers immediately if possible
   if (res.flushHeaders) {
     res.flushHeaders();
   }
@@ -52,24 +52,24 @@ router.get('/:type/summary', async (req, res) => {
 
   const manifestId = 'manifest_scan_' + Date.now();
 
-  const onProgress = (folders: number, files: number, bytes: number, currentAction: string, summary?: any) => {
-    // Send progress updates with the aggregated summary payload
-    const payload = summary || {
-      scanStatus: 'Scanning',
-      folderCount: folders,
-      fileCount: files,
-      totalBytes: bytes,
-    };
-    res.write(`data: ${JSON.stringify({ ...payload, currentAction })}\n\n`);
+  const onProgress = (event: string, data: any) => {
+    res.write(`data: ${JSON.stringify({ event, data })}\n\n`);
   };
 
   try {
-    const summary = await driveService.getSelectionSummary((req as any).user.id, type, items, onProgress, manifestId);
-    console.log(`[DriveRoutes] Scan complete for ${manifestId}. Sending complete event.`);
-    res.write(`data: ${JSON.stringify({ ...summary, complete: true, scanStatus: 'Completed' })}\n\n`);
+    const summary = await DiscoveryService.executeDiscovery({
+      userId: (req as any).user.id,
+      type,
+      items,
+      manifestId,
+      onProgress
+    });
+    console.log(`[DriveRoutes] Scan complete for ${manifestId}.`);
+    // The final result is already sent via SCAN_COMPLETED, but we can emit a close event
+    res.write(`data: ${JSON.stringify({ event: 'CLOSE' })}\n\n`);
   } catch (error: any) {
     console.error(`[DriveRoutes] Error calculating summary for ${type}:`, error.message);
-    res.write(`data: ${JSON.stringify({ error: error.message, scanStatus: 'Failed' })}\n\n`);
+    res.write(`data: ${JSON.stringify({ event: 'ERROR', data: { message: error.message } })}\n\n`);
   } finally {
     res.end();
   }

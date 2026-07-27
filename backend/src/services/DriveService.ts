@@ -19,7 +19,7 @@ export interface DriveItem {
 }
 
 export class DriveService {
-  private async getDriveClient(userId: string, type: AccountType): Promise<drive_v3.Drive> {
+  public async getDriveClient(userId: string, type: AccountType): Promise<drive_v3.Drive> {
     const auth = await googleClientManager.getAuthenticatedClient(userId, type);
     if (!auth) {
       throw new Error(`Account ${type} is not authenticated`);

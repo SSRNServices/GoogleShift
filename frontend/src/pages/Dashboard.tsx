@@ -179,18 +179,23 @@ export default function Dashboard() {
   const [destinationFolder, setDestinationFolder] = useState<DriveItem | null>(null);
   const [transferOptions, setTransferOptions] = useState<TransferOptionsState>(defaultOptions);
   const [manifestId, setManifestId] = useState<string | null>(null);
+  const [scanStats, setScanStats] = useState<any>(null);
 
   const handleSelectionComplete = (selection: DriveItem | DriveItem[]) => {
     if (modalType === 'source') {
       setSourceSelection(Array.isArray(selection) ? selection : [selection]);
       setManifestId(null);
+      setScanStats(null);
     } else if (modalType === 'destination') {
       setDestinationFolder(Array.isArray(selection) ? selection[0] : selection);
     }
     setModalType(null);
   };
 
-  const isReadyToTransfer = sourceSelection.length > 0 && destinationFolder !== null && manifestId !== null;
+  const isReadyToTransfer = sourceSelection.length > 0 && 
+                            destinationFolder !== null && 
+                            manifestId !== null && 
+                            (!scanStats || (scanStats.storageAnalysis?.sufficient !== false));
 
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
@@ -380,7 +385,7 @@ export default function Dashboard() {
             <TransferSummary 
               sourceSelection={sourceSelection}
               destinationFolder={destinationFolder}
-              onScanComplete={(id) => setManifestId(id)}
+              onScanComplete={(id, stats) => { setManifestId(id); setScanStats(stats); }}
             />
             <TransferOptions 
               options={transferOptions}

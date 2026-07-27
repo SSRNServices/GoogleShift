@@ -120,20 +120,54 @@ export interface MigrationJob extends MigrationRequest {
   sessionId?: string;
 }
 
-export interface ScanSummaryResult {
-  selectedItems: number;
-  folderCount: number;
-  fileCount: number;
-  totalBytes: number;
+export interface StorageStats {
+  limit: number;
+  used: number;
+  remaining: number;
+  sufficient: boolean;
+  warnings: string[];
+  estimatedTimeSeconds: number;
+}
+
+export interface MimeBreakdown {
   googleDocs: number;
   googleSheets: number;
   googleSlides: number;
+  pdf: number;
+  images: number;
+  videos: number;
+  archives: number;
   unsupported: number;
   duplicates: number;
-  largestFile: number;
+  other: number;
+}
+
+export interface ScanWarningInfo {
+  type: string;
+  message: string;
+  fileId?: string;
+  fileName?: string;
+}
+
+export interface ScanSummaryResult {
   scanStatus: 'Idle' | 'Scanning' | 'Completed' | 'Failed' | 'Disconnected';
   manifestId?: string;
   jobId?: string;
+  
+  // High-level Stats
+  totalFolders: number;
+  totalFiles: number;
+  totalBytes: number;
+  largestFile: number;
+  
+  // Storage and Estimations
+  storageAnalysis?: StorageStats;
+  
+  // Breakdown
+  mimeStats?: MimeBreakdown;
+  
+  // Warnings
+  warnings?: ScanWarningInfo[];
 }
 
 export interface StartMigrationPayload {
