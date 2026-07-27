@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { prisma, logJobEvent, updateJobProgress } from "../utils/database";
+import { prisma, logJobEvent, updateJobProgress, updateJobStatus } from "../utils/database";
 import { NetworkHeartbeat } from '../utils/NetworkHeartbeat';
 import { NetworkClient } from '../transfer/NetworkClient';
 import { FolderScheduler } from '../transfer/FolderScheduler';
@@ -42,6 +42,9 @@ export class MigrationWorker {
 
       // Seed root folder
       await ManifestStorage.updateDestParentId(job.jobId, 'root', actualDestId);
+      
+      // Queue root files immediately so FileScheduler doesn't think the queue is empty
+      await stateManager.queueChildren('root');
 
       // Phase 1: Folders
       console.log(`\n[STATE] CREATING_FOLDERS\nMigration: ${job.jobId}\nReason: Folder Scheduler Initiated`);
@@ -98,7 +101,8 @@ export class MigrationWorker {
       
       console.log(`\n[STATE] FAILED\nMigration: ${job.jobId}\nReason: ${serializedError}`);
       await logJobEvent(job.jobId, `[STATE] FAILED - ${serializedError}`);
-      await updateJobProgress(job.jobId, { status: 'failed', networkStatus: 'online' });
+      await updateJobProgress(job.jobId, { networkStatus: 'online' });
+      await updateJobStatus(job.jobId, 'FAILED');
       throw e;
     }
   }

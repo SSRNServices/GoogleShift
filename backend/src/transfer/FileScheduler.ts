@@ -173,12 +173,15 @@ export class FileScheduler {
       const currentTotalPending = Object.values(this.buckets).reduce((acc, b) => acc + b.length, 0);
 
       if (currentTotalPending === 0 && busyWorkersCount === 0) {
-         const counts = await db.get(`
-           SELECT SUM(CASE WHEN status IN ('PENDING','QUEUED','UPLOADING','VERIFYING') THEN 1 ELSE 0 END) as unresolved
-           FROM migration_manifest WHERE jobId = ?
-         `, [this.jobId]);
+         const { prisma } = await import('../utils/database');
+         const unresolvedCount = await prisma.migrationManifest.count({
+            where: {
+               jobId: this.jobId,
+               status: { in: ['PENDING', 'QUEUED', 'UPLOADING', 'VERIFYING'] }
+            }
+         });
 
-         if (!counts || counts.unresolved === 0) {
+         if (unresolvedCount === 0) {
             const pendingWrites = this.stateManager.getPendingWriteCount();
             if (pendingWrites === 0) {
                this.isDone = true;
@@ -188,7 +191,7 @@ export class FileScheduler {
          } else {
             deadlockTimer += 50;
             if (deadlockTimer > 30000) {
-               throw new Error(`FileScheduler Deadlock: ${counts.unresolved} items unresolved in DB but queue empty.`);
+               throw new Error(`FileScheduler Deadlock: ${unresolvedCount} items unresolved in DB but queue empty.`);
             }
          }
       } else {
