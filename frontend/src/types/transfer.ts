@@ -8,6 +8,11 @@ export interface TransferOptionsState {
   verifyChecksums: boolean;
   keepOriginalDate: boolean;
   transferDocsAsPdf: boolean;
+  preservePermissions: boolean;
+  threads: number;
+  chunkSize: number;
+  skipErrors: boolean;
+  dryRun: boolean;
 }
 
 export type TransferMode = 'ENTIRE_DRIVE' | 'FOLDER' | 'FILES';

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { apiClient } from '../api/apiClient';
 import { Check, ChevronRight, Folder, Loader2, ArrowLeft, Cloud, HardDrive, Settings, Play } from 'lucide-react';
 import { migrationApi } from '../api/migrationApi';
+import type { TransferOptionsState } from '../types/transfer';
 
 type Step = 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -90,13 +91,19 @@ export default function Migration() {
   const [sourceSelected, setSourceSelected] = useState<any>(null);
   const [destSelected, setDestSelected] = useState<any>(null);
   
-  const [options, setOptions] = useState({
-    skipDuplicates: true,
-    overwrite: false,
-    preserveTimestamps: true,
+  const [options, setOptions] = useState<TransferOptionsState>({
+    preserveStructure: true,
+    overwriteExisting: false,
+    skipExisting: true,
+    renameConflicts: false,
+    verifyChecksums: true,
+    keepOriginalDate: true,
+    transferDocsAsPdf: false,
     preservePermissions: false,
     threads: 4,
-    chunkSize: 10
+    chunkSize: 10,
+    skipErrors: true,
+    dryRun: false
   });
 
   const [starting, setStarting] = useState(false);
@@ -127,13 +134,8 @@ export default function Migration() {
         sourceSelection: [sourceSelected],
         destinationFolder: destSelected,
         options: {
-          preserveStructure: true,
-          overwriteExisting: options.overwrite,
-          skipExisting: options.skipDuplicates,
-          renameConflicts: !options.overwrite && !options.skipDuplicates,
-          preserveTimestamps: options.preserveTimestamps,
-          skipErrors: true,
-          dryRun: false
+          ...options,
+          renameConflicts: !options.overwriteExisting && !options.skipExisting
         }
       });
       navigate('/migration/progress');
@@ -255,15 +257,15 @@ export default function Migration() {
             </h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <label className="flex items-center space-x-3">
-                <input type="checkbox" checked={options.skipDuplicates} onChange={e => setOptions({...options, skipDuplicates: e.target.checked})} className="rounded text-indigo-600" />
+                <input type="checkbox" checked={options.skipExisting} onChange={e => setOptions({...options, skipExisting: e.target.checked})} className="rounded text-indigo-600" />
                 <span className="text-gray-700 dark:text-gray-300">Skip duplicates</span>
               </label>
               <label className="flex items-center space-x-3">
-                <input type="checkbox" checked={options.overwrite} onChange={e => setOptions({...options, overwrite: e.target.checked})} className="rounded text-indigo-600" />
+                <input type="checkbox" checked={options.overwriteExisting} onChange={e => setOptions({...options, overwriteExisting: e.target.checked})} className="rounded text-indigo-600" />
                 <span className="text-gray-700 dark:text-gray-300">Overwrite existing</span>
               </label>
               <label className="flex items-center space-x-3">
-                <input type="checkbox" checked={options.preserveTimestamps} onChange={e => setOptions({...options, preserveTimestamps: e.target.checked})} className="rounded text-indigo-600" />
+                <input type="checkbox" checked={options.keepOriginalDate} onChange={e => setOptions({...options, keepOriginalDate: e.target.checked})} className="rounded text-indigo-600" />
                 <span className="text-gray-700 dark:text-gray-300">Preserve timestamps</span>
               </label>
             </div>
@@ -284,7 +286,7 @@ export default function Migration() {
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-500">Skip Duplicates:</span>
-                <span className="font-medium text-gray-900 dark:text-white">{options.skipDuplicates ? 'Yes' : 'No'}</span>
+                <span className="font-medium text-gray-900 dark:text-white">{options.skipExisting ? 'Yes' : 'No'}</span>
               </div>
               {/* Fake estimated calculation since API might be slow */}
               <div className="flex justify-between">

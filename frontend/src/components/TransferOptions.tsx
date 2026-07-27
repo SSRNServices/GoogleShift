@@ -10,6 +10,11 @@ export const defaultOptions: TransferOptionsState = {
   verifyChecksums: true,
   keepOriginalDate: true,
   transferDocsAsPdf: false,
+  preservePermissions: false,
+  threads: 4,
+  chunkSize: 10,
+  skipErrors: true,
+  dryRun: false
 };
 
 export function TransferOptions({ options, onChange }: { options: TransferOptionsState, onChange: (o: TransferOptionsState) => void }) {
