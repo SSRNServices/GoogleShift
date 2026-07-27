@@ -5,7 +5,7 @@ export async function getDashboardMetrics(req: Request, res: Response) {
   try {
     const totalUsers = await prisma.user.count();
     const activeMigrations = await prisma.migrationJob.count({
-      where: { state: 'RUNNING' }
+      where: { state: 'COPYING' }
     });
     const completedJobs = await prisma.migrationJob.count({
       where: { state: 'COMPLETED' }

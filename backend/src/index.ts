@@ -193,7 +193,7 @@ app.listen(PORT, "0.0.0.0", async () => {
   // Normalize DB: Pause any jobs that were running when the server died
   try {
      const res = await prisma.migrationJob.updateMany({
-       where: { state: { in: ['RUNNING', 'QUEUED'] } },
+       where: { state: { in: ['COPYING', 'PREPARING', 'QUEUED'] } },
        data: { state: 'PAUSED' }
      });
      if (res.count > 0) {

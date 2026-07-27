@@ -75,8 +75,9 @@ export async function getJob(jobId: string): Promise<any | null> {
 export async function updateJobStatus(jobId: string, status: string) {
   const stateMap: Record<string, MigrationState> = {
     'queued': MigrationState.QUEUED,
-    'scanning': MigrationState.SCANNING,
-    'running': MigrationState.RUNNING,
+    'preparing': MigrationState.PREPARING,
+    'copying': MigrationState.COPYING,
+    'verifying': MigrationState.VERIFYING,
     'paused': MigrationState.PAUSED,
     'completed': MigrationState.COMPLETED,
     'failed': MigrationState.FAILED,

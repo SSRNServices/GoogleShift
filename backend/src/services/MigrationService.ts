@@ -39,7 +39,7 @@ export class MigrationService {
     // We will just pass it along
     await createJob(jobId, migrationRequest, sessionId); // sessionId is actually userId here
 
-    await updateJobStatus(jobId, 'STARTING');
+    await updateJobStatus(jobId, 'PREPARING');
     
     const { migrationWorker } = await import('./MigrationWorker');
     
@@ -47,7 +47,7 @@ export class MigrationService {
     migrationWorker.executeMigration({
       ...migrationRequest,
       jobId,
-      status: 'starting',
+      status: 'preparing',
       totalFolders,
       totalFiles,
       totalBytes,
@@ -58,7 +58,7 @@ export class MigrationService {
 
     return {
       jobId,
-      status: 'starting',
+      status: 'preparing',
       message: 'Migration engine initialized.'
     };
   }

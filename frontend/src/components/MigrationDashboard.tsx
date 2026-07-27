@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { API_URL } from '../config/api';
-import { CheckCircle2, AlertTriangle, Loader2, File as FileIcon, FolderOpen, XCircle } from 'lucide-react';
+import { CheckCircle2, AlertTriangle, Loader2, File as FileIcon, FolderOpen, XCircle, ShieldCheck } from 'lucide-react';
 import { MigrationLogViewer } from './MigrationLogViewer';
 
 interface MigrationDashboardProps {
@@ -44,6 +44,8 @@ interface MigrationStatus {
   speedBytesPerSecond: number;
   remainingSeconds: number;
   elapsed: number;
+  currentAction?: string;
+  event?: string;
 }
 
 export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) {
@@ -105,24 +107,191 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
 
   const isTerminal = status.status === 'completed' || status.status === 'completed_with_errors' || status.status === 'failed' || status.status === 'cancelled';
 
+  const renderPreparing = () => (
+    <div className="p-12 text-center flex flex-col items-center">
+       <div className="relative mb-6">
+         <div className="absolute inset-0 rounded-full blur-xl bg-primary/20 animate-pulse"></div>
+         <div className="bg-card border-2 border-primary/20 p-4 rounded-full relative z-10 shadow-xl">
+           <FolderOpen className="w-12 h-12 text-primary animate-pulse" />
+         </div>
+       </div>
+       <h2 className="text-3xl font-bold mb-3">Preparing Migration</h2>
+       <p className="text-muted-foreground mb-6 font-medium max-w-sm">
+         {status.currentAction || 'Creating destination folders...'}
+       </p>
+       
+       <div className="w-full max-w-md bg-secondary/30 rounded-xl p-4 flex justify-between items-center border border-border shadow-inner">
+          <div className="flex items-center gap-3">
+             <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-primary">
+                <FolderOpen className="w-4 h-4" />
+             </div>
+             <div className="text-sm font-medium text-left">
+                <div className="text-muted-foreground uppercase text-[10px] tracking-wider mb-0.5">Folders Prepared</div>
+                <div className="text-foreground">{status.completedFolders} <span className="opacity-50">/ {status.totalFolders || '?'}</span></div>
+             </div>
+          </div>
+          {status.currentFolder && (
+            <div className="text-xs text-muted-foreground max-w-[150px] truncate text-right">
+              {status.currentFolder}
+            </div>
+          )}
+       </div>
+    </div>
+  );
+
+  const renderCopying = () => (
+    <div className="p-8 space-y-8">
+      {/* Progress Bar */}
+      <div className="space-y-3">
+        <div className="flex justify-between items-end">
+          <span className="text-4xl font-light text-foreground">{Math.min(status.percentage, 100)}%</span>
+          <span className="text-sm font-medium text-muted-foreground uppercase tracking-wider">{formatBytes(Math.min(status.transferredBytes, status.totalBytes))} / {formatBytes(status.totalBytes)}</span>
+        </div>
+        <div className="h-4 w-full bg-secondary rounded-full overflow-hidden border border-border/50">
+          <div 
+            className={`h-full transition-all duration-500 bg-primary`}
+            style={{ width: `${Math.min(status.percentage, 100)}%` }}
+          />
+        </div>
+      </div>
+
+      {/* Status Grid */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className={`border border-border/50 rounded-xl p-4 ${status.networkStatus === 'offline' ? 'bg-amber-500/10 border-amber-500/30' : 'bg-muted/10'}`}>
+          <div className="text-xs text-muted-foreground uppercase mb-1">Network Status</div>
+          <div className="font-semibold text-foreground flex items-center gap-2">
+            {status.networkStatus === 'online' ? (
+              <><span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Online</>
+            ) : (
+              <><span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span> Waiting...</>
+            )}
+          </div>
+          {status.retryCount > 0 && (
+            <div className="text-[10px] text-amber-500 mt-1">Recovered {status.retryCount} times</div>
+          )}
+        </div>
+        <div className="bg-muted/10 border border-border/50 rounded-xl p-4">
+          <div className="text-xs text-muted-foreground uppercase mb-1">Elapsed Time</div>
+          <div className="font-semibold text-foreground">{formatTime(status.elapsed / 1000)}</div>
+        </div>
+        <div className="bg-muted/10 border border-border/50 rounded-xl p-4">
+          <div className="text-xs text-muted-foreground uppercase mb-1">Est. Remaining</div>
+          <div className="font-semibold text-foreground">{status.status === 'paused_network' ? 'Paused' : formatTime(status.remainingSeconds)}</div>
+        </div>
+        <div className="bg-muted/10 border border-border/50 rounded-xl p-4">
+          <div className="text-xs text-muted-foreground uppercase mb-1">Transfer Speed</div>
+          <div className="font-semibold text-foreground">{status.status === 'paused_network' ? '0 B/s' : `${formatBytes(status.speedBytesPerSecond)}/s`}</div>
+        </div>
+      </div>
+
+      {/* Current Items Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 border-t border-border">
+        
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground uppercase font-medium">
+            <FolderOpen className="w-4 h-4" /> Folders
+          </div>
+          <div className="text-2xl font-semibold">{status.completedFolders} <span className="text-muted-foreground text-base font-normal">/ {status.totalFolders || '?'}</span></div>
+          <div className="text-xs text-muted-foreground truncate" title={status.currentFolder}>
+            {status.currentFolder ? `${status.currentFolder}` : '...'}
+          </div>
+        </div>
+
+        <div className="space-y-4 border-l border-border pl-6">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground uppercase font-medium">
+            <FileIcon className="w-4 h-4" /> Files
+          </div>
+          <div className="text-2xl font-semibold">{Math.min(status.completedFiles, status.totalFiles)} <span className="text-muted-foreground text-base font-normal">/ {status.totalFiles || '?'}</span></div>
+          <div className="text-xs text-muted-foreground truncate" title={status.currentFile}>
+            {status.currentFile ? `${status.currentFile}` : '...'}
+          </div>
+        </div>
+
+        <div className="space-y-4 border-l border-border pl-6">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground uppercase font-medium">
+            <AlertTriangle className="w-4 h-4" /> Issues
+          </div>
+          <div className="text-2xl font-semibold text-destructive">{status.failedFiles}</div>
+          <div className="text-xs text-muted-foreground">
+            Failed items
+          </div>
+        </div>
+
+      </div>
+    </div>
+  );
+
+  const renderVerifying = () => (
+    <div className="p-12 text-center flex flex-col items-center">
+       <div className="relative mb-6">
+         <div className="absolute inset-0 rounded-full blur-xl bg-purple-500/20 animate-pulse"></div>
+         <div className="bg-card border-2 border-purple-500/20 p-4 rounded-full relative z-10 shadow-xl">
+           <ShieldCheck className="w-12 h-12 text-purple-500 animate-pulse" />
+         </div>
+       </div>
+       <h2 className="text-3xl font-bold mb-3">Verifying Migration</h2>
+       <p className="text-muted-foreground mb-6 font-medium max-w-sm">
+         {status.currentAction || 'Running consistency checks...'}
+       </p>
+    </div>
+  );
+
+  const renderTerminal = () => (
+    <div className="p-12">
+      <div className="flex flex-col items-center text-center mb-8">
+        <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-4 ${status.status === 'completed' ? 'bg-emerald-500/20 text-emerald-500' : 'bg-destructive/20 text-destructive'}`}>
+           {status.status === 'completed' ? <CheckCircle2 className="w-8 h-8" /> : <AlertTriangle className="w-8 h-8" />}
+        </div>
+        <h2 className="text-3xl font-bold mb-2">
+           {status.status === 'completed' ? 'Migration Completed Successfully' : 'Migration Failed or Cancelled'}
+        </h2>
+        <p className="text-muted-foreground">
+           Total time: {formatTime(status.elapsed / 1000)}
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div className="bg-muted/10 border border-border/50 rounded-xl p-4 text-center">
+           <div className="text-xs text-muted-foreground uppercase mb-1">Total Folders</div>
+           <div className="text-xl font-semibold">{status.completedFolders}</div>
+        </div>
+        <div className="bg-muted/10 border border-border/50 rounded-xl p-4 text-center">
+           <div className="text-xs text-muted-foreground uppercase mb-1">Total Files</div>
+           <div className="text-xl font-semibold">{status.completedFiles}</div>
+        </div>
+        <div className="bg-muted/10 border border-border/50 rounded-xl p-4 text-center">
+           <div className="text-xs text-muted-foreground uppercase mb-1">Total Data</div>
+           <div className="text-xl font-semibold">{formatBytes(status.transferredBytes)}</div>
+        </div>
+        <div className="bg-muted/10 border border-border/50 rounded-xl p-4 text-center">
+           <div className="text-xs text-muted-foreground uppercase mb-1">Failed Items</div>
+           <div className={`text-xl font-semibold ${status.failedFiles > 0 ? 'text-destructive' : 'text-emerald-500'}`}>{status.failedFiles}</div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const getHeaderTitle = () => {
+    if (status.status === 'preparing') return 'Preparing Migration';
+    if (status.status === 'copying') return 'Migration in Progress';
+    if (status.status === 'verifying') return 'Verifying Data';
+    if (status.status === 'completed') return 'Migration Summary';
+    return `Migration ${status.status.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())}`;
+  };
+
   return (
     <div className="w-full max-w-5xl bg-card border border-border rounded-2xl shadow-xl overflow-hidden flex flex-col">
       <div className="p-6 border-b border-border bg-muted/20 flex items-center justify-between">
         <h2 className="text-xl font-bold flex items-center gap-3">
-          {status.status === 'running' && <Loader2 className="w-5 h-5 text-primary animate-spin" />}
-          {status.status === 'creating_tree' && <FolderOpen className="w-5 h-5 text-primary animate-pulse" />}
-          {status.status === 'uploading_files' && <Loader2 className="w-5 h-5 text-primary animate-spin" />}
-          {status.status === 'verifying' && <CheckCircle2 className="w-5 h-5 text-primary animate-pulse" />}
-          {status.status === 'paused_network' && <Loader2 className="w-5 h-5 text-amber-500 animate-spin" />}
+          {status.status === 'queued' && <Loader2 className="w-5 h-5 text-muted-foreground animate-spin" />}
+          {status.status === 'preparing' && <FolderOpen className="w-5 h-5 text-primary animate-pulse" />}
+          {status.status === 'copying' && <Loader2 className="w-5 h-5 text-primary animate-spin" />}
+          {status.status === 'verifying' && <ShieldCheck className="w-5 h-5 text-purple-500 animate-pulse" />}
           {status.status === 'completed' && <CheckCircle2 className="w-5 h-5 text-emerald-500" />}
-          {status.status === 'completed_with_errors' && <AlertTriangle className="w-5 h-5 text-amber-500" />}
           {status.status === 'failed' && <AlertTriangle className="w-5 h-5 text-destructive" />}
           {status.status === 'cancelled' && <XCircle className="w-5 h-5 text-muted-foreground" />}
-          {status.status === 'queued' && <Loader2 className="w-5 h-5 text-muted-foreground animate-spin" />}
           
-          {status.status === 'paused_network' 
-            ? `Paused (Network Issue) - Retrying` 
-            : `Migration ${status.status.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())}`}
+          {getHeaderTitle()}
         </h2>
         {isTerminal && (
            <button onClick={onClose} className="px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors text-sm font-medium">
@@ -136,103 +305,10 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
         )}
       </div>
 
-      <div className="p-8 space-y-8">
-        
-        {/* Progress Bar */}
-        <div className="space-y-3">
-          <div className="flex justify-between items-end">
-            <span className="text-4xl font-light text-foreground">{Math.min(status.percentage, 100)}%</span>
-            <span className="text-sm font-medium text-muted-foreground uppercase tracking-wider">{formatBytes(Math.min(status.transferredBytes, status.totalBytes))} / {formatBytes(status.totalBytes)}</span>
-          </div>
-          <div className="h-4 w-full bg-secondary rounded-full overflow-hidden border border-border/50">
-            <div 
-              className={`h-full transition-all duration-500 ${status.status === 'failed' ? 'bg-destructive' : status.status === 'completed' ? 'bg-emerald-500' : 'bg-primary'}`}
-              style={{ width: `${Math.min(status.percentage, 100)}%` }}
-            />
-          </div>
-        </div>
-
-        {/* Status Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className={`border border-border/50 rounded-xl p-4 ${status.networkStatus === 'offline' ? 'bg-amber-500/10 border-amber-500/30' : 'bg-muted/10'}`}>
-            <div className="text-xs text-muted-foreground uppercase mb-1">Network Status</div>
-            <div className="font-semibold text-foreground flex items-center gap-2">
-              {status.networkStatus === 'online' ? (
-                <><span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Online</>
-              ) : (
-                <><span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span> Waiting...</>
-              )}
-            </div>
-            {status.retryCount > 0 && (
-              <div className="text-[10px] text-amber-500 mt-1">Recovered {status.retryCount} times</div>
-            )}
-          </div>
-          <div className="bg-muted/10 border border-border/50 rounded-xl p-4">
-            <div className="text-xs text-muted-foreground uppercase mb-1">Elapsed Time</div>
-            <div className="font-semibold text-foreground">{formatTime(status.elapsed / 1000)}</div>
-          </div>
-          <div className="bg-muted/10 border border-border/50 rounded-xl p-4">
-            <div className="text-xs text-muted-foreground uppercase mb-1">Est. Remaining</div>
-            <div className="font-semibold text-foreground">{status.status === 'paused_network' ? 'Paused' : formatTime(status.remainingSeconds)}</div>
-          </div>
-          <div className="bg-muted/10 border border-border/50 rounded-xl p-4">
-            <div className="text-xs text-muted-foreground uppercase mb-1">Transfer Speed</div>
-            <div className="font-semibold text-foreground">{status.status === 'paused_network' ? '0 B/s' : `${formatBytes(status.speedBytesPerSecond)}/s`}</div>
-          </div>
-        </div>
-
-        {/* Current Items Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 border-t border-border">
-          
-          <div className="space-y-4">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground uppercase font-medium">
-              <FolderOpen className="w-4 h-4" /> Folders
-            </div>
-            <div className="text-2xl font-semibold">{status.completedFolders} <span className="text-muted-foreground text-base font-normal">/ {status.totalFolders || '?'}</span></div>
-            <div className="text-xs text-muted-foreground truncate" title={status.currentFolder}>
-              {status.currentFolder ? `${status.currentFolder}` : '...'}
-            </div>
-          </div>
-
-          <div className="space-y-4 border-l border-border pl-6">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground uppercase font-medium">
-              <FileIcon className="w-4 h-4" /> Files
-            </div>
-            <div className="text-2xl font-semibold">{Math.min(status.completedFiles, status.totalFiles)} <span className="text-muted-foreground text-base font-normal">/ {status.totalFiles || '?'}</span></div>
-            <div className="text-xs text-muted-foreground truncate" title={status.currentFile}>
-              {status.currentFile ? `${status.currentFile}` : '...'}
-            </div>
-          </div>
-
-          <div className="space-y-4 border-l border-border pl-6">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground uppercase font-medium">
-              <AlertTriangle className="w-4 h-4" /> Issues
-            </div>
-            <div className="text-2xl font-semibold text-destructive">{status.failedFiles}</div>
-            <div className="text-xs text-muted-foreground">
-              Failed items
-            </div>
-          </div>
-
-        </div>
-        
-        {isTerminal && (
-          <div className={`mt-6 p-4 rounded-xl flex items-center gap-3 ${status.failedFiles > 0 ? 'bg-destructive/10 text-destructive' : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'}`}>
-            {status.failedFiles > 0 ? (
-              <>
-                <AlertTriangle className="w-6 h-6" />
-                <div className="font-medium">Migration completed with {status.failedFiles} exact failed file{status.failedFiles !== 1 ? 's' : ''}.</div>
-              </>
-            ) : (
-              <>
-                <CheckCircle2 className="w-6 h-6" />
-                <div className="font-medium">✓ All files successfully migrated</div>
-              </>
-            )}
-          </div>
-        )}
-
-      </div>
+      {status.status === 'preparing' && renderPreparing()}
+      {(status.status === 'copying' || status.status === 'queued') && renderCopying()}
+      {status.status === 'verifying' && renderVerifying()}
+      {isTerminal && renderTerminal()}
 
       <MigrationLogViewer logs={logs} />
     </div>

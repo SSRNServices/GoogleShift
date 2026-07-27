@@ -115,7 +115,7 @@ router.post('/:jobId/resume', requireUserAuth, async (req, res) => {
     if (!job) return res.status(404).json({ error: 'Job not found' });
     if (job.state !== 'PAUSED') return res.status(400).json({ error: 'Job is not paused' });
     
-    await prisma.migrationJob.update({ where: { id: jobId }, data: { state: 'RUNNING' } });
+    await prisma.migrationJob.update({ where: { id: jobId }, data: { state: 'COPYING' } });
     const { migrationWorker } = await import('../services/MigrationWorker');
     
     const jobPayload = { ...job, jobId: job.id, sessionId: (req as any).user.id };

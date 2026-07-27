@@ -21,8 +21,9 @@ enum Status {
 
 enum MigrationState {
   QUEUED
-  SCANNING
-  RUNNING
+  PREPARING
+  COPYING
+  VERIFYING
   PAUSED
   COMPLETED
   FAILED
