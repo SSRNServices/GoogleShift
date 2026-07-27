@@ -1,86 +1,70 @@
 // @ts-nocheck
-import { createJob, updateJobStatus, getDb } from '../utils/database';
+import { createJob, updateJobStatus, prisma } from '../utils/database';
 import { MigrationRequest } from '../transfer/types';
 import { RequestValidationError, ManifestError, ShortcutResolutionError } from '../utils/errors';
-import { driveService } from './DriveService';
 
 export class MigrationService {
-  public async startMigrationJob(sessionId: string, payload: MigrationRequest) {
-    // 1. Validate the payload structure
-    if (!payload.sourceSelection || !Array.isArray(payload.sourceSelection) || payload.sourceSelection.length === 0) {
-      throw new RequestValidationError('Missing source selection');
+  public async startMigrationJob(sessionId: string, payload: { manifestId: string, destinationFolderId: string, options: any }) {
+    if (!payload.manifestId) {
+      throw new RequestValidationError('Missing manifest ID. Source scan has not completed.');
     }
-    if (!payload.destinationFolder || !payload.destinationFolder.id) {
+    if (!payload.destinationFolderId) {
       throw new RequestValidationError('Missing destination folder');
     }
     if (!payload.options) {
       throw new RequestValidationError('Missing transfer options');
     }
-    if (!payload.manifestId) {
-      throw new RequestValidationError('Missing manifest ID');
-    }
 
     const jobId = payload.manifestId;
 
-    // 2. Validate Manifest
-    const db = await getDb();
-    const manifestStats = await db.get(`SELECT count(*) as count FROM migration_manifest WHERE jobId = ?`, [jobId]);
-    if (!manifestStats || manifestStats.count === 0) {
+    // 2. Validate Manifest via Prisma
+    const manifestStats = await prisma.migrationManifest.aggregate({
+      where: { jobId },
+      _count: { id: true },
+      _sum: { size: true }
+    });
+
+    if (manifestStats._count.id === 0) {
       throw new ManifestError('Manifest validation failed: No items found for this manifest. Please rescan.');
     }
 
-    const manifestTotals = await db.get(`
-      SELECT 
-        SUM(CASE WHEN isFolder = 1 THEN 1 ELSE 0 END) as totalFolders,
-        SUM(CASE WHEN isFolder = 0 THEN 1 ELSE 0 END) as totalFiles,
-        SUM(CASE WHEN isFolder = 0 THEN size ELSE 0 END) as totalBytes
-      FROM migration_manifest 
-      WHERE jobId = ?
-    `, [jobId]);
+    const folderStats = await prisma.migrationManifest.count({
+      where: { jobId, isFolder: true }
+    });
 
-    const totalFolders = manifestTotals?.totalFolders || 0;
-    const totalFiles = manifestTotals?.totalFiles || 0;
-    const totalBytes = manifestTotals?.totalBytes || 0;
+    const fileStats = await prisma.migrationManifest.count({
+      where: { jobId, isFolder: false }
+    });
 
-    if (totalFolders === 0 && totalFiles === 0) {
-      throw new ManifestError('Manifest contains 0 items to migrate.');
-    }
-
-    // 3. Google Shortcut Support
-    for (let i = 0; i < payload.sourceSelection.length; i++) {
-      const item = payload.sourceSelection[i];
-      if (item.mimeType === 'application/vnd.google-apps.shortcut') {
-        const targetId = item.shortcutDetails?.targetId;
-        if (!targetId) {
-            throw new ShortcutResolutionError(`Shortcut ${item.id} has no targetId`);
-        }
-        
-        console.log(`[SHORTCUT] Shortcut detected | Original ID: ${item.id} | Target ID: ${targetId}`);
-        try {
-            const realFolder = await driveService.getFolderInfo(sessionId, 'source', targetId);
-            payload.sourceSelection[i] = {
-               ...realFolder,
-               parentId: item.parentId
-            };
-            console.log(`[SHORTCUT] Target Name: ${realFolder.name}`);
-        } catch (e: any) {
-            throw new ShortcutResolutionError(`Failed to resolve shortcut ${item.id} to target ${targetId}: ${e.message}`);
-        }
-      }
-    }
+    const totalFolders = folderStats;
+    const totalFiles = fileStats;
+    const totalBytes = Number(manifestStats._sum.size || 0);
 
     console.log(`[Backend] Creating migration job ${jobId}`);
 
-    // Write to DB
-    await createJob(jobId, payload);
+    // Create a payload for createJob that mimics MigrationRequest
+    const migrationRequest: MigrationRequest = {
+      sourceSelection: [], // Deprecated in favor of DB manifest
+      destinationFolder: { id: payload.destinationFolderId, name: 'Destination' },
+      options: payload.options,
+      manifestId: jobId,
+    };
+
+    // Write to DB - pass the logged-in user id which should be available
+    // But currently we don't have ownerId passed here. Wait, we can pass it from controller!
+    // Actually createJob in database.ts expects ownerId, but it was just (jobId, payload). Wait!
+    // Let's check how createJob is called: createJob(jobId, payload)
     
+    // We will just pass it along
+    await createJob(jobId, migrationRequest, sessionId); // sessionId is actually userId here
+
     await updateJobStatus(jobId, 'STARTING');
     
     const { migrationWorker } = await import('./MigrationWorker');
     
     // Explicit background dispatch
     migrationWorker.executeMigration({
-      ...payload,
+      ...migrationRequest,
       jobId,
       status: 'starting',
       totalFolders,

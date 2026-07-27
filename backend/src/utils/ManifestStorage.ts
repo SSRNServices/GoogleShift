@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { getDb } from './database';
+import { prisma } from './database';
 
 export interface ManifestItem {
   id: string;
@@ -21,139 +21,137 @@ export interface ManifestItem {
 
 export class ManifestStorage {
   public static async createManifestTable() {
-    const db = await getDb();
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS migration_manifest (
-        jobId TEXT,
-        id TEXT,
-        sourceId TEXT,
-        sourceParentId TEXT,
-        destParentId TEXT,
-        createdDestId TEXT,
-        name TEXT,
-        mimeType TEXT,
-        size INTEGER,
-        originalId TEXT,
-        originalMimeType TEXT,
-        status TEXT,
-        isFolder INTEGER,
-        depth INTEGER,
-        retryCount INTEGER DEFAULT 0,
-        PRIMARY KEY (jobId, id)
-      );
-      CREATE INDEX IF NOT EXISTS idx_manifest_status ON migration_manifest(jobId, status);
-      CREATE INDEX IF NOT EXISTS idx_manifest_parent ON migration_manifest(jobId, sourceParentId);
-    `);
-    
-    // Schema migration for existing databases
-    try {
-      await db.exec(`ALTER TABLE migration_manifest ADD COLUMN createdDestId TEXT;`);
-    } catch (e: any) {}
-    try {
-      await db.exec(`ALTER TABLE migration_manifest ADD COLUMN depth INTEGER DEFAULT 0;`);
-    } catch (e: any) {}
-    try {
-      await db.exec(`ALTER TABLE migration_manifest ADD COLUMN retryCount INTEGER DEFAULT 0;`);
-    } catch (e: any) {}
+    // Handled by Prisma
   }
 
   public static async insertItem(item: ManifestItem) {
-    const db = await getDb();
-    await db.run(`
-      INSERT OR REPLACE INTO migration_manifest 
-      (jobId, id, sourceId, sourceParentId, destParentId, createdDestId, name, mimeType, size, originalId, originalMimeType, status, isFolder, depth, retryCount)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      item.jobId, item.id, item.sourceId, item.sourceParentId, item.destParentId, item.createdDestId,
-      item.name, item.mimeType, item.size, item.originalId, item.originalMimeType,
-      item.status, item.isFolder ? 1 : 0, item.depth || 0, item.retryCount || 0
-    ]);
+    await prisma.migrationManifest.upsert({
+      where: {
+        jobId_id: { jobId: item.jobId, id: item.id }
+      },
+      update: {
+        sourceId: item.sourceId,
+        sourceParentId: item.sourceParentId,
+        destParentId: item.destParentId,
+        createdDestId: item.createdDestId,
+        name: item.name,
+        mimeType: item.mimeType,
+        size: BigInt(item.size),
+        originalId: item.originalId,
+        originalMimeType: item.originalMimeType,
+        status: item.status,
+        isFolder: item.isFolder,
+        depth: item.depth || 0,
+        retryCount: item.retryCount || 0
+      },
+      create: {
+        jobId: item.jobId,
+        id: item.id,
+        sourceId: item.sourceId,
+        sourceParentId: item.sourceParentId,
+        destParentId: item.destParentId,
+        createdDestId: item.createdDestId,
+        name: item.name,
+        mimeType: item.mimeType,
+        size: BigInt(item.size),
+        originalId: item.originalId,
+        originalMimeType: item.originalMimeType,
+        status: item.status,
+        isFolder: item.isFolder,
+        depth: item.depth || 0,
+        retryCount: item.retryCount || 0
+      }
+    });
   }
 
   public static async updateDestParentId(jobId: string, sourceParentId: string, destParentId: string) {
-    const db = await getDb();
-    await db.run(`UPDATE migration_manifest SET destParentId = ? WHERE jobId = ? AND sourceParentId = ?`, [destParentId, jobId, sourceParentId]);
+    await prisma.migrationManifest.updateMany({
+      where: { jobId, sourceParentId },
+      data: { destParentId }
+    });
   }
 
   public static async updateItemStatus(jobId: string, id: string, status: ManifestItem['status']) {
-    const db = await getDb();
-    const row = await db.get(`SELECT status FROM migration_manifest WHERE jobId = ? AND id = ?`, [jobId, id]);
+    const row = await prisma.migrationManifest.findUnique({
+      where: { jobId_id: { jobId, id } },
+      select: { status: true }
+    });
     if (!row) return;
 
     if (row.status === 'SUCCESS' || row.status === 'FAILED') {
        if (status !== 'SUCCESS' && status !== 'FAILED') {
-          // Illegal transition from terminal state
           return;
        }
     }
     
-    await db.run(`UPDATE migration_manifest SET status = ? WHERE jobId = ? AND id = ?`, [status, jobId, id]);
+    await prisma.migrationManifest.update({
+      where: { jobId_id: { jobId, id } },
+      data: { status }
+    });
   }
 
   public static async incrementRetryCount(jobId: string, id: string): Promise<number> {
-    const db = await getDb();
-    await db.run(`UPDATE migration_manifest SET retryCount = retryCount + 1 WHERE jobId = ? AND id = ?`, [jobId, id]);
-    const row = await db.get(`SELECT retryCount FROM migration_manifest WHERE jobId = ? AND id = ?`, [jobId, id]);
-    return row ? row.retryCount : 0;
+    const row = await prisma.migrationManifest.update({
+      where: { jobId_id: { jobId, id } },
+      data: { retryCount: { increment: 1 } },
+      select: { retryCount: true }
+    });
+    return row.retryCount;
   }
 
   public static async getNextPendingItem(jobId: string): Promise<ManifestItem | null> {
-    const db = await getDb();
-    // Only fetch items where destParentId is known. Parents will unlock their children when processed.
-    const row = await db.get(`
-      SELECT * FROM migration_manifest 
-      WHERE jobId = ? AND status = 'PENDING' AND destParentId IS NOT NULL
-      ORDER BY isFolder DESC, id ASC 
-      LIMIT 1
-    `, [jobId]);
+    const row = await prisma.migrationManifest.findFirst({
+      where: { jobId, status: 'PENDING', destParentId: { not: null } },
+      orderBy: [
+        { isFolder: 'desc' },
+        { id: 'asc' }
+      ]
+    });
     if (!row) return null;
     return {
       ...row,
-      isFolder: row.isFolder === 1
+      size: Number(row.size)
     } as ManifestItem;
   }
 
   public static async updateCreatedDestId(jobId: string, id: string, createdDestId: string) {
-    const db = await getDb();
-    await db.run(`UPDATE migration_manifest SET createdDestId = ? WHERE jobId = ? AND id = ?`, [createdDestId, jobId, id]);
+    await prisma.migrationManifest.update({
+      where: { jobId_id: { jobId, id } },
+      data: { createdDestId }
+    });
   }
 
   public static async getChildren(jobId: string, sourceParentId: string): Promise<ManifestItem[]> {
-    const db = await getDb();
-    const rows = await db.all(`
-      SELECT * FROM migration_manifest 
-      WHERE jobId = ? AND sourceParentId = ?
-    `, [jobId, sourceParentId]);
+    const rows = await prisma.migrationManifest.findMany({
+      where: { jobId, sourceParentId }
+    });
     return rows.map(row => ({
       ...row,
-      isFolder: row.isFolder === 1
+      size: Number(row.size)
     })) as ManifestItem[];
   }
 
   public static async getPendingFoldersByDepth(jobId: string): Promise<ManifestItem[]> {
-    const db = await getDb();
-    const rows = await db.all(`
-      SELECT * FROM migration_manifest 
-      WHERE jobId = ? AND isFolder = 1 AND status = 'PENDING'
-      ORDER BY depth ASC
-    `, [jobId]);
+    const rows = await prisma.migrationManifest.findMany({
+      where: { jobId, isFolder: true, status: 'PENDING' },
+      orderBy: { depth: 'asc' }
+    });
     return rows.map(row => ({
       ...row,
-      isFolder: row.isFolder === 1
+      size: Number(row.size)
     })) as ManifestItem[];
   }
 
   public static async getPendingFiles(jobId: string, limit: number): Promise<ManifestItem[]> {
-    const db = await getDb();
-    const rows = await db.all(`
-      SELECT * FROM migration_manifest 
-      WHERE jobId = ? AND isFolder = 0 AND status = 'QUEUED'
-      ORDER BY depth ASC
-      LIMIT ?
-    `, [jobId, limit]);
+    const rows = await prisma.migrationManifest.findMany({
+      where: { jobId, isFolder: false, status: 'QUEUED' },
+      orderBy: { depth: 'asc' },
+      take: limit
+    });
     return rows.map(row => ({
       ...row,
-      isFolder: row.isFolder === 1
+      size: Number(row.size)
     })) as ManifestItem[];
   }
 }
+

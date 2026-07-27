@@ -3,8 +3,8 @@ import type { TransferOptionsState } from '../types/transfer';
 import { API_URL } from '../config/api';
 
 export interface StartMigrationPayload {
-  sourceSelection: DriveItem[];
-  destinationFolder: DriveItem;
+  manifestId: string;
+  destinationFolderId: string;
   options: TransferOptionsState;
 }
 
