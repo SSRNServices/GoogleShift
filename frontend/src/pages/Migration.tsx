@@ -13,16 +13,17 @@ function TreeItem({ item, type, onSelect, selectedId }: { item: any, type: strin
   const [children, setChildren] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
 
+  const isFolder = item.mimeType === 'application/vnd.google-apps.folder';
   const isSelected = selectedId === item.id;
 
   const handleExpand = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!item.isFolder) return;
+    if (!isFolder) return;
     if (!expanded && children.length === 0) {
       setLoading(true);
       try {
         const data = await apiClient(`/api/drive/${type}/folder/${item.id}`);
-        setChildren(data.items || []);
+        setChildren(data.files || []);
       } catch (err) {
         console.error(err);
       } finally {
@@ -36,15 +37,15 @@ function TreeItem({ item, type, onSelect, selectedId }: { item: any, type: strin
     <div className="pl-4">
       <div 
         className={`flex items-center py-1 px-2 rounded cursor-pointer transition-colors ${isSelected ? 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300' : 'hover:bg-gray-100 dark:hover:bg-gray-800'}`}
-        onClick={() => { if(item.isFolder) onSelect(item); }}
+        onClick={() => { if(isFolder) onSelect(item); }}
       >
         <div onClick={handleExpand} className="mr-1 cursor-pointer p-0.5">
-          {item.isFolder ? (
+          {isFolder ? (
             loading ? <Loader2 className="w-3 h-3 animate-spin" /> : 
             <ChevronRight className={`w-4 h-4 transition-transform ${expanded ? 'rotate-90' : ''}`} />
           ) : <span className="w-4 h-4 inline-block" />}
         </div>
-        <Folder className={`w-4 h-4 mr-2 ${item.isFolder ? 'text-blue-500' : 'text-gray-400'}`} />
+        <Folder className={`w-4 h-4 mr-2 ${isFolder ? 'text-blue-500' : 'text-gray-400'}`} />
         <span className="text-sm truncate">{item.name}</span>
       </div>
       {expanded && children.map(child => (
@@ -57,14 +58,17 @@ function TreeItem({ item, type, onSelect, selectedId }: { item: any, type: strin
 function FolderTree({ type, onSelect, selectedId }: { type: 'source' | 'destination', onSelect: (it: any) => void, selectedId: string }) {
   const [rootItems, setRootItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
 
   useEffect(() => {
     const fetchRoot = async () => {
       try {
+        setError(false);
         const data = await apiClient(`/api/drive/${type}/root`);
-        setRootItems(data.items || []);
+        setRootItems(data.files || []);
       } catch (e) {
         console.error(e);
+        setError(true);
       } finally {
         setLoading(false);
       }
@@ -73,6 +77,8 @@ function FolderTree({ type, onSelect, selectedId }: { type: 'source' | 'destinat
   }, [type]);
 
   if (loading) return <div className="p-4 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-indigo-500" /></div>;
+  if (error) return <div className="p-4 text-center text-red-500 font-medium border border-red-200 rounded-lg bg-red-50 dark:bg-red-900/20 dark:border-red-800">Failed to load folders</div>;
+  if (rootItems.length === 0) return <div className="p-4 text-center text-gray-500 italic border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-800">No folders found</div>;
 
   return (
     <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-2 max-h-96 overflow-y-auto bg-white dark:bg-gray-800">
