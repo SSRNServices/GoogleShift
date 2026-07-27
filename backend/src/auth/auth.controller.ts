@@ -84,8 +84,8 @@ export class AuthController {
   };
 
   public logoutUser = async (req: Request, res: Response): Promise<void> => {
-    // Clear cookies if we were using httpOnly cookies, but we might be using localStorage.
-    // So just send success. The frontend will delete tokens.
+    res.clearCookie('accessToken');
+    res.clearCookie('refreshToken');
     res.json({ success: true });
   };
 
@@ -123,6 +123,23 @@ export class AuthController {
     
     // Omit passwordHash before sending
     const { passwordHash, ...userWithoutPassword } = user;
+    
+    const cookieOptions = {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'none' as const,
+      ...(process.env.NODE_ENV === 'production' ? { domain: '.migration.ssrnservices.in' } : {})
+    };
+
+    res.cookie('accessToken', accessToken, {
+      ...cookieOptions,
+      maxAge: 60 * 60 * 1000 // 1 hour
+    });
+    
+    res.cookie('refreshToken', refreshToken, {
+      ...cookieOptions,
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    });
     
     res.json({
       accessToken,

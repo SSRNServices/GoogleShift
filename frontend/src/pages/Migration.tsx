@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiClient } from '../api/apiClient';
+import { API_URL } from '../config/api';
 import { Check, ChevronRight, Folder, Loader2, ArrowLeft, Cloud, HardDrive, Settings, Play } from 'lucide-react';
 import { migrationApi } from '../api/migrationApi';
 import type { TransferOptionsState } from '../types/transfer';
@@ -196,7 +197,7 @@ export default function Migration() {
               </div>
             ) : (
               <button 
-                onClick={() => { window.location.href = '/api/auth/source' }} 
+                onClick={() => { window.location.href = `${API_URL}/auth/source` }} 
                 className="bg-indigo-600 text-white px-6 py-2 rounded hover:bg-indigo-700"
               >
                 Connect Source Google Drive
@@ -217,7 +218,7 @@ export default function Migration() {
               </div>
             ) : (
               <button 
-                onClick={() => { window.location.href = '/api/auth/destination' }} 
+                onClick={() => { window.location.href = `${API_URL}/auth/destination` }} 
                 className="bg-indigo-600 text-white px-6 py-2 rounded hover:bg-indigo-700"
               >
                 Connect Destination Google Drive

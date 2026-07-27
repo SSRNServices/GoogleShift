@@ -20,7 +20,7 @@ const sessionConfig = {
   cookie: {
     secure: true, // force secure cookies for cross-origin
     sameSite: 'none' as const, // required for cross-origin
-    domain: '.migration.ssrnservices.in', // explicitly allow frontend and backend
+    ...(process.env.NODE_ENV === 'production' ? { domain: '.migration.ssrnservices.in' } : {}),
     httpOnly: true,
     maxAge: 1000 * 60 * 60 * 24 * 7 // 1 week
   }

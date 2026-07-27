@@ -13,6 +13,8 @@ import NotFound from './pages/errors/404';
 import Forbidden from './pages/errors/403';
 import Migration from './pages/Migration';
 import MigrationProgress from './pages/MigrationProgress';
+import History from './pages/History';
+import Settings from './pages/Settings';
 
 // Optional: Initialization component to load 'me' on mount if token exists
 import { useEffect } from 'react';
@@ -57,8 +59,8 @@ export default function App() {
             <Route path="/dashboard" element={<UserDashboard />} />
             <Route path="/migration" element={<Migration />} />
             <Route path="/migration/progress" element={<MigrationProgress />} />
-            <Route path="/history" element={<UserDashboard />} /> {/* Placeholder */}
-            <Route path="/settings" element={<UserDashboard />} /> {/* Placeholder */}
+            <Route path="/history" element={<History />} />
+            <Route path="/settings" element={<Settings />} />
           </Route>
 
           {/* Admin Routes */}

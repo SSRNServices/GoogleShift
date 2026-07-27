@@ -6,6 +6,7 @@ type FetchOptions = RequestInit & {
 };
 
 export const apiClient = async (endpoint: string, options: FetchOptions = {}) => {
+  options.credentials = options.credentials || 'include';
   const { accessToken, refreshToken, setAuth, logout } = useAuthStore.getState();
   const headers = new Headers(options.headers || {});
   
