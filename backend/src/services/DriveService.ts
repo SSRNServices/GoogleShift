@@ -208,10 +208,12 @@ export class DriveService {
        return RetryHelper.withRetry(name, op, (msg) => console.log(msg));
     };
 
+    const manifestItems: any[] = []; // Collect items in memory
+
     const engine = new DriveTraversalEngine<{ parentId: string, depth: number }>(drive, {
       onFolderEnter: async (folder, context) => {
         totalFolders++;
-        await ManifestStorage.insertItem({
+        manifestItems.push({
            jobId: manifestId,
            id: folder.id,
            sourceId: folder.originalId || folder.id,
@@ -225,14 +227,15 @@ export class DriveService {
            originalMimeType: folder.originalMimeType || null,
            status: 'PENDING',
            isFolder: true,
-           depth: context.depth
+           depth: context.depth,
+           retryCount: 0
         });
         return { parentId: folder.id, depth: context.depth + 1 }; // child context
       },
       onFile: async (file, context) => {
         totalFiles++;
         totalBytes += file.size;
-        await ManifestStorage.insertItem({
+        manifestItems.push({
            jobId: manifestId,
            id: file.id,
            sourceId: file.originalId || file.id,
@@ -246,7 +249,8 @@ export class DriveService {
            originalMimeType: file.originalMimeType || null,
            status: 'PENDING',
            isFolder: false,
-           depth: context.depth
+           depth: context.depth,
+           retryCount: 0
         });
         onProgress(totalFolders, totalFiles, totalBytes, `Scanned file: ${file.name}`);
       }
@@ -259,6 +263,15 @@ export class DriveService {
 
     const elapsed = Date.now() - startTime;
     console.log(`\nFinal totals:\nFolders: ${totalFolders}\nFiles: ${totalFiles}\nBytes: ${totalBytes}\nElapsed Time: ${elapsed}ms`);
+
+    const persistenceStart = Date.now();
+    console.log(`[Backend] Persisting ${manifestItems.length} items to database for manifest: ${manifestId}`);
+    
+    // Final bulk insert
+    await ManifestStorage.saveManifest(manifestItems);
+    
+    const persistenceElapsed = Date.now() - persistenceStart;
+    console.log(`[Backend] Persistence completed in ${persistenceElapsed}ms`);
 
     // Final update
     onProgress(totalFolders, totalFiles, totalBytes, 'Complete');

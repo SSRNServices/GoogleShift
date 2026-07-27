@@ -24,44 +24,41 @@ export class ManifestStorage {
     // Handled by Prisma
   }
 
-  public static async insertItem(item: ManifestItem) {
-    await prisma.migrationManifest.upsert({
-      where: {
-        jobId_id: { jobId: item.jobId, id: item.id }
-      },
-      update: {
-        sourceId: item.sourceId,
-        sourceParentId: item.sourceParentId,
-        destParentId: item.destParentId,
-        createdDestId: item.createdDestId,
-        name: item.name,
-        mimeType: item.mimeType,
-        size: BigInt(item.size),
-        originalId: item.originalId,
-        originalMimeType: item.originalMimeType,
-        status: item.status,
-        isFolder: item.isFolder,
-        depth: item.depth || 0,
-        retryCount: item.retryCount || 0
-      },
-      create: {
-        jobId: item.jobId,
-        id: item.id,
-        sourceId: item.sourceId,
-        sourceParentId: item.sourceParentId,
-        destParentId: item.destParentId,
-        createdDestId: item.createdDestId,
-        name: item.name,
-        mimeType: item.mimeType,
-        size: BigInt(item.size),
-        originalId: item.originalId,
-        originalMimeType: item.originalMimeType,
-        status: item.status,
-        isFolder: item.isFolder,
-        depth: item.depth || 0,
-        retryCount: item.retryCount || 0
-      }
-    });
+  public static async saveManifest(items: ManifestItem[]) {
+    const chunkSize = 5000;
+    const { RetryHelper } = await import('./retry');
+    
+    for (let i = 0; i < items.length; i += chunkSize) {
+      const chunk = items.slice(i, i + chunkSize);
+      
+      const insertChunk = async () => {
+        await prisma.migrationManifest.createMany({
+          data: chunk.map(item => ({
+            jobId: item.jobId,
+            id: item.id,
+            sourceId: item.sourceId,
+            sourceParentId: item.sourceParentId,
+            destParentId: item.destParentId,
+            createdDestId: item.createdDestId,
+            name: item.name,
+            mimeType: item.mimeType,
+            size: BigInt(item.size),
+            originalId: item.originalId,
+            originalMimeType: item.originalMimeType,
+            status: item.status,
+            isFolder: item.isFolder,
+            depth: item.depth || 0,
+            retryCount: item.retryCount || 0
+          }))
+        });
+      };
+
+      await RetryHelper.withRetry(
+        `ManifestStorage.saveManifest [Chunk ${Math.floor(i / chunkSize) + 1}]`,
+        insertChunk,
+        (msg) => console.log(`[ManifestStorage] ${msg}`)
+      );
+    }
   }
 
   public static async updateDestParentId(jobId: string, sourceParentId: string, destParentId: string) {
