@@ -1,0 +1,329 @@
+import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { apiClient } from '../api/apiClient';
+import { Check, ChevronRight, Folder, Loader2, ArrowLeft, Cloud, HardDrive, Settings, Play } from 'lucide-react';
+import { migrationApi } from '../api/migrationApi';
+
+type Step = 1 | 2 | 3 | 4 | 5 | 6;
+
+function TreeItem({ item, type, onSelect, selectedId }: { item: any, type: string, onSelect: (it: any) => void, selectedId: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [children, setChildren] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const isSelected = selectedId === item.id;
+
+  const handleExpand = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!item.isFolder) return;
+    if (!expanded && children.length === 0) {
+      setLoading(true);
+      try {
+        const data = await apiClient(`/api/drive/${type}/folder/${item.id}`);
+        setChildren(data.items || []);
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    setExpanded(!expanded);
+  };
+
+  return (
+    <div className="pl-4">
+      <div 
+        className={`flex items-center py-1 px-2 rounded cursor-pointer transition-colors ${isSelected ? 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300' : 'hover:bg-gray-100 dark:hover:bg-gray-800'}`}
+        onClick={() => { if(item.isFolder) onSelect(item); }}
+      >
+        <div onClick={handleExpand} className="mr-1 cursor-pointer p-0.5">
+          {item.isFolder ? (
+            loading ? <Loader2 className="w-3 h-3 animate-spin" /> : 
+            <ChevronRight className={`w-4 h-4 transition-transform ${expanded ? 'rotate-90' : ''}`} />
+          ) : <span className="w-4 h-4 inline-block" />}
+        </div>
+        <Folder className={`w-4 h-4 mr-2 ${item.isFolder ? 'text-blue-500' : 'text-gray-400'}`} />
+        <span className="text-sm truncate">{item.name}</span>
+      </div>
+      {expanded && children.map(child => (
+        <TreeItem key={child.id} item={child} type={type} onSelect={onSelect} selectedId={selectedId} />
+      ))}
+    </div>
+  );
+}
+
+function FolderTree({ type, onSelect, selectedId }: { type: 'source' | 'destination', onSelect: (it: any) => void, selectedId: string }) {
+  const [rootItems, setRootItems] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchRoot = async () => {
+      try {
+        const data = await apiClient(`/api/drive/${type}/root`);
+        setRootItems(data.items || []);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchRoot();
+  }, [type]);
+
+  if (loading) return <div className="p-4 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-indigo-500" /></div>;
+
+  return (
+    <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-2 max-h-96 overflow-y-auto bg-white dark:bg-gray-800">
+      {rootItems.map(item => (
+        <TreeItem key={item.id} item={item} type={type} onSelect={onSelect} selectedId={selectedId} />
+      ))}
+    </div>
+  );
+}
+
+export default function Migration() {
+  const navigate = useNavigate();
+  const [step, setStep] = useState<Step>(1);
+  const [sourceProfile, setSourceProfile] = useState<any>(null);
+  const [destProfile, setDestProfile] = useState<any>(null);
+  
+  const [sourceSelected, setSourceSelected] = useState<any>(null);
+  const [destSelected, setDestSelected] = useState<any>(null);
+  
+  const [options, setOptions] = useState({
+    skipDuplicates: true,
+    overwrite: false,
+    preserveTimestamps: true,
+    preservePermissions: false,
+    threads: 4,
+    chunkSize: 10
+  });
+
+  const [starting, setStarting] = useState(false);
+
+  useEffect(() => {
+    const fetchProfiles = async () => {
+      try {
+        const [srcRes, destRes] = await Promise.all([
+          apiClient('/auth/source/profile').catch(() => ({ state: 'NOT_CONNECTED' })),
+          apiClient('/auth/destination/profile').catch(() => ({ state: 'NOT_CONNECTED' }))
+        ]);
+        setSourceProfile(srcRes);
+        setDestProfile(destRes);
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    fetchProfiles();
+  }, []);
+
+  const handleNext = () => setStep((s) => Math.min(s + 1, 6) as Step);
+  const handleBack = () => setStep((s) => Math.max(s - 1, 1) as Step);
+
+  const startMigration = async () => {
+    setStarting(true);
+    try {
+      await migrationApi.startMigration({
+        sourceSelection: [sourceSelected],
+        destinationFolder: destSelected,
+        options: {
+          preserveStructure: true,
+          overwriteExisting: options.overwrite,
+          skipExisting: options.skipDuplicates,
+          renameConflicts: !options.overwrite && !options.skipDuplicates,
+          preserveTimestamps: options.preserveTimestamps,
+          skipErrors: true,
+          dryRun: false
+        }
+      });
+      navigate('/migration/progress');
+    } catch (err) {
+      console.error(err);
+      alert('Failed to start migration');
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const isSourceConnected = sourceProfile?.state === 'CONNECTED';
+  const isDestConnected = destProfile?.state === 'CONNECTED';
+
+  const canProceed = () => {
+    if (step === 1) return isSourceConnected;
+    if (step === 2) return isDestConnected;
+    if (step === 3) return !!sourceSelected;
+    if (step === 4) return !!destSelected;
+    return true;
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto py-8">
+      <div className="mb-8">
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Migration Setup</h1>
+        
+        {/* Stepper */}
+        <div className="mt-4 flex items-center justify-between">
+          {[1, 2, 3, 4, 5, 6].map((s) => (
+            <div key={s} className="flex flex-col items-center flex-1">
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold ${step >= s ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-500 dark:bg-gray-700'}`}>
+                {step > s ? <Check className="w-5 h-5" /> : s}
+              </div>
+              <div className="text-xs mt-2 text-gray-500 hidden sm:block">
+                {s === 1 && 'Source Acct'}
+                {s === 2 && 'Dest Acct'}
+                {s === 3 && 'Source Folder'}
+                {s === 4 && 'Dest Folder'}
+                {s === 5 && 'Options'}
+                {s === 6 && 'Summary'}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="bg-white dark:bg-gray-900 shadow rounded-lg p-6 border border-gray-200 dark:border-gray-700 min-h-[400px]">
+        {step === 1 && (
+          <div className="text-center">
+            <Cloud className="w-16 h-16 text-blue-500 mx-auto mb-4" />
+            <h2 className="text-xl font-semibold mb-2 text-gray-900 dark:text-white">Connect Source Account</h2>
+            <p className="text-gray-500 mb-6">Authorize CloudShift to access the Google Drive you want to copy files from.</p>
+            {isSourceConnected ? (
+              <div className="inline-flex items-center space-x-2 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-4 py-2 rounded-full font-medium">
+                <Check className="w-5 h-5" />
+                <span>Connected as {sourceProfile.profile?.email}</span>
+              </div>
+            ) : (
+              <button 
+                onClick={() => { window.location.href = '/api/auth/source' }} 
+                className="bg-indigo-600 text-white px-6 py-2 rounded hover:bg-indigo-700"
+              >
+                Connect Source Google Drive
+              </button>
+            )}
+          </div>
+        )}
+
+        {step === 2 && (
+          <div className="text-center">
+            <HardDrive className="w-16 h-16 text-purple-500 mx-auto mb-4" />
+            <h2 className="text-xl font-semibold mb-2 text-gray-900 dark:text-white">Connect Destination Account</h2>
+            <p className="text-gray-500 mb-6">Authorize CloudShift to access the Google Drive where files will be copied to.</p>
+            {isDestConnected ? (
+              <div className="inline-flex items-center space-x-2 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-4 py-2 rounded-full font-medium">
+                <Check className="w-5 h-5" />
+                <span>Connected as {destProfile.profile?.email}</span>
+              </div>
+            ) : (
+              <button 
+                onClick={() => { window.location.href = '/api/auth/destination' }} 
+                className="bg-indigo-600 text-white px-6 py-2 rounded hover:bg-indigo-700"
+              >
+                Connect Destination Google Drive
+              </button>
+            )}
+          </div>
+        )}
+
+        {step === 3 && (
+          <div>
+            <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-white">Choose Source Folder</h2>
+            <FolderTree type="source" onSelect={setSourceSelected} selectedId={sourceSelected?.id} />
+            {sourceSelected && (
+              <div className="mt-4 p-3 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-800 dark:text-indigo-300 rounded border border-indigo-200 dark:border-indigo-800">
+                Selected: <span className="font-semibold">{sourceSelected.name}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {step === 4 && (
+          <div>
+            <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-white">Choose Destination Folder</h2>
+            <FolderTree type="destination" onSelect={setDestSelected} selectedId={destSelected?.id} />
+            {destSelected && (
+              <div className="mt-4 p-3 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-800 dark:text-indigo-300 rounded border border-indigo-200 dark:border-indigo-800">
+                Selected: <span className="font-semibold">{destSelected.name}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {step === 5 && (
+          <div>
+            <h2 className="text-xl font-semibold mb-4 flex items-center text-gray-900 dark:text-white">
+              <Settings className="w-5 h-5 mr-2" /> Migration Options
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <label className="flex items-center space-x-3">
+                <input type="checkbox" checked={options.skipDuplicates} onChange={e => setOptions({...options, skipDuplicates: e.target.checked})} className="rounded text-indigo-600" />
+                <span className="text-gray-700 dark:text-gray-300">Skip duplicates</span>
+              </label>
+              <label className="flex items-center space-x-3">
+                <input type="checkbox" checked={options.overwrite} onChange={e => setOptions({...options, overwrite: e.target.checked})} className="rounded text-indigo-600" />
+                <span className="text-gray-700 dark:text-gray-300">Overwrite existing</span>
+              </label>
+              <label className="flex items-center space-x-3">
+                <input type="checkbox" checked={options.preserveTimestamps} onChange={e => setOptions({...options, preserveTimestamps: e.target.checked})} className="rounded text-indigo-600" />
+                <span className="text-gray-700 dark:text-gray-300">Preserve timestamps</span>
+              </label>
+            </div>
+          </div>
+        )}
+
+        {step === 6 && (
+          <div>
+            <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-white">Summary</h2>
+            <div className="bg-gray-50 dark:bg-gray-800 p-6 rounded-lg border border-gray-200 dark:border-gray-700 space-y-4">
+              <div className="flex justify-between">
+                <span className="text-gray-500">Source:</span>
+                <span className="font-medium text-gray-900 dark:text-white">{sourceSelected?.name}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Destination:</span>
+                <span className="font-medium text-gray-900 dark:text-white">{destSelected?.name}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Skip Duplicates:</span>
+                <span className="font-medium text-gray-900 dark:text-white">{options.skipDuplicates ? 'Yes' : 'No'}</span>
+              </div>
+              {/* Fake estimated calculation since API might be slow */}
+              <div className="flex justify-between">
+                <span className="text-gray-500">Estimated Scan:</span>
+                <span className="font-medium text-gray-900 dark:text-white">Calculating upon start...</span>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-6 flex justify-between">
+        <button
+          onClick={handleBack}
+          disabled={step === 1 || starting}
+          className="flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+        >
+          <ArrowLeft className="w-4 h-4 mr-2" /> Back
+        </button>
+
+        {step < 6 ? (
+          <button
+            onClick={handleNext}
+            disabled={!canProceed()}
+            className="flex items-center px-6 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-50"
+          >
+            Next <ChevronRight className="w-4 h-4 ml-2" />
+          </button>
+        ) : (
+          <button
+            onClick={startMigration}
+            disabled={starting}
+            className="flex items-center px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50"
+          >
+            {starting ? <Loader2 className="w-5 h-5 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
+            Start Migration
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}

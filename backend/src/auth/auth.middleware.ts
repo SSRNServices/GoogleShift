@@ -1,29 +1,39 @@
 import { Request, Response, NextFunction } from 'express';
 import { tokenStore, AccountType } from './token.store';
 import jwt from 'jsonwebtoken';
+import { prisma } from '../utils/database';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_for_development';
 
-export const requireUserAuth = (req: Request, res: Response, next: NextFunction) => {
-  console.log('[Auth Middleware] Checking req.isAuthenticated():', req.isAuthenticated ? req.isAuthenticated() : false);
-  
-  if (req.isAuthenticated && req.isAuthenticated()) {
-    const user: any = req.user;
-    
-    // Disallow pending users
-    if (user.status === 'PENDING') {
-      return res.status(403).json({ error: 'Forbidden', message: 'Your account is pending administrator approval.' });
+export const requireUserAuth = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ authenticated: false, error: 'Unauthorized', message: 'Missing token.' });
     }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET) as any;
     
-    return next();
+    const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
+    if (!user || user.status === 'PENDING' || !user.isActive) {
+      return res.status(403).json({ error: 'Forbidden', message: 'User not active or pending approval.' });
+    }
+
+    const { passwordHash, ...userWithoutPassword } = user;
+    (req as any).user = userWithoutPassword;
+    
+    // We keep session fallback for the oauth handle callback since it relies on session ID right now.
+    // If not using session, we should handle state differently. For now, this suffices.
+    next();
+  } catch (error) {
+    return res.status(401).json({ authenticated: false, error: 'Unauthorized', message: 'Invalid or expired token.' });
   }
-  
-  return res.status(401).json({ authenticated: false, error: 'Unauthorized', message: 'You must be logged in.' });
 };
 
 export const requireAdmin = (req: Request, res: Response, next: NextFunction) => {
   requireUserAuth(req, res, () => {
-    const user: any = req.user;
+    const user: any = (req as any).user;
     if (user.role === 'ADMIN' || user.role === 'SUPER_ADMIN') {
       return next();
     }
@@ -33,7 +43,7 @@ export const requireAdmin = (req: Request, res: Response, next: NextFunction) =>
 
 export const requireSuperAdmin = (req: Request, res: Response, next: NextFunction) => {
   requireUserAuth(req, res, () => {
-    const user: any = req.user;
+    const user: any = (req as any).user;
     if (user.role === 'SUPER_ADMIN') {
       return next();
     }
@@ -41,6 +51,7 @@ export const requireSuperAdmin = (req: Request, res: Response, next: NextFunctio
   });
 };
 
+// Drive auth middlewares remain similar, they check the session token store.
 export const requireAuth = (explicitType?: AccountType) => {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
