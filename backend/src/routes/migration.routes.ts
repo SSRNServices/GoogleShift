@@ -1,8 +1,8 @@
 // @ts-nocheck
 import { Router } from 'express';
 import { migrationService } from '../services/MigrationService';
-import { getDb } from "../utils/database";
-import { requireBothAuth } from '../auth/auth.middleware';
+import { getDb, prisma } from "../utils/database";
+import { requireBothAuth, requireUserAuth } from '../auth/auth.middleware';
 
 const router = Router();
 
@@ -27,6 +27,26 @@ router.get('/current', async (req, res) => {
     }
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/history', requireUserAuth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const history = await prisma.migrationJob.findMany({
+      where: { ownerId: user.id },
+      orderBy: { startedAt: 'desc' },
+      take: 50
+    });
+
+    res.json({ migrations: history });
+  } catch (error: any) {
+    console.error('Error fetching history:', error);
+    res.status(500).json({ error: 'Failed to fetch migration history' });
   }
 });
 

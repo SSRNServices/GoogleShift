@@ -185,11 +185,11 @@ export class AuthController {
       console.log(`Storage Limit: ${profileResponse.profile?.storage.limit}`);
       console.log('=================================\n');
 
-      // Redirect back to frontend
+      // Redirect back to frontend migration page
       const frontendUrl = process.env.NODE_ENV === 'production' 
         ? 'https://migration.ssrnservices.in' 
         : 'http://localhost:5173';
-      res.redirect(`${frontendUrl}?connected=${type}`);
+      res.redirect(`${frontendUrl}/migration?connected=${type}`);
     } catch (error: any) {
       console.error(`Error during ${type} callback:`, error);
       if (error.name === 'NetworkError') {
