@@ -176,7 +176,8 @@ export default function Migration() {
 
       await migrationApi.startMigration({
         manifestId: currentManifestId,
-        sessionId
+        sessionId,
+        options
       });
       navigate('/migration/progress');
     } catch (err: unknown) {

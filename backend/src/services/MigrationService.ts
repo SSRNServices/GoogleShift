@@ -4,15 +4,25 @@ import { MigrationRequest, StartMigrationPayload } from '../transfer/types';
 import { RequestValidationError, ManifestError, ShortcutResolutionError } from '../utils/errors';
 
 export class MigrationService {
-  public async startMigrationJob(sessionId: string, payload: StartMigrationPayload) {
-    if (!payload.sourceSelection || payload.sourceSelection.length === 0) {
-      throw new RequestValidationError('Missing source selection.');
+  public async startMigrationJob(userId: string, sessionId: string, payload: StartMigrationPayload) {
+    const session = await prisma.migrationSession.findUnique({
+      where: { id: sessionId, ownerId: userId }
+    });
+
+    if (!session) {
+      throw new RequestValidationError('Migration session not found.');
     }
-    if (!payload.destinationFolderId) {
-      throw new RequestValidationError('Missing destination folder');
+    
+    if (!session.sourceFolderId) {
+      throw new RequestValidationError('Missing source selection in session.');
     }
+    
+    if (!session.destinationFolderId) {
+      throw new RequestValidationError('Missing destination folder in session.');
+    }
+    
     if (!payload.options) {
-      throw new RequestValidationError('Missing transfer options');
+      throw new RequestValidationError('Missing transfer options in payload.');
     }
 
     const jobId = payload.manifestId || 'manifest_' + Date.now();
@@ -21,23 +31,19 @@ export class MigrationService {
     const totalFiles = 0;
     const totalBytes = 0;
 
-    console.log(`[Backend] Creating migration job ${jobId}`);
+    console.log(`[Backend] Creating migration job ${jobId} for session ${sessionId}`);
 
     // Create a payload for createJob that mimics MigrationRequest
     const migrationRequest: MigrationRequest = {
-      sourceSelection: payload.sourceSelection, // Pass the real source selection to the worker
-      destinationFolder: { id: payload.destinationFolderId, name: 'Destination' },
+      sourceSelection: [{ id: session.sourceFolderId, name: 'Source', mimeType: 'application/vnd.google-apps.folder' }],
+      destinationFolder: { id: session.destinationFolderId, name: 'Destination', mimeType: 'application/vnd.google-apps.folder' },
       options: payload.options,
       manifestId: jobId,
+      sessionId
     };
 
-    // Write to DB - pass the logged-in user id which should be available
-    // But currently we don't have ownerId passed here. Wait, we can pass it from controller!
-    // Actually createJob in database.ts expects ownerId, but it was just (jobId, payload). Wait!
-    // Let's check how createJob is called: createJob(jobId, payload)
-    
     // We will just pass it along
-    await createJob(jobId, migrationRequest, sessionId); // sessionId is actually userId here
+    await createJob(jobId, migrationRequest, userId); // Use actual userId
 
     await updateJobStatus(jobId, 'PREPARING');
     

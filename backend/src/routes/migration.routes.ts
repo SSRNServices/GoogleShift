@@ -143,8 +143,8 @@ router.post('/start', requireBothAuth, async (req, res) => {
        return res.status(400).json({ error: 'Manifest is empty. No files were found to migrate.' });
     }
 
-    // Inject sessionId into the payload or pass it separately
-    const job = await migrationService.startMigrationJob(userId, payload);
+    // Create migration job using the session
+    const job = await migrationService.startMigrationJob(userId, payload.sessionId, payload);
     
     // Link job to session
     await prisma.migrationJob.update({

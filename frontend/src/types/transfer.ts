@@ -36,4 +36,5 @@ export type ConflictStrategy = 'OVERWRITE' | 'SKIP' | 'RENAME';
 export interface StartMigrationPayload {
   sessionId: string;
   manifestId: string;
+  options: TransferOptionsState;
 }

@@ -267,7 +267,8 @@ export default function Dashboard() {
 
     const payload = {
       sessionId,
-      manifestId
+      manifestId,
+      options: transferOptions
     };
 
     try {
