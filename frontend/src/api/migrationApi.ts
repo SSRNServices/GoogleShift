@@ -31,7 +31,14 @@ export const migrationApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ itemsParam: `${sourceId}:folder`, sessionId })
     });
-    if (!res.ok) throw new Error('Failed to start discovery');
+    if (!res.ok) {
+      let message = 'Failed to start discovery';
+      try {
+        const data = await res.json();
+        message = data.error || message;
+      } catch (e) {}
+      throw new Error(message);
+    }
     return res.json();
   },
 

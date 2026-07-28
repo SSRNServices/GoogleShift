@@ -31,9 +31,19 @@ router.post('/start', requireUserAuth, async (req, res) => {
        return res.status(404).json({ error: 'Migration session not found' });
     }
 
+    if (session.discoveryStatus === 'COMPLETED') {
+       const active = await prisma.discoveryJob.findUnique({ where: { sessionId } });
+       return res.status(200).json(serializeBigInt({
+         jobId: active?.id,
+         status: 'completed',
+         message: 'Discovery already completed for this session.'
+       }));
+    }
+
     const active = await prisma.discoveryJob.findFirst({
       where: { 
         ownerId: userId,
+        sessionId,
         state: { notIn: ['COMPLETED', 'FAILED', 'CANCELLED'] } 
       }
     });

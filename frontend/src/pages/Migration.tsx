@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiClient } from '../api/apiClient';
 import { API_URL } from '../config/api';
@@ -8,6 +8,7 @@ import { DiscoveryScanner } from '../components/DiscoveryScanner';
 import { useMigrationSessionStore } from '../store/useMigrationSessionStore';
 import type { TransferOptionsState } from '../types/transfer';
 import type { DriveItem } from '../types/drive';
+import { Toaster, toast } from 'react-hot-toast';
 
 type Step = 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -180,14 +181,23 @@ export default function Migration() {
       navigate('/migration/progress');
     } catch (err: unknown) {
       if (err instanceof Error) {
-        alert(err.message || 'Failed to start migration');
+        toast.error(err.message || 'Failed to start migration');
       } else {
-        alert('Failed to start migration');
+        toast.error('Failed to start migration');
       }
     } finally {
       setStarting(false);
     }
   };
+
+  const handleDiscoveryComplete = useCallback((summary: any) => {
+    setManifestId(summary.manifestId);
+    fetchSession(sessionId as string); // Refresh session data
+  }, [sessionId, fetchSession]);
+
+  const handleDiscoveryError = useCallback((err: string) => {
+    toast.error(err);
+  }, []);
 
   const isSourceConnected = sourceProfile?.state === 'CONNECTED';
   const isDestConnected = destProfile?.state === 'CONNECTED';
@@ -202,6 +212,7 @@ export default function Migration() {
 
   return (
     <div className="max-w-4xl mx-auto py-8">
+      <Toaster position="top-right" />
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Migration Setup</h1>
         
@@ -321,11 +332,8 @@ export default function Migration() {
               <DiscoveryScanner 
                 sourceId={sourceSelected.id}
                 sessionId={sessionId}
-                onComplete={(summary) => {
-                   setManifestId(summary.manifestId);
-                   fetchSession(sessionId); // Refresh session data
-                }}
-                onError={(err) => alert(err)}
+                onComplete={handleDiscoveryComplete}
+                onError={handleDiscoveryError}
               />
             )}
           </div>

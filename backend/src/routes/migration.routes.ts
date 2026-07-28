@@ -82,19 +82,36 @@ router.post('/start', requireBothAuth, async (req, res) => {
     const userId = (req as any).user.id;
     const payload: StartMigrationPayload & { sessionId?: string } = req.body;
     
+    console.log(`[Migration Routes] Starting migration for Session ID: ${payload.sessionId}`);
+
+    // Require sessionId and manifestId strictly
     if (!payload.sessionId || !payload.manifestId) {
-       return res.status(400).json({ success: false, error: 'Session ID and Manifest ID are required.' });
+      console.warn(`[Migration Routes] Missing sessionId or manifestId in payload:`, payload);
+      res.status(400).json({ error: 'Missing required payload: sessionId and manifestId are required' });
+      return;
     }
 
     const session = await prisma.migrationSession.findUnique({
       where: { id: payload.sessionId, ownerId: userId }
     });
 
-    if (!session || session.discoveryStatus !== 'COMPLETED' || session.manifestId !== payload.manifestId) {
-      return res.status(400).json({ success: false, error: 'Invalid session or incomplete discovery.' });
+    if (!session) {
+      console.warn(`[Migration Routes] Session not found: ${payload.sessionId}`);
+      res.status(404).json({ error: 'Migration session not found' });
+      return;
     }
 
-    const active = await prisma.migrationJob.findFirst({
+    if (session.discoveryStatus !== 'COMPLETED') {
+      console.warn(`[Migration Routes] Invalid discovery status for session ${payload.sessionId}: ${session.discoveryStatus}`);
+      res.status(400).json({ error: `Cannot start migration. Discovery status is ${session.discoveryStatus} (expected COMPLETED).` });
+      return;
+    }
+
+    if (session.manifestId !== payload.manifestId) {
+      console.warn(`[Migration Routes] Manifest ID mismatch for session ${payload.sessionId}. Expected: ${session.manifestId}, Got: ${payload.manifestId}`);
+      res.status(400).json({ error: 'Manifest ID does not match the active session.' });
+      return;
+    }const active = await prisma.migrationJob.findFirst({
       where: { 
         ownerId: userId,
         state: { notIn: ['COMPLETED', 'FAILED', 'CANCELLED'] } 

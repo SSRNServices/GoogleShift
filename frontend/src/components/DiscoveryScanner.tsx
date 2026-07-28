@@ -32,16 +32,22 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
   const [finalSummary, setFinalSummary] = useState<any>(null);
   
   const abortControllerRef = useRef<AbortController | null>(null);
+  const hasStartedRef = useRef(false);
 
   useEffect(() => {
     let active = true;
 
     const initDiscovery = async () => {
+      if (hasStartedRef.current) return;
+      hasStartedRef.current = true;
       try {
         const job = await migrationApi.startDiscovery(sourceId, sessionId);
         if (active) setJobId(job.jobId || job.id);
       } catch (err: any) {
-        if (active) onError(err.message || 'Failed to initialize discovery');
+        if (active) {
+           onError(err.message || 'Failed to initialize discovery');
+           hasStartedRef.current = false; // Allow retry on failure
+        }
       }
     };
 
