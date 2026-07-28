@@ -192,16 +192,4 @@ app.listen(PORT, "0.0.0.0", async () => {
   printRoutes();
   await runDiagnostics();
   
-  // Normalize DB: Pause any jobs that were running when the server died
-  try {
-     const res = await prisma.migrationJob.updateMany({
-       where: { state: { in: ['COPYING', 'PREPARING', 'QUEUED'] } },
-       data: { state: 'PAUSED' }
-     });
-     if (res.count > 0) {
-        console.log(`[LIFECYCLE] Normalized ${res.count} active jobs to 'paused' state.`);
-     }
-  } catch (e: any) {
-     console.error('[LIFECYCLE] Failed to normalize active jobs:', e.message);
-  }
 });

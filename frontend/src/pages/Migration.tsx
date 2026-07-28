@@ -117,6 +117,7 @@ export default function Migration() {
 
   const [starting, setStarting] = useState(false);
   const [discoveryComplete, setDiscoveryComplete] = useState(false);
+  const [manifestId, setManifestId] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchProfiles = async () => {
@@ -143,9 +144,11 @@ export default function Migration() {
   const startMigration = async () => {
     setStarting(true);
     try {
+      if (!manifestId) throw new Error('Manifest ID is missing. Discovery must complete first.');
       await migrationApi.startMigration({
         sourceSelection: sourceSelected ? [sourceSelected] : [],
         destinationFolderId: destSelected?.id || "",
+        manifestId,
         options: {
           ...options,
           renameConflicts: !options.overwriteExisting && !options.skipExisting
@@ -296,6 +299,7 @@ export default function Migration() {
                 sourceId={sourceSelected.id}
                 onComplete={(summary) => {
                    setDiscoveryComplete(true);
+                   setManifestId(summary.manifestId);
                    console.log('Discovery Complete:', summary);
                 }}
                 onError={(err) => alert(err)}

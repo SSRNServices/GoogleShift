@@ -80,6 +80,12 @@ router.post('/start', requireBothAuth, async (req, res) => {
   console.log('[Backend] MIGRATION START RECEIVED');
   try {
     const userId = (req as any).user.id;
+    const payload: StartMigrationPayload = req.body;
+    
+    if (!payload.manifestId) {
+       return res.status(400).json({ error: 'Manifest ID is missing. Discovery must complete first.' });
+    }
+
     const active = await prisma.migrationJob.findFirst({
       where: { 
         ownerId: userId,
@@ -87,15 +93,30 @@ router.post('/start', requireBothAuth, async (req, res) => {
       }
     });
     
-    if (active) {
+    // If they already have an active job AND they didn't provide a payload (meaning they just want to resume/poll)
+    // Actually, if this is /start with a specific manifestId, and another job is active, we should maybe prevent concurrent?
+    // Let's just return the active job ONLY if it matches the manifestId they are trying to start, OR reject.
+    if (active && active.id === payload.manifestId) {
       return res.status(200).json(serializeBigInt({
         jobId: active.id,
         status: active.state.toLowerCase(),
         message: 'Existing migration found and resumed.'
       }));
+    } else if (active) {
+      return res.status(400).json({ error: 'Another migration is currently active.' });
     }
 
-    const payload: StartMigrationPayload = req.body;
+    // PRE-MIGRATION VALIDATION
+    const discoveryJob = await prisma.discoveryJob.findUnique({ where: { manifestId: payload.manifestId } });
+    if (!discoveryJob || discoveryJob.state !== 'COMPLETED') {
+       return res.status(400).json({ error: 'Discovery phase is incomplete or failed.' });
+    }
+
+    const manifestCount = await prisma.migrationManifest.count({ where: { jobId: payload.manifestId } });
+    if (manifestCount === 0) {
+       return res.status(400).json({ error: 'Manifest is empty. No files were found to migrate.' });
+    }
+
     const job = await migrationService.startMigrationJob(userId, payload);
     res.status(200).json(job);
   } catch (error: any) {
