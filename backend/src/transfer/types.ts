@@ -115,7 +115,6 @@ export interface MigrationJob extends MigrationRequest {
   totalBytes: number;
   failedFiles: number;
   lastSuccessfulFile: string;
-  sessionId?: string;
 }
 
 export interface StorageStats {
