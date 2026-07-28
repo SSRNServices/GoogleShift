@@ -139,20 +139,17 @@ router.post('/:jobId/cancel', requireUserAuth, async (req, res) => {
 
 router.get('/:jobId/status', async (req, res) => {
   const jobId = req.params.jobId as string;
+  const lastEventId = req.headers['last-event-id'] || '0';
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
 
-  let heartbeatCount = 0;
+  let lastCheckedDate = lastEventId !== '0' ? new Date(parseInt(lastEventId as string)) : new Date(0);
 
   const interval = setInterval(async () => {
     try {
-      heartbeatCount++;
-      // Send a ping every 5 seconds to prevent reverse proxy disconnects
-      if (heartbeatCount % 5 === 0) {
-        res.write('data: heartbeat\n\n');
-      }
+      res.write(':\n\n'); // SSE Heartbeat (every 2s by interval)
 
       const job = await prisma.migrationJob.findUnique({ where: { id: jobId } });
       
@@ -161,6 +158,15 @@ router.get('/:jobId/status', async (req, res) => {
         clearInterval(interval);
         res.end();
         return;
+      }
+
+      const logs = await prisma.migrationLog.findMany({
+         where: { jobId, createdAt: { gt: lastCheckedDate } },
+         orderBy: { createdAt: 'asc' }
+      });
+
+      if (logs.length > 0) {
+         lastCheckedDate = logs[logs.length - 1].createdAt;
       }
 
       const transferred = Number(job.transferredBytes);
@@ -175,6 +181,7 @@ router.get('/:jobId/status', async (req, res) => {
       
       const elapsed = job.startedAt ? Date.now() - job.startedAt.getTime() : 0;
 
+      res.write(`id: ${lastCheckedDate.getTime()}\n`);
       res.write(`data: ${JSON.stringify({
         status: job.state.toLowerCase(),
         percentage: Math.min(percentage, 100),
@@ -187,7 +194,10 @@ router.get('/:jobId/status', async (req, res) => {
         speedBytesPerSecond: job.speed,
         remainingSeconds: job.eta,
         elapsed,
-        currentAction: job.currentAction
+        currentAction: job.currentAction,
+        currentFile: (job as any).currentFile,
+        currentFolder: (job as any).currentFolder,
+        logs: logs.map((l: any) => l.message)
       })}\n\n`);
 
       if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(job.state)) {
@@ -201,7 +211,7 @@ router.get('/:jobId/status', async (req, res) => {
       clearInterval(interval);
       res.end();
     }
-  }, 1000);
+  }, 2000);
 
   req.on('close', () => {
     clearInterval(interval);

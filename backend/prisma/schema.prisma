@@ -99,6 +99,8 @@ model MigrationJob {
   speed               Float    @default(0)
   eta                 Float    @default(0)
   currentAction       String?
+  currentFile         String?
+  currentFolder       String?
   
   startedAt           DateTime?
   completedAt         DateTime?
@@ -106,6 +108,7 @@ model MigrationJob {
 
   owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   items MigrationItem[]
+  logs  MigrationLog[]
 
   @@index([ownerId])
   @@index([state])
@@ -146,6 +149,20 @@ model ActivityLog {
   createdAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model MigrationLog {
+  id        String   @id @default(uuid())
+  jobId     String
+  level     String   @default("info")
+  message   String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  job MigrationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+  @@index([createdAt])
 }
 
 model SystemSetting {

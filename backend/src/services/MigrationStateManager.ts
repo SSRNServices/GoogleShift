@@ -115,6 +115,15 @@ export class MigrationStateManager {
     });
   }
 
+  private activeTransferredBytes: bigint = BigInt(0);
+  private speedSamples: number[] = [];
+  private lastEmitTime: number = Date.now();
+  private lastTransferredBytes: bigint = BigInt(0);
+
+  public reportProgressBytes(bytes: number) {
+     this.activeTransferredBytes += BigInt(bytes);
+  }
+
   private async emitProgress() {
     if (this.isFinalized || this.invariantViolation) return;
     
@@ -126,7 +135,7 @@ export class MigrationStateManager {
         _sum: { size: true }
       });
 
-      let completedFolders = 0, completedFiles = 0, transferredBytes = BigInt(0);
+      let completedFolders = 0, completedFiles = 0, dbTransferredBytes = BigInt(0);
       let failedFiles = 0, totalFolders = 0, totalFiles = 0, totalBytes = BigInt(0);
 
       for (const stat of stats) {
@@ -138,7 +147,7 @@ export class MigrationStateManager {
           totalBytes += stat._sum.size || BigInt(0);
           if (stat.status === 'SUCCESS') {
             completedFiles += stat._count.id;
-            transferredBytes += stat._sum.size || BigInt(0);
+            dbTransferredBytes += stat._sum.size || BigInt(0);
           }
           if (stat.status === 'FAILED') {
             failedFiles += stat._count.id;
@@ -146,6 +155,34 @@ export class MigrationStateManager {
         }
       }
 
+      // Use active bytes if it's greater than db committed bytes (since chunks commit success at the end)
+      const transferredBytes = this.activeTransferredBytes > dbTransferredBytes ? this.activeTransferredBytes : dbTransferredBytes;
+      
+      const now = Date.now();
+      const elapsedSec = (now - this.lastEmitTime) / 1000;
+      let speed = 0;
+      let eta = 0;
+      
+      if (elapsedSec >= 1.0) {
+          const bytesDiff = Number(transferredBytes - this.lastTransferredBytes);
+          if (bytesDiff > 0) {
+             speed = bytesDiff / elapsedSec; // bytes per second
+             
+             // Keep a rolling average of the last 5 samples for smoother ETA
+             this.speedSamples.push(speed);
+             if (this.speedSamples.length > 5) this.speedSamples.shift();
+             
+             const avgSpeed = this.speedSamples.reduce((a, b) => a + b, 0) / this.speedSamples.length;
+             const remainingBytes = Number(totalBytes - transferredBytes);
+             
+             if (avgSpeed > 0 && remainingBytes > 0) {
+                eta = remainingBytes / avgSpeed;
+             }
+          }
+          this.lastTransferredBytes = transferredBytes;
+          this.lastEmitTime = now;
+      }
+      
       const updates: any = {
         completedFolders,
         completedFiles,
@@ -154,6 +191,8 @@ export class MigrationStateManager {
         totalFolders,
         totalFiles,
         totalBytes,
+        speed,
+        eta,
         pendingDBWrites: this.writeQueue.length
       };
 

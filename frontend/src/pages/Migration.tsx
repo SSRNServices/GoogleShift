@@ -4,6 +4,7 @@ import { apiClient } from '../api/apiClient';
 import { API_URL } from '../config/api';
 import { Check, ChevronRight, Folder, Loader2, ArrowLeft, Cloud, HardDrive, Settings, Play } from 'lucide-react';
 import { migrationApi } from '../api/migrationApi';
+import { DiscoveryScanner } from '../components/DiscoveryScanner';
 import type { TransferOptionsState } from '../types/transfer';
 import type { DriveItem } from '../types/drive';
 
@@ -289,24 +290,16 @@ export default function Migration() {
         {step === 6 && (
           <div>
             <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-white">Summary</h2>
-            <div className="bg-gray-50 dark:bg-gray-800 p-6 rounded-lg border border-gray-200 dark:border-gray-700 space-y-4">
-              <div className="flex justify-between border-b border-gray-200 dark:border-gray-700 pb-2">
-                <span className="text-gray-500">Source:</span>
-                <span className="font-medium text-gray-900 dark:text-white">{sourceSelected?.name}</span>
-              </div>
-              <div className="flex justify-between border-b border-gray-200 dark:border-gray-700 pb-2">
-                <span className="text-gray-500">Destination:</span>
-                <span className="font-medium text-gray-900 dark:text-white">{destSelected?.name}</span>
-              </div>
-              <div className="flex justify-between border-b border-gray-200 dark:border-gray-700 pb-2">
-                <span className="text-gray-500">Skip Duplicates:</span>
-                <span className="font-medium text-gray-900 dark:text-white">{options.skipExisting ? 'Yes' : 'No'}</span>
-              </div>
-              <div className="flex justify-between border-b border-gray-200 dark:border-gray-700 pb-2">
-                <span className="text-gray-500">Scan:</span>
-                <span className="font-medium text-gray-900 dark:text-white">Will run before copying</span>
-              </div>
-            </div>
+            {sourceSelected && (
+              <DiscoveryScanner 
+                sourceId={sourceSelected.id}
+                onComplete={(summary) => {
+                   // Optional: you could save the summary state if needed for next steps
+                   console.log('Discovery Complete:', summary);
+                }}
+                onError={(err) => alert(err)}
+              />
+            )}
           </div>
         )}
       </div>

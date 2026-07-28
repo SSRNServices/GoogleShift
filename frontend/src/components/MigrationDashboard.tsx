@@ -72,30 +72,87 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
   const [logs, setLogs] = useState<string[]>([]);
 
   useEffect(() => {
-    const eventSource = new EventSource(`${API_URL}/api/migrations/${jobId}/status`, { withCredentials: true });
-    
-    eventSource.onmessage = (event) => {
+    let active = true;
+    let lastEventId = '0';
+    let fallbackTimeout: any = null;
+
+    const connectStream = async () => {
       try {
-        const data = JSON.parse(event.data);
-        if (data.error) {
-           console.error(data.error);
-           eventSource.close();
-           return;
+        const response = await fetch(`${API_URL}/api/migrations/${jobId}/status`, {
+          headers: { 'Last-Event-Id': lastEventId },
+          credentials: 'include' // Since API might be on different origin
+        });
+
+        if (!response.ok) throw new Error('Stream failed');
+        if (!response.body) throw new Error('No body');
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (active) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n\n');
+          buffer = lines.pop() || ''; // Keep incomplete part
+
+          for (const chunk of lines) {
+             if (chunk.startsWith(':')) continue; // Heartbeat
+             
+             const linesInChunk = chunk.split('\n');
+             let dataStr = '';
+             for (const line of linesInChunk) {
+                if (line.startsWith('id: ')) {
+                   lastEventId = line.replace('id: ', '').trim();
+                } else if (line.startsWith('data: ')) {
+                   dataStr = line.substring(6);
+                }
+             }
+
+             if (dataStr) {
+                try {
+                   const data = JSON.parse(dataStr);
+                   if (data.error) {
+                      console.error(data.error);
+                      active = false;
+                      break;
+                   }
+                   setStatus((prev) => ({ ...prev, ...data, networkStatus: 'online' }));
+                   if (data.logs && data.logs.length > 0) {
+                      setLogs(prev => {
+                         const newLogs = [...prev];
+                         data.logs.forEach((l: string) => { if (!newLogs.includes(l)) newLogs.push(l); });
+                         return newLogs;
+                      });
+                   }
+                   if (['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(data.status)) {
+                      active = false;
+                      break;
+                   }
+                } catch (e) {
+                   console.error('JSON parse error', e);
+                }
+             }
+          }
         }
+      } catch (err) {
+        if (!active) return;
+        setStatus(prev => ({ ...prev, networkStatus: 'offline', retryCount: prev.retryCount + 1 }));
         
-        setStatus((prev: MigrationStatus) => ({ ...prev, ...data }));
-        if (data.logs && data.logs.length > 0) {
-           setLogs(prev => [...prev, ...data.logs]);
-        }
-        
-        if (data.status === 'completed' || data.status === 'completed_with_errors' || data.status === 'failed' || data.status === 'cancelled') {
-           eventSource.close();
-        }
-      } catch { /* ignored */ }
+        // Fallback polling
+        fallbackTimeout = setTimeout(() => {
+           if (active) connectStream();
+        }, 2000);
+      }
     };
 
+    connectStream();
+
     return () => {
-      eventSource.close();
+      active = false;
+      if (fallbackTimeout) clearTimeout(fallbackTimeout);
     };
   }, [jobId]);
 

@@ -145,6 +145,7 @@ export class UploadWorker {
     pt.on('data', (chunk: Buffer) => {
        this.lastActivity = Date.now();
        bytesSinceLast += chunk.length;
+       this.stateManager.reportProgressBytes(chunk.length);
        const now = Date.now();
        if (now - lastTime > 1000) {
           const speed = (bytesSinceLast / (now - lastTime)) * 1000;

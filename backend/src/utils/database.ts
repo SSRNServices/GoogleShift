@@ -90,8 +90,19 @@ export async function updateJobStatus(jobId: string, status: string) {
   });
 }
 
-export async function logJobEvent(jobId: string, message: string) {
-  // Activity or log... simplified for now
+export async function logJobEvent(jobId: string, message: string, level: string = 'info', metadata?: any) {
+  try {
+    await prisma.migrationLog.create({
+      data: {
+        jobId,
+        message,
+        level,
+        metadata: metadata ? JSON.parse(JSON.stringify(metadata)) : null
+      }
+    });
+  } catch (e) {
+    console.error(`Failed to write log for ${jobId}: ${message}`, e);
+  }
 }
 
 export async function updateJobProgress(jobId: string, updates: any) {
@@ -105,6 +116,8 @@ export async function updateJobProgress(jobId: string, updates: any) {
   if (updates.currentAction !== undefined) data.currentAction = updates.currentAction;
   if (updates.speed !== undefined) data.speed = updates.speed;
   if (updates.eta !== undefined) data.eta = updates.eta;
+  if (updates.currentFile !== undefined) data.currentFile = updates.currentFile;
+  if (updates.currentFolder !== undefined) data.currentFolder = updates.currentFolder;
 
   if (Object.keys(data).length > 0) {
     await prisma.migrationJob.update({
