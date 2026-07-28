@@ -13,6 +13,7 @@ import driveRoutes from './routes/drive.routes';
 import migrationRoutes from './routes/migration.routes';
 import authAdminRoutes from './routes/auth.admin.routes';
 import discoveryRoutes from './routes/discovery.routes';
+import sessionRoutes from './routes/session.routes';
 import helmet from 'helmet';
 
 dotenv.config();
@@ -133,6 +134,7 @@ app.use('/auth', authRoutes);
 // Protect all following routes with requireUserAuth
 app.use('/api/drive', requireUserAuth, driveRoutes);
 app.use('/api/migrations', requireUserAuth, migrationRoutes);
+app.use('/api/migration/session', requireUserAuth, sessionRoutes);
 app.use('/api/discovery', discoveryRoutes);
 
 // Print all registered routes

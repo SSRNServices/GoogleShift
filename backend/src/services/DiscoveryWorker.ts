@@ -13,6 +13,13 @@ export class DiscoveryWorker {
         data: { state: 'COPYING', startedAt: new Date() } // using COPYING or PREPARING as 'scanning' equivalent since it's a MigrationState enum
       });
 
+      if (job.sessionId) {
+        await prisma.migrationSession.update({
+          where: { id: job.sessionId },
+          data: { discoveryStatus: 'RUNNING' }
+        });
+      }
+
       const items = job.itemsParam ? job.itemsParam.split(',').map((part: string) => {
         const [id, itemType] = part.split(':');
         return { id, isFolder: itemType === 'folder' };
@@ -54,12 +61,26 @@ export class DiscoveryWorker {
          }
       });
       
+      if (job.sessionId) {
+        await prisma.migrationSession.update({
+          where: { id: job.sessionId },
+          data: { discoveryStatus: 'COMPLETED', manifestId: job.manifestId }
+        });
+      }
+      
     } catch (e: any) {
       console.log(`\n[STATE] FAILED\nDiscovery: ${job.id}\nReason: ${e.message}`);
       await prisma.discoveryJob.update({
          where: { id: job.id },
          data: { state: 'FAILED' }
       });
+      
+      if (job.sessionId) {
+        await prisma.migrationSession.update({
+          where: { id: job.sessionId },
+          data: { discoveryStatus: 'FAILED' }
+        });
+      }
     }
   }
 

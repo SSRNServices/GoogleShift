@@ -17,10 +17,18 @@ const serializeBigInt = (obj: any) => {
 router.post('/start', requireUserAuth, async (req, res) => {
   try {
     const userId = (req as any).user.id;
-    const { itemsParam } = req.body;
+    const { itemsParam, sessionId } = req.body;
 
-    if (!itemsParam) {
-      return res.status(400).json({ error: 'Missing itemsParam' });
+    if (!itemsParam || !sessionId) {
+      return res.status(400).json({ error: 'Missing itemsParam or sessionId' });
+    }
+
+    const session = await prisma.migrationSession.findUnique({
+      where: { id: sessionId, ownerId: userId }
+    });
+
+    if (!session) {
+       return res.status(404).json({ error: 'Migration session not found' });
     }
 
     const active = await prisma.discoveryJob.findFirst({
@@ -44,6 +52,7 @@ router.post('/start', requireUserAuth, async (req, res) => {
       data: {
         id: uuidv4(),
         ownerId: userId,
+        sessionId,
         manifestId,
         itemsParam,
         state: 'QUEUED'

@@ -24,12 +24,12 @@ export const migrationApi = {
     return res.json();
   },
 
-  async startDiscovery(sourceId: string) {
+  async startDiscovery(sourceId: string, sessionId: string) {
     const res = await fetch(`${API_URL}/api/discovery/start`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ itemsParam: `${sourceId}:folder` })
+      body: JSON.stringify({ itemsParam: `${sourceId}:folder`, sessionId })
     });
     if (!res.ok) throw new Error('Failed to start discovery');
     return res.json();

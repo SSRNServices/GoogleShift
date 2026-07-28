@@ -5,6 +5,7 @@ import { API_URL } from '../config/api';
 import { Check, ChevronRight, Folder, Loader2, ArrowLeft, Cloud, HardDrive, Settings, Play } from 'lucide-react';
 import { migrationApi } from '../api/migrationApi';
 import { DiscoveryScanner } from '../components/DiscoveryScanner';
+import { useMigrationSessionStore } from '../store/useMigrationSessionStore';
 import type { TransferOptionsState } from '../types/transfer';
 import type { DriveItem } from '../types/drive';
 
@@ -97,6 +98,8 @@ export default function Migration() {
   const [sourceProfile, setSourceProfile] = useState<{state?: string; profile?: {email?: string}} | null>(null);
   const [destProfile, setDestProfile] = useState<{state?: string; profile?: {email?: string}} | null>(null);
   
+  const { sessionId, sessionData, createSession, fetchSession } = useMigrationSessionStore();
+
   const [sourceSelected, setSourceSelected] = useState<DriveItem | null>(null);
   const [destSelected, setDestSelected] = useState<DriveItem | null>(null);
   
@@ -135,7 +138,29 @@ export default function Migration() {
     fetchProfiles();
   }, []);
 
-  const handleNext = () => {
+  useEffect(() => {
+    if (sessionId) {
+      fetchSession(sessionId).catch(console.error);
+    }
+  }, [sessionId]);
+
+  const handleNext = async () => {
+    // If moving to summary (step 5 to 6), ensure session is created
+    if (step === 5) {
+      if (!sessionId) {
+        try {
+          await createSession({
+            sourceEmail: sourceProfile?.profile?.email || '',
+            destinationEmail: destProfile?.profile?.email || '',
+            sourceFolderId: sourceSelected?.id || '',
+            destinationFolderId: destSelected?.id || ''
+          });
+        } catch (e) {
+          alert('Failed to create migration session');
+          return;
+        }
+      }
+    }
     setStep((s) => Math.min(s + 1, 6) as Step);
   };
   
@@ -144,11 +169,16 @@ export default function Migration() {
   const startMigration = async () => {
     setStarting(true);
     try {
-      if (!manifestId) throw new Error('Manifest ID is missing. Discovery must complete first.');
+      const currentManifestId = sessionData?.manifestId || manifestId;
+      if (!currentManifestId) throw new Error('Manifest ID is missing. Discovery must complete first.');
+      if (!sessionId) throw new Error('Session ID is missing.');
+      if (sessionData?.discoveryStatus !== 'COMPLETED') throw new Error('Discovery phase is not complete.');
+
       await migrationApi.startMigration({
         sourceSelection: sourceSelected ? [sourceSelected] : [],
         destinationFolderId: destSelected?.id || "",
-        manifestId,
+        manifestId: currentManifestId,
+        sessionId,
         options: {
           ...options,
           renameConflicts: !options.overwriteExisting && !options.skipExisting
@@ -294,13 +324,14 @@ export default function Migration() {
         {step === 6 && (
           <div>
             <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-white">Summary</h2>
-            {sourceSelected && (
+            {sourceSelected && sessionId && (
               <DiscoveryScanner 
                 sourceId={sourceSelected.id}
+                sessionId={sessionId}
                 onComplete={(summary) => {
                    setDiscoveryComplete(true);
                    setManifestId(summary.manifestId);
-                   console.log('Discovery Complete:', summary);
+                   fetchSession(sessionId); // Refresh session data
                 }}
                 onError={(err) => alert(err)}
               />
@@ -329,8 +360,9 @@ export default function Migration() {
         ) : (
           <button
             onClick={startMigration}
-            disabled={starting || !destSelected || !discoveryComplete}
+            disabled={starting || !destSelected || sessionData?.discoveryStatus !== 'COMPLETED' || !sessionData?.manifestId}
             className="flex items-center px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50"
+            title={sessionData?.discoveryStatus !== 'COMPLETED' ? 'Run Discovery first.' : ''}
           >
             {starting ? <Loader2 className="w-5 h-5 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
             Start Migration

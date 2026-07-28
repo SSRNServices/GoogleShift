@@ -80,10 +80,18 @@ router.post('/start', requireBothAuth, async (req, res) => {
   console.log('[Backend] MIGRATION START RECEIVED');
   try {
     const userId = (req as any).user.id;
-    const payload: StartMigrationPayload = req.body;
+    const payload: StartMigrationPayload & { sessionId?: string } = req.body;
     
-    if (!payload.manifestId) {
-       return res.status(400).json({ error: 'Manifest ID is missing. Discovery must complete first.' });
+    if (!payload.sessionId || !payload.manifestId) {
+       return res.status(400).json({ success: false, error: 'Session ID and Manifest ID are required.' });
+    }
+
+    const session = await prisma.migrationSession.findUnique({
+      where: { id: payload.sessionId, ownerId: userId }
+    });
+
+    if (!session || session.discoveryStatus !== 'COMPLETED' || session.manifestId !== payload.manifestId) {
+      return res.status(400).json({ success: false, error: 'Invalid session or incomplete discovery.' });
     }
 
     const active = await prisma.migrationJob.findFirst({
@@ -106,10 +114,11 @@ router.post('/start', requireBothAuth, async (req, res) => {
       return res.status(400).json({ error: 'Another migration is currently active.' });
     }
 
+    // We can rely on session for validation now.
     // PRE-MIGRATION VALIDATION
     const discoveryJob = await prisma.discoveryJob.findUnique({ where: { manifestId: payload.manifestId } });
     if (!discoveryJob || discoveryJob.state !== 'COMPLETED') {
-       return res.status(400).json({ error: 'Discovery phase is incomplete or failed.' });
+       return res.status(400).json({ success: false, error: 'Discovery phase is incomplete or failed.' });
     }
 
     const manifestCount = await prisma.migrationManifest.count({ where: { jobId: payload.manifestId } });
@@ -117,8 +126,21 @@ router.post('/start', requireBothAuth, async (req, res) => {
        return res.status(400).json({ error: 'Manifest is empty. No files were found to migrate.' });
     }
 
+    // Inject sessionId into the payload or pass it separately
     const job = await migrationService.startMigrationJob(userId, payload);
-    res.status(200).json(job);
+    
+    // Link job to session
+    await prisma.migrationJob.update({
+      where: { id: (job as any).jobId || (job as any).id },
+      data: { sessionId: payload.sessionId }
+    });
+
+    await prisma.migrationSession.update({
+      where: { id: payload.sessionId },
+      data: { migrationStatus: 'RUNNING' }
+    });
+
+    res.status(200).json({ success: true, job });
   } catch (error: any) {
     console.error('Error starting migration:', error);
     if (['RequestValidationError', 'ManifestError', 'ShortcutResolutionError'].includes(error.name)) {

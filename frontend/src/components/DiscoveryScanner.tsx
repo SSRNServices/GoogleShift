@@ -5,6 +5,7 @@ import { Loader2, FolderOpen, File as FileIcon, AlertTriangle, CheckCircle } fro
 
 interface DiscoveryScannerProps {
   sourceId: string;
+  sessionId: string;
   onComplete: (summary: any) => void;
   onError: (error: string) => void;
 }
@@ -17,7 +18,7 @@ const formatBytes = (bytes: number) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
-export function DiscoveryScanner({ sourceId, onComplete, onError }: DiscoveryScannerProps) {
+export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: DiscoveryScannerProps) {
   const [jobId, setJobId] = useState<string | null>(null);
   const [stats, setStats] = useState({
     folders: 0,
@@ -37,7 +38,7 @@ export function DiscoveryScanner({ sourceId, onComplete, onError }: DiscoverySca
 
     const initDiscovery = async () => {
       try {
-        const job = await migrationApi.startDiscovery(sourceId);
+        const job = await migrationApi.startDiscovery(sourceId, sessionId);
         if (active) setJobId(job.jobId || job.id);
       } catch (err: any) {
         if (active) onError(err.message || 'Failed to initialize discovery');
@@ -47,7 +48,7 @@ export function DiscoveryScanner({ sourceId, onComplete, onError }: DiscoverySca
     initDiscovery();
 
     return () => { active = false; };
-  }, [sourceId, onError]);
+  }, [sourceId, sessionId, onError]);
 
   useEffect(() => {
     if (!jobId) return;
