@@ -5,6 +5,7 @@ import type { DriveItem } from '../types/drive';
 import type { ScanSummaryResult, StorageStats, MimeBreakdown, ScanWarningInfo } from '../types/drive';
 
 export interface TransferSummaryProps {
+  sessionId: string;
   sourceSelection: DriveItem[];
   destinationFolder: DriveItem | null;
   onScanComplete?: (manifestId: string, stats: ScanSummaryResult) => void;
@@ -18,7 +19,7 @@ const formatBytes = (bytes: number) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
-export function TransferSummary({ sourceSelection, onScanComplete }: TransferSummaryProps) {
+export function TransferSummary({ sessionId, sourceSelection, onScanComplete }: TransferSummaryProps) {
   const [scanState, setScanState] = useState<'Idle' | 'Scanning' | 'Completed' | 'Failed'>('Idle');
   const [currentAction, setCurrentAction] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -59,14 +60,7 @@ export function TransferSummary({ sourceSelection, onScanComplete }: TransferSum
     setStartTime(Date.now());
     setElapsedTime(0);
 
-    const itemsParam = sourceSelection.map(item => {
-      const isFolder = item.mimeType === 'application/vnd.google-apps.folder' 
-                    || item.mimeType === 'application/vnd.google-apps.shortcut'
-                    || item.mimeType?.includes('folder');
-      return `${item.id}:${isFolder ? 'folder' : 'file'}`;
-    }).join(',');
-
-    const url = `${API_URL}/api/drive/source/summary?items=${encodeURIComponent(itemsParam)}`;
+    const url = `${API_URL}/api/discovery/${sessionId}/status`;
     const eventSource = new EventSource(url, { withCredentials: true });
 
     eventSource.onopen = () => {

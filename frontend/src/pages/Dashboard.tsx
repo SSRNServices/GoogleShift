@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { API_URL } from '../config/api';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { ArrowRight, HardDrive, CheckCircle2, AlertTriangle, FolderSearch } from 'lucide-react';
@@ -12,6 +12,7 @@ import type { ProfileResponse } from '../types/oauth';
 import { migrationApi } from '../api/migrationApi';
 import { Toaster, toast } from 'react-hot-toast';
 import { MigrationDashboard } from '../components/MigrationDashboard';
+import { useMigrationSessionStore } from '../store/useMigrationSessionStore';
 import { Loader2, LogOut } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { Navigate } from 'react-router-dom';
@@ -180,6 +181,8 @@ export default function Dashboard() {
   const [transferOptions, setTransferOptions] = useState<TransferOptionsState>(defaultOptions);
   const [manifestId, setManifestId] = useState<string | null>(null);
   const [scanStats, setScanStats] = useState<any>(null);
+  
+  const { sessionId, createSession } = useMigrationSessionStore();
 
   const handleSelectionComplete = (selection: DriveItem | DriveItem[]) => {
     if (modalType === 'source') {
@@ -256,17 +259,15 @@ export default function Dashboard() {
       toast.error('Please select a destination folder');
       return;
     }
-    if (!manifestId) {
+    if (!manifestId || !sessionId) {
       toast.error('Please wait for the summary scan to complete');
       return;
     }
     if (migrationMutation.isPending) return;
 
     const payload = {
-      manifestId,
-      sourceSelection,
-      destinationFolderId: destinationFolder.id,
-      options: transferOptions
+      sessionId,
+      manifestId
     };
 
     try {
@@ -275,6 +276,18 @@ export default function Dashboard() {
       // Error handled by onError in mutation
     }
   };
+
+  // Automatically create session when both are selected
+  useEffect(() => {
+    if (sourceSelection.length > 0 && destinationFolder && !sessionId) {
+       createSession({
+          sourceEmail: sourceAuth?.profile?.email || '',
+          destinationEmail: destAuth?.profile?.email || '',
+          sourceFolderId: sourceSelection[0]?.id || '',
+          destinationFolderId: destinationFolder.id
+       }).catch(console.error);
+    }
+  }, [sourceSelection, destinationFolder, sessionId, sourceAuth, destAuth, createSession]);
 
   if (activeJobId) {
     return (
@@ -380,9 +393,10 @@ export default function Dashboard() {
           <AccountSection title="Destination Account" type="destination" onBrowseClick={() => setModalType('destination')} />
         </div>
 
-        {bothConnected && (
+        {bothConnected && sessionId && (
           <div className="space-y-6 pt-6 border-t border-border">
             <TransferSummary 
+              sessionId={sessionId}
               sourceSelection={sourceSelection}
               destinationFolder={destinationFolder}
               onScanComplete={(id, stats) => { setManifestId(id); setScanStats(stats); }}

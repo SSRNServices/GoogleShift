@@ -104,9 +104,7 @@ export interface TransferOptionsState {
 
 export interface MigrationRequest {
   manifestId: string;
-  sourceSelection: DriveItem[];
-  destinationFolder: DriveItem;
-  options: TransferOptionsState;
+  sessionId: string;
 }
 
 export interface MigrationJob extends MigrationRequest {
@@ -171,8 +169,6 @@ export interface ScanSummaryResult {
 }
 
 export interface StartMigrationPayload {
-  manifestId?: string;
-  sourceSelection: DriveItem[];
-  destinationFolderId: string;
-  options: TransferOptionsState;
+  sessionId: string;
+  manifestId: string;
 }

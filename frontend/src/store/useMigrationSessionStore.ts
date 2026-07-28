@@ -21,7 +21,7 @@ interface MigrationSessionState {
 
 export const useMigrationSessionStore = create<MigrationSessionState>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       sessionId: null,
       sessionData: null,
       isLoading: false,
@@ -32,7 +32,8 @@ export const useMigrationSessionStore = create<MigrationSessionState>()(
         try {
           const response = await apiClient('/api/migration/session', {
             method: 'POST',
-            body: payload
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
           });
           
           if (!response.success) throw new Error(response.error);

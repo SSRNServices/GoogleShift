@@ -119,7 +119,6 @@ export default function Migration() {
   });
 
   const [starting, setStarting] = useState(false);
-  const [discoveryComplete, setDiscoveryComplete] = useState(false);
   const [manifestId, setManifestId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -175,14 +174,8 @@ export default function Migration() {
       if (sessionData?.discoveryStatus !== 'COMPLETED') throw new Error('Discovery phase is not complete.');
 
       await migrationApi.startMigration({
-        sourceSelection: sourceSelected ? [sourceSelected] : [],
-        destinationFolderId: destSelected?.id || "",
         manifestId: currentManifestId,
-        sessionId,
-        options: {
-          ...options,
-          renameConflicts: !options.overwriteExisting && !options.skipExisting
-        }
+        sessionId
       });
       navigate('/migration/progress');
     } catch (err: unknown) {
@@ -329,7 +322,6 @@ export default function Migration() {
                 sourceId={sourceSelected.id}
                 sessionId={sessionId}
                 onComplete={(summary) => {
-                   setDiscoveryComplete(true);
                    setManifestId(summary.manifestId);
                    fetchSession(sessionId); // Refresh session data
                 }}
