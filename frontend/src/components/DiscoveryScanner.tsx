@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { API_URL } from '../config/api';
+import { migrationApi } from '../api/migrationApi';
 import { Loader2, FolderOpen, File as FileIcon, AlertTriangle, CheckCircle } from 'lucide-react';
 
 interface DiscoveryScannerProps {
@@ -17,66 +18,126 @@ const formatBytes = (bytes: number) => {
 };
 
 export function DiscoveryScanner({ sourceId, onComplete, onError }: DiscoveryScannerProps) {
+  const [jobId, setJobId] = useState<string | null>(null);
   const [stats, setStats] = useState({
     folders: 0,
     files: 0,
     bytes: 0,
-    message: 'Initializing discovery...'
+    message: 'Initializing background discovery job...',
+    elapsed: 0
   });
   
   const [completed, setCompleted] = useState(false);
   const [finalSummary, setFinalSummary] = useState<any>(null);
+  
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    let eventSource: EventSource;
+    let active = true;
 
-    const startScan = async () => {
-      // The backend expects a comma separated list of items
-      const itemsParam = `${sourceId}:folder`;
-      eventSource = new EventSource(`${API_URL}/api/drive/source/root?items=${encodeURIComponent(itemsParam)}`, { withCredentials: true });
-
-      eventSource.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          
-          if (data.type === 'connected') return;
-          
-          if (data.event === 'SCAN_FOLDER') {
-             setStats({
-               folders: data.data.totalFolders,
-               files: data.data.totalFiles,
-               bytes: data.data.totalBytes,
-               message: `Scanning folder: ${data.data.folderName}`
-             });
-          } else if (data.event === 'SCAN_COMPLETED') {
-             setCompleted(true);
-             setFinalSummary(data.data);
-          } else if (data.event === 'CLOSE') {
-             eventSource.close();
-             if (finalSummary || data.data) {
-                onComplete(finalSummary || data.data);
-             }
-          } else if (data.event === 'ERROR') {
-             onError(data.data.message);
-             eventSource.close();
-          }
-        } catch (e) {
-          console.error('Failed to parse scan event', e);
-        }
-      };
-
-      eventSource.onerror = () => {
-         eventSource.close();
-         if (!completed) onError('Connection lost during discovery scan.');
-      };
+    const initDiscovery = async () => {
+      try {
+        const job = await migrationApi.startDiscovery(sourceId);
+        if (active) setJobId(job.jobId || job.id);
+      } catch (err: any) {
+        if (active) onError(err.message || 'Failed to initialize discovery');
+      }
     };
 
-    startScan();
+    initDiscovery();
+
+    return () => { active = false; };
+  }, [sourceId, onError]);
+
+  useEffect(() => {
+    if (!jobId) return;
+
+    let pollTimeout: number;
+    let isActive = true;
+
+    const streamDiscovery = async () => {
+      try {
+        abortControllerRef.current = new AbortController();
+        const response = await fetch(`${API_URL}/api/discovery/${jobId}/status`, {
+          credentials: 'include',
+          signal: abortControllerRef.current.signal
+        });
+
+        if (!response.ok || !response.body) {
+           throw new Error('Stream rejected');
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (isActive) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() || '';
+
+          for (const part of parts) {
+            if (part.startsWith('data: ')) {
+              const dataStr = part.substring(6);
+              if (!dataStr || dataStr.trim() === '') continue;
+              
+              try {
+                const data = JSON.parse(dataStr);
+                
+                if (data.error) {
+                  onError(data.error);
+                  isActive = false;
+                  break;
+                }
+
+                if (data.event === 'SCAN_COMPLETED') {
+                  setCompleted(true);
+                  setFinalSummary(data.data);
+                  isActive = false;
+                  onComplete(data.data);
+                  break;
+                }
+                
+                setStats({
+                  folders: data.foldersFound || 0,
+                  files: data.filesFound || 0,
+                  bytes: data.bytesFound || 0,
+                  elapsed: data.elapsed || 0,
+                  message: data.currentFolder ? `Scanning folder: ${data.currentFolder}` : (data.currentFile ? `Scanning file: ${data.currentFile}` : 'Scanning...')
+                });
+
+                if (data.status === 'completed') {
+                   // We just wait for SCAN_COMPLETED event which should follow
+                }
+
+              } catch (e) {
+                console.error('Failed to parse SSE', e);
+              }
+            }
+          }
+        }
+      } catch (error: any) {
+         if (error.name === 'AbortError') return;
+         console.warn('Stream failed, falling back to polling...', error);
+         
+         // Basic polling fallback if stream drops
+         if (isActive) {
+            pollTimeout = window.setTimeout(streamDiscovery, 2000);
+         }
+      }
+    };
+
+    streamDiscovery();
 
     return () => {
-      if (eventSource) eventSource.close();
+      isActive = false;
+      if (abortControllerRef.current) abortControllerRef.current.abort();
+      clearTimeout(pollTimeout);
     };
-  }, [sourceId]);
+  }, [jobId, onComplete, onError]);
 
   if (completed && finalSummary) {
     return (
@@ -89,12 +150,12 @@ export function DiscoveryScanner({ sourceId, onComplete, onError }: DiscoverySca
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
            <div className="bg-gray-50 dark:bg-gray-900 p-4 rounded text-center border border-gray-100 dark:border-gray-700">
               <FolderOpen className="w-6 h-6 mx-auto mb-2 text-indigo-500" />
-              <div className="text-2xl font-bold text-gray-900 dark:text-white">{finalSummary.folderCount || 0}</div>
+              <div className="text-2xl font-bold text-gray-900 dark:text-white">{finalSummary.totalFolders || 0}</div>
               <div className="text-sm text-gray-500">Folders</div>
            </div>
            <div className="bg-gray-50 dark:bg-gray-900 p-4 rounded text-center border border-gray-100 dark:border-gray-700">
               <FileIcon className="w-6 h-6 mx-auto mb-2 text-blue-500" />
-              <div className="text-2xl font-bold text-gray-900 dark:text-white">{finalSummary.fileCount || 0}</div>
+              <div className="text-2xl font-bold text-gray-900 dark:text-white">{finalSummary.totalFiles || 0}</div>
               <div className="text-sm text-gray-500">Files</div>
            </div>
            <div className="bg-gray-50 dark:bg-gray-900 p-4 rounded text-center border border-gray-100 dark:border-gray-700">
@@ -104,8 +165,8 @@ export function DiscoveryScanner({ sourceId, onComplete, onError }: DiscoverySca
            </div>
            <div className="bg-gray-50 dark:bg-gray-900 p-4 rounded text-center border border-gray-100 dark:border-gray-700">
               <AlertTriangle className="w-6 h-6 mx-auto mb-2 text-yellow-500" />
-              <div className="text-2xl font-bold text-gray-900 dark:text-white">{finalSummary.unsupported || 0}</div>
-              <div className="text-sm text-gray-500">Unsupported</div>
+              <div className="text-2xl font-bold text-gray-900 dark:text-white">{finalSummary.warnings?.length || 0}</div>
+              <div className="text-sm text-gray-500">Warnings</div>
            </div>
         </div>
       </div>
@@ -134,6 +195,10 @@ export function DiscoveryScanner({ sourceId, onComplete, onError }: DiscoverySca
         <div className="text-center">
           <div className="text-2xl font-bold text-gray-700 dark:text-gray-300">{formatBytes(stats.bytes)}</div>
           <div className="text-sm text-gray-500">Total Size</div>
+        </div>
+        <div className="text-center">
+          <div className="text-2xl font-bold text-gray-700 dark:text-gray-300">{(stats.elapsed / 1000).toFixed(1)}s</div>
+          <div className="text-sm text-gray-500">Elapsed Time</div>
         </div>
       </div>
     </div>

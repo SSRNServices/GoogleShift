@@ -24,6 +24,17 @@ export const migrationApi = {
     return res.json();
   },
 
+  async startDiscovery(sourceId: string) {
+    const res = await fetch(`${API_URL}/api/discovery/start`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ itemsParam: `${sourceId}:folder` })
+    });
+    if (!res.ok) throw new Error('Failed to start discovery');
+    return res.json();
+  },
+
   async getCurrent() {
     const res = await fetch(`${API_URL}/api/migrations/current`, { credentials: 'include' });
     if (!res.ok) throw new Error('Failed to fetch current migration state');

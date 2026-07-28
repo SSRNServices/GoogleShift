@@ -116,6 +116,7 @@ export default function Migration() {
   });
 
   const [starting, setStarting] = useState(false);
+  const [discoveryComplete, setDiscoveryComplete] = useState(false);
 
   useEffect(() => {
     const fetchProfiles = async () => {
@@ -294,7 +295,7 @@ export default function Migration() {
               <DiscoveryScanner 
                 sourceId={sourceSelected.id}
                 onComplete={(summary) => {
-                   // Optional: you could save the summary state if needed for next steps
+                   setDiscoveryComplete(true);
                    console.log('Discovery Complete:', summary);
                 }}
                 onError={(err) => alert(err)}
@@ -324,7 +325,7 @@ export default function Migration() {
         ) : (
           <button
             onClick={startMigration}
-            disabled={starting || !destSelected}
+            disabled={starting || !destSelected || !discoveryComplete}
             className="flex items-center px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50"
           >
             {starting ? <Loader2 className="w-5 h-5 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}

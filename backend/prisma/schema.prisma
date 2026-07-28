@@ -57,6 +57,7 @@ model User {
 
   oauthAccounts OAuthAccount[]
   migrations    MigrationJob[]
+  discoveryJobs DiscoveryJob[]
   auditLogs     AuditLog[]
   activityLogs  ActivityLog[]
 
@@ -77,6 +78,29 @@ model OAuthAccount {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([provider, providerAccountId])
+}
+
+model DiscoveryJob {
+  id                  String   @id
+  ownerId             String
+  manifestId          String   @unique
+  state               MigrationState @default(QUEUED)
+  sourceEmail         String?
+  itemsParam          String?
+  foldersFound        Int      @default(0)
+  filesFound          Int      @default(0)
+  bytesFound          BigInt   @default(0)
+  currentFolder       String?
+  currentFile         String?
+  
+  startedAt           DateTime?
+  completedAt         DateTime?
+  cancelledAt         DateTime?
+
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  
+  @@index([ownerId])
+  @@index([state])
 }
 
 model MigrationJob {
