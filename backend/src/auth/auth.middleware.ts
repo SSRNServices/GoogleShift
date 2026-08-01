@@ -29,11 +29,40 @@ export const requireUserAuth = async (req: Request, res: Response, next: NextFun
     const { passwordHash, ...userWithoutPassword } = user;
     (req as any).user = userWithoutPassword;
     
-    // We keep session fallback for the oauth handle callback since it relies on session ID right now.
-    // If not using session, we should handle state differently. For now, this suffices.
     next();
   } catch (error) {
     return res.status(401).json({ authenticated: false, error: 'Unauthorized', message: 'Invalid or expired token.' });
+  }
+};
+
+export const requireUserAuthBrowser = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    let token = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.split(' ')[1];
+    } else if (req.cookies && req.cookies.accessToken) {
+      token = req.cookies.accessToken;
+    }
+
+    if (!token) {
+      const frontendUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? 'https://migration.ssrnservices.in' : 'http://localhost:5173');
+      return res.redirect(`${frontendUrl}/login?error=auth_required`);
+    }
+
+    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
+    if (!user || user.status === 'PENDING' || !user.isActive) {
+      const frontendUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? 'https://migration.ssrnservices.in' : 'http://localhost:5173');
+      return res.redirect(`${frontendUrl}/login?error=user_inactive`);
+    }
+
+    const { passwordHash, ...userWithoutPassword } = user;
+    (req as any).user = userWithoutPassword;
+    next();
+  } catch (error) {
+    const frontendUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? 'https://migration.ssrnservices.in' : 'http://localhost:5173');
+    return res.redirect(`${frontendUrl}/login?error=session_expired`);
   }
 };
 

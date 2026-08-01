@@ -41,7 +41,7 @@ export default function Login() {
   };
 
   const handleGoogleLogin = () => {
-    window.location.href = `${API_URL}/auth/login`; // Or whatever URL starts Google OAuth passport flow
+    window.location.href = `${API_URL}/auth/google`;
   };
 
   return (

@@ -157,62 +157,119 @@ export class AuthController {
   }
 
   // ==========================================
-  // GOOGLE DRIVE OAUTH
+  // ==========================================
+  // GOOGLE DRIVE & USER OAUTH
   // ==========================================
 
-  public getAuthUrl = (req: Request, res: Response): void => {
-    const type = req.params.type as AccountType;
+  public getAuthUrl = (type: AccountType, req: Request, res: Response): void => {
+    const frontendUrl = this.getFrontendUrl();
     if (type !== 'source' && type !== 'destination') {
-      res.status(400).send('Invalid account type');
+      res.redirect(`${frontendUrl}/dashboard?error=invalid_type&reason=${encodeURIComponent('Invalid account type')}`);
       return;
     }
-    const url = googleClientManager.getAuthUrl(type);
+
+    const userId = (req as any).user?.id;
+    if (!userId) {
+      res.redirect(`${frontendUrl}/login?error=auth_required`);
+      return;
+    }
+
+    const statePayload = Buffer.from(JSON.stringify({
+      type,
+      userId,
+      ts: Date.now()
+    })).toString('base64url');
+
+    const url = googleClientManager.getAuthUrl(type, statePayload);
     res.redirect(url);
   };
 
-  public handleCallback = async (req: Request, res: Response): Promise<void> => {
+  public handleGoogleCallback = async (req: Request, res: Response, next: any): Promise<void> => {
     const frontendUrl = this.getFrontendUrl();
     const code = req.query.code as string;
-    const state = req.query.state as string;
-    const type = state as AccountType;
+    const rawState = req.query.state as string;
 
-    if (!code || !state || (type !== 'source' && type !== 'destination')) {
-      const reason = 'Invalid authorization code or state parameters provided';
-      console.error(`OAuth Callback Error: ${reason}`);
-      res.redirect(`${frontendUrl}/migration?error=auth_failed&reason=${encodeURIComponent(reason)}`);
+    if (!code) {
+      console.error('OAuth Callback Error: Missing authorization code parameter');
+      res.redirect(`${frontendUrl}/dashboard?error=auth_failed&reason=${encodeURIComponent('Missing authorization code')}`);
       return;
     }
 
-    try {
-      const userId = (req as any).user.id;
-      await authService.handleCallback(userId, type, code);
+    // Decode state to determine if this is Drive OAuth or Passport User Sign-In
+    let type: AccountType | null = null;
+    let stateUserId: string | null = null;
 
-      // Immediately retrieve Profile and Quota to verify token works
-      const profileResponse = await authService.getProfile(userId, type);
-
-      console.log(`\n=== OAuth Success for ${type} ===`);
-      console.log(`Account Name: ${profileResponse.profile?.name}`);
-      console.log(`Account Email: ${profileResponse.profile?.email}`);
-      console.log(`Storage Limit: ${profileResponse.profile?.storage.limit}`);
-      console.log(`Storage Used: ${profileResponse.profile?.storage.used}`);
-      console.log(`=================================\n`);
-
-      // Redirect back to frontend migration page
-      res.redirect(`${frontendUrl}/migration?connected=${type}`);
-    } catch (error: any) {
-      console.error(`Callback error for ${type}:`, error);
-      let reason = 'OAuth callback failed due to an internal server error';
-      if (error.code === 'P2022') {
-        reason = `Database schema mismatch: Column '${error.meta?.column || 'unknown'}' does not exist`;
-      } else if (error.message) {
-        reason = error.message;
+    if (rawState) {
+      if (rawState === 'source' || rawState === 'destination') {
+        type = rawState;
+      } else {
+        try {
+          const decoded = JSON.parse(Buffer.from(rawState, 'base64url').toString('utf8'));
+          if (decoded.type === 'source' || decoded.type === 'destination') {
+            type = decoded.type;
+            stateUserId = decoded.userId || null;
+          }
+        } catch {
+          // Non-JSON state implies possible Passport Google Sign-In state
+        }
       }
-      res.redirect(`${frontendUrl}/migration?error=auth_failed&reason=${encodeURIComponent(reason)}`);
     }
+
+    // If it's a Drive OAuth Connection callback
+    if (type) {
+      try {
+        const userId = (req as any).user?.id || stateUserId;
+        if (!userId) {
+          console.error(`OAuth Callback Error for ${type}: Missing user ID`);
+          res.redirect(`${frontendUrl}/login?error=auth_required`);
+          return;
+        }
+
+        await authService.handleCallback(userId, type, code);
+        const profileResponse = await authService.getProfile(userId, type);
+
+        console.log(`\n=== OAuth Success for ${type} ===`);
+        console.log(`Account Name: ${profileResponse.profile?.name}`);
+        console.log(`Account Email: ${profileResponse.profile?.email}`);
+        console.log(`=================================\n`);
+
+        res.redirect(`${frontendUrl}/dashboard?connected=${type}`);
+      } catch (error: any) {
+        console.error(`Callback error for ${type}:`, error);
+        let reason = error.message || 'OAuth callback failed due to an internal server error';
+        res.redirect(`${frontendUrl}/dashboard?error=auth_failed&reason=${encodeURIComponent(reason)}`);
+      }
+      return;
+    }
+
+    // Otherwise, handle as Passport Google User Login
+    const passport = require('passport');
+    passport.authenticate('google', (err: any, user: any) => {
+      if (err || !user) {
+        console.error('Passport Google Authentication error:', err);
+        return res.redirect(`${frontendUrl}/login?error=google_auth_failed`);
+      }
+
+      const payload = { userId: user.id, email: user.email, role: user.role };
+      const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: '1h' });
+      const refreshToken = jwt.sign(payload, REFRESH_SECRET, { expiresIn: '7d' });
+      const domain = process.env.COOKIE_DOMAIN || (process.env.NODE_ENV === 'production' ? '.migration.ssrnservices.in' : undefined);
+
+      const cookieOptions = {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: (process.env.NODE_ENV === 'production' ? 'none' as const : 'lax' as const),
+        ...(domain ? { domain } : {})
+      };
+
+      res.cookie('accessToken', accessToken, { ...cookieOptions, maxAge: 60 * 60 * 1000 });
+      res.cookie('refreshToken', refreshToken, { ...cookieOptions, maxAge: 7 * 24 * 60 * 60 * 1000 });
+
+      res.redirect(`${frontendUrl}/dashboard`);
+    })(req, res, next);
   };
 
-  public getProfile = async (req: Request, res: Response): Promise<void> => {
-    const type = req.params.type as AccountType;
+  public getProfile = async (type: AccountType, req: Request, res: Response): Promise<void> => {
     if (type !== 'source' && type !== 'destination') {
       res.status(400).json({ error: 'Bad Request', message: 'Invalid account type' });
       return;
@@ -228,9 +285,21 @@ export class AuthController {
     }
   };
 
-  public logout = async (req: Request, res: Response): Promise<void> => {
-    const type = req.params.type as AccountType;
-    res.json({ success: true });
+  public logoutAccount = async (type: AccountType, req: Request, res: Response): Promise<void> => {
+    if (type !== 'source' && type !== 'destination') {
+      res.status(400).json({ error: 'Bad Request', message: 'Invalid account type' });
+      return;
+    }
+
+    try {
+      const userId = (req as any).user.id;
+      const { tokenStore } = require('./token.store');
+      await tokenStore.deleteTokens(userId, type);
+      res.json({ success: true, message: `Disconnected ${type} account successfully` });
+    } catch (error) {
+      console.error(`Logout account error for ${type}:`, error);
+      res.status(500).json({ error: 'Internal Server Error', message: 'Failed to disconnect account' });
+    }
   };
 }
 

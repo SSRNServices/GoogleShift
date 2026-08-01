@@ -42,7 +42,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const isAuthenticated = !!user;
 
   const login = () => {
-    window.location.href = `${API_URL}/auth/login`;
+    window.location.href = `${API_URL}/auth/google`;
   };
 
   const logout = async () => {

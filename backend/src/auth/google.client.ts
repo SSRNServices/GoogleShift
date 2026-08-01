@@ -15,12 +15,13 @@ export class GoogleClientManager {
     return new google.auth.OAuth2(clientId, clientSecret, redirectUri) as unknown as OAuth2Client;
   }
 
-  public getAuthUrl(type: AccountType): string {
+  public getAuthUrl(type: AccountType, customState?: string): string {
     const client = this.getClient();
+    const stateValue = customState || type;
     const url = client.generateAuthUrl({
       access_type: 'offline',
       prompt: 'consent',
-      state: type,
+      state: stateValue,
       include_granted_scopes: true,
       response_type: 'code',
       scope: [
@@ -34,14 +35,6 @@ export class GoogleClientManager {
     console.log(`Redirect URI: ${process.env.GOOGLE_DRIVE_REDIRECT_URI}`);
     console.log(`Generated URL: ${url}\n`);
     
-    const parsedUrl = new URL(url);
-    console.log(`redirect_uri: ${parsedUrl.searchParams.get('redirect_uri')}`);
-    console.log(`client_id: ${parsedUrl.searchParams.get('client_id')}`);
-    console.log(`scope: ${parsedUrl.searchParams.get('scope')}`);
-    console.log(`response_type: ${parsedUrl.searchParams.get('response_type')}`);
-    console.log(`access_type: ${parsedUrl.searchParams.get('access_type')}`);
-    console.log(`prompt: ${parsedUrl.searchParams.get('prompt')}\n`);
-
     return url;
   }
 
