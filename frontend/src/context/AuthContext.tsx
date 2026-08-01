@@ -32,7 +32,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (res.status === 401) return null;
         throw new Error('Failed to fetch user');
       }
-      return res.json();
+      const data = await res.json();
+      return data.user || null;
     },
     retry: false,
     refetchOnWindowFocus: false, // Don't refetch on focus to avoid flicker

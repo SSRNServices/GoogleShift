@@ -22,21 +22,24 @@ import { useAuthStore } from './store/useAuthStore';
 import { apiClient } from './api/apiClient';
 
 function AuthInit({ children }: { children: React.ReactNode }) {
-  const { accessToken, setAuth, logout, user } = useAuthStore();
+  const { setAuth, logout, setInitialized } = useAuthStore();
   
   useEffect(() => {
-    if (accessToken && !user) {
-      apiClient('/auth/me')
-        .then(data => {
-          if (data.authenticated && data.user) {
-            setAuth(data.user, accessToken, useAuthStore.getState().refreshToken || '');
-          } else {
-            logout();
-          }
-        })
-        .catch(() => logout());
-    }
-  }, [accessToken, user, setAuth, logout]);
+    apiClient('/auth/me')
+      .then(data => {
+        if (data.authenticated && data.user) {
+          setAuth(data.user);
+        } else {
+          logout();
+        }
+      })
+      .catch(() => {
+        logout();
+      })
+      .finally(() => {
+        setInitialized(true);
+      });
+  }, [setAuth, logout, setInitialized]);
 
   return <>{children}</>;
 }
