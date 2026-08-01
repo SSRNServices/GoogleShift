@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { driveService } from '../src/services/DriveService';
 
 // Mock dependencies
-vi.mock('../src/oauth/OAuthService', () => ({
-  oauthService: {
+vi.mock('../src/auth/google.client', () => ({
+  googleClientManager: {
     getAuthenticatedClient: vi.fn(() => ({})), // dummy auth
   }
 }));
@@ -40,7 +40,7 @@ describe('DriveService - getSelectionSummary', () => {
       onProgress
     );
 
-    expect(summary).toEqual(expect.objectContaining({ folders: 0, files: 1, bytes: 100 }));
+    expect(summary).toEqual(expect.objectContaining({ folderCount: 0, fileCount: 1, totalBytes: 100 }));
   });
 
   it('should estimate Google Docs as 0 bytes', async () => {
@@ -54,7 +54,7 @@ describe('DriveService - getSelectionSummary', () => {
       onProgress
     );
 
-    expect(summary).toEqual(expect.objectContaining({ folders: 0, files: 1, bytes: 0 }));
+    expect(summary).toEqual(expect.objectContaining({ folderCount: 0, fileCount: 1, totalBytes: 0 }));
   });
 
   it('should count a single folder with no children', async () => {
@@ -71,7 +71,7 @@ describe('DriveService - getSelectionSummary', () => {
       onProgress
     );
 
-    expect(summary).toEqual(expect.objectContaining({ folders: 1, files: 0, bytes: 0 }));
+    expect(summary).toEqual(expect.objectContaining({ folderCount: 1, fileCount: 0, totalBytes: 0 }));
   });
 
   it('should traverse nested folders', async () => {
@@ -111,7 +111,7 @@ describe('DriveService - getSelectionSummary', () => {
     );
 
     // root + sub1 = 2 folders. file1 + file2 = 2 files. 50 + 75 = 125 bytes.
-    expect(summary).toEqual(expect.objectContaining({ folders: 2, files: 2, bytes: 125 }));
+    expect(summary).toEqual(expect.objectContaining({ folderCount: 2, fileCount: 2, totalBytes: 125 }));
   });
 
   it('should correctly traverse a shortcut pointing to a folder', async () => {
@@ -146,7 +146,7 @@ describe('DriveService - getSelectionSummary', () => {
     );
 
     // 1 shortcut resolved to folder = 1 folder. 1 file inside.
-    expect(summary).toEqual(expect.objectContaining({ folders: 1, files: 1, bytes: 10 }));
+    expect(summary).toEqual(expect.objectContaining({ folderCount: 1, fileCount: 1, totalBytes: 10 }));
   });
 
   it('should not infinitely loop on cyclic shortcuts', async () => {
@@ -181,7 +181,7 @@ describe('DriveService - getSelectionSummary', () => {
     );
 
     // root = 1 folder. shortcut -> already visited, skipped.
-    expect(summary).toEqual(expect.objectContaining({ folders: 1, files: 0, bytes: 0 }));
+    expect(summary).toEqual(expect.objectContaining({ folderCount: 1, fileCount: 0, totalBytes: 0 }));
   });
 
   it('should handle large folders using pagination', async () => {
@@ -207,6 +207,6 @@ describe('DriveService - getSelectionSummary', () => {
       onProgress
     );
 
-    expect(summary).toEqual(expect.objectContaining({ folders: 1, files: 1500, bytes: 1500 }));
+    expect(summary).toEqual(expect.objectContaining({ folderCount: 1, fileCount: 1500, totalBytes: 1500 }));
   });
 });

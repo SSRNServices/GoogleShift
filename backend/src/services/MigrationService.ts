@@ -25,6 +25,15 @@ export class MigrationService {
       throw new RequestValidationError('Missing transfer options in payload.');
     }
 
+    if (payload.manifestId) {
+      const manifestExists = await prisma.migrationManifest.findFirst({
+        where: { jobId: payload.manifestId }
+      });
+      if (!manifestExists) {
+        throw new ManifestError(`Manifest with ID ${payload.manifestId} not found.`);
+      }
+    }
+
     const jobId = payload.manifestId || 'manifest_' + Date.now();
 
     const totalFolders = 0;

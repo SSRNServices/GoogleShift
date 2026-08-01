@@ -1,9 +1,25 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { MigrationStateManager } from '../src/services/MigrationStateManager';
-import { ManifestStorage } from '../src/utils/ManifestStorage';
-import { getDb } from '../src/utils/database';
+import { prisma } from '../src/utils/database';
 
 vi.mock('../src/utils/database', () => ({
+  prisma: {
+    migrationManifest: {
+      groupBy: vi.fn(),
+      updateMany: vi.fn(),
+      update: vi.fn()
+    },
+    migrationJob: {
+      update: vi.fn()
+    },
+    migrationLog: {
+      create: vi.fn()
+    },
+    $transaction: vi.fn((cb: any) => {
+      if (typeof cb === 'function') return cb(prisma);
+      return Promise.all(cb);
+    })
+  },
   getDb: vi.fn(),
   updateJobProgress: vi.fn(),
   updateJobStatus: vi.fn(),
@@ -19,39 +35,26 @@ vi.mock('../src/utils/ManifestStorage', () => ({
 
 describe('MigrationStateManager - Folders', () => {
   let stateManager: MigrationStateManager;
-  let mockDb: any;
 
   beforeEach(() => {
     stateManager = new MigrationStateManager('test-job');
-    mockDb = {
-      get: vi.fn(),
-      run: vi.fn()
-    };
-    (getDb as any).mockResolvedValue(mockDb);
     vi.clearAllMocks();
   });
 
   it('should commit folder success automatically inside a transaction', async () => {
-    mockDb.get.mockResolvedValue({
-      completedFolders: 1,
-      totalFolders: 10
-    });
+    vi.mocked(prisma.migrationManifest.update).mockResolvedValue({ id: 'source-folder-1', createdDestId: 'dest-folder-1', status: 'SUCCESS' } as any);
 
     await stateManager.commitFolderSuccess('source-folder-1', 'dest-folder-1');
 
-    expect(mockDb.run).toHaveBeenCalledWith('BEGIN TRANSACTION');
-    expect(ManifestStorage.updateCreatedDestId).toHaveBeenCalledWith('test-job', 'source-folder-1', 'dest-folder-1');
-    expect(ManifestStorage.updateItemStatus).toHaveBeenCalledWith('test-job', 'source-folder-1', 'SUCCESS');
-    expect(mockDb.run).toHaveBeenCalledWith('COMMIT');
+    expect(prisma.migrationManifest.update).toHaveBeenCalledWith({
+      where: { jobId_id: { jobId: 'test-job', id: 'source-folder-1' } },
+      data: { createdDestId: 'dest-folder-1', status: 'SUCCESS' }
+    });
   });
 
-  it('should rollback transaction on failure', async () => {
-    mockDb.get.mockResolvedValue({});
-    (ManifestStorage.updateCreatedDestId as any).mockRejectedValue(new Error('DB Error'));
+  it('should throw error on transaction failure', async () => {
+    vi.mocked(prisma.$transaction).mockRejectedValueOnce(new Error('DB Error'));
 
     await expect(stateManager.commitFolderSuccess('source-folder-1', 'dest-folder-1')).rejects.toThrow('DB Error');
-
-    expect(mockDb.run).toHaveBeenCalledWith('BEGIN TRANSACTION');
-    expect(mockDb.run).toHaveBeenCalledWith('ROLLBACK');
   });
 });

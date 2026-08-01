@@ -116,6 +116,12 @@ export class AuthController {
     res.json({ authenticated: true, user: (req as any).user });
   };
 
+  private getFrontendUrl(): string {
+    return process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' 
+      ? 'https://migration.ssrnservices.in' 
+      : 'http://localhost:5173');
+  }
+
   private issueTokens(user: any, res: Response) {
     const payload = { userId: user.id, email: user.email, role: user.role };
     const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: '1h' });
@@ -124,11 +130,13 @@ export class AuthController {
     // Omit passwordHash before sending
     const { passwordHash, ...userWithoutPassword } = user;
     
+    const domain = process.env.COOKIE_DOMAIN || (process.env.NODE_ENV === 'production' ? '.migration.ssrnservices.in' : undefined);
+
     const cookieOptions = {
       httpOnly: true,
-      secure: true,
-      sameSite: 'none' as const,
-      ...(process.env.NODE_ENV === 'production' ? { domain: '.migration.ssrnservices.in' } : {})
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: (process.env.NODE_ENV === 'production' ? 'none' as const : 'lax' as const),
+      ...(domain ? { domain } : {})
     };
 
     res.cookie('accessToken', accessToken, {
@@ -163,11 +171,15 @@ export class AuthController {
   };
 
   public handleCallback = async (req: Request, res: Response): Promise<void> => {
+    const frontendUrl = this.getFrontendUrl();
     const code = req.query.code as string;
     const state = req.query.state as string;
     const type = state as AccountType;
+
     if (!code || !state || (type !== 'source' && type !== 'destination')) {
-      res.status(400).send('Invalid code or state');
+      const reason = 'Invalid authorization code or state parameters provided';
+      console.error(`OAuth Callback Error: ${reason}`);
+      res.redirect(`${frontendUrl}/migration?error=auth_failed&reason=${encodeURIComponent(reason)}`);
       return;
     }
 
@@ -186,13 +198,16 @@ export class AuthController {
       console.log(`=================================\n`);
 
       // Redirect back to frontend migration page
-      const frontendUrl = process.env.NODE_ENV === 'production' 
-        ? 'https://migration.ssrnservices.in' 
-        : 'http://localhost:5173';
       res.redirect(`${frontendUrl}/migration?connected=${type}`);
-    } catch (error) {
+    } catch (error: any) {
       console.error(`Callback error for ${type}:`, error);
-      res.redirect('/migration?error=auth_failed');
+      let reason = 'OAuth callback failed due to an internal server error';
+      if (error.code === 'P2022') {
+        reason = `Database schema mismatch: Column '${error.meta?.column || 'unknown'}' does not exist`;
+      } else if (error.message) {
+        reason = error.message;
+      }
+      res.redirect(`${frontendUrl}/migration?error=auth_failed&reason=${encodeURIComponent(reason)}`);
     }
   };
 

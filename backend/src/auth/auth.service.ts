@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { google } from 'googleapis';
 import { GaxiosError } from 'gaxios';
 import { googleClientManager } from './google.client';
@@ -55,7 +54,7 @@ export class AuthService {
         let email = '';
         let googleAccountId = '';
         try {
-          const oauth2 = google.oauth2({ version: 'v2', auth: client });
+          const oauth2 = google.oauth2({ version: 'v2', auth: client as any });
           const userInfo = await oauth2.userinfo.get();
           email = userInfo.data.email || '';
           googleAccountId = userInfo.data.id || '';
@@ -102,15 +101,15 @@ export class AuthService {
     }
 
     try {
-      const oauth2 = google.oauth2({ version: 'v2', auth: client });
-      const drive = google.drive({ version: 'v3', auth: client });
+      const oauth2 = google.oauth2({ version: 'v2', auth: client as any });
+      const drive = google.drive({ version: 'v3', auth: client as any });
 
       const [userInfo, driveAbout] = await Promise.all([
         oauth2.userinfo.get(),
         drive.about.get({ fields: 'storageQuota' }),
       ]);
 
-      const quota = driveAbout.data.storageQuota;
+      const quota = (driveAbout.data as any).storageQuota;
 
       return {
         state: ConnectionState.CONNECTED,

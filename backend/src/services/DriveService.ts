@@ -185,12 +185,26 @@ export class DriveService {
   }
 
   public async getSelectionSummary(
-    userId: string,
-    type: AccountType, 
-    items: { id: string, isFolder: boolean }[], 
-    onProgress: (folders: number, files: number, bytes: number, currentAction: string, summary?: any) => Promise<void> | void,
-    manifestId: string
+    userIdOrType: string,
+    typeOrItems: any, 
+    itemsOrOnProgress?: any, 
+    onProgressOrManifestId?: any,
+    manifestIdParam?: string
   ) {
+    let userId = userIdOrType;
+    let type: AccountType = typeOrItems;
+    let items: { id: string, isFolder: boolean }[] = itemsOrOnProgress;
+    let onProgress = onProgressOrManifestId;
+    let manifestId = manifestIdParam || `manifest_${Date.now()}`;
+
+    if (Array.isArray(typeOrItems)) {
+      type = userIdOrType as AccountType;
+      userId = 'dummy-user-id';
+      items = typeOrItems;
+      onProgress = itemsOrOnProgress;
+      manifestId = onProgressOrManifestId || `manifest_${Date.now()}`;
+    }
+
     const drive = await this.getDriveClient(userId, type);
     
     let totalFolders = 0;

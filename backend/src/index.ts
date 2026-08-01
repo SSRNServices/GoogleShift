@@ -22,23 +22,29 @@ console.log('\n=== Application Startup ===');
 console.log(`GOOGLE_CLIENT_ID: ${process.env.GOOGLE_CLIENT_ID ? 'Loaded (starts with ' + process.env.GOOGLE_CLIENT_ID.substring(0, 15) + '...)' : 'MISSING'}`);
 console.log(`GOOGLE_DRIVE_REDIRECT_URI: ${process.env.GOOGLE_DRIVE_REDIRECT_URI || 'MISSING (Defaults to http://localhost:3000/auth/google/callback)'}`);
 console.log(`GOOGLE_LOGIN_REDIRECT_URI: ${process.env.GOOGLE_LOGIN_REDIRECT_URI || 'MISSING (Defaults to http://localhost:3000/auth/google/callback)'}`);
+console.log(`FRONTEND_URL: ${process.env.FRONTEND_URL || 'MISSING (Defaults to http://localhost:5173 or https://migration.ssrnservices.in)'}`);
+console.log(`COOKIE_DOMAIN: ${process.env.COOKIE_DOMAIN || 'Not Set'}`);
+console.log(`CORS_ORIGIN: ${process.env.CORS_ORIGIN || 'Not Set'}`);
 console.log('===========================\n');
 
-import { prisma } from './utils/database';
+import { prisma, validateDatabaseSchema } from './utils/database';
 
 async function verifyDatabase() {
   const start = Date.now();
   try {
     await prisma.$queryRaw`SELECT 1`;
-    const host = new URL(process.env.DATABASE_URL || '').hostname;
+    const host = new URL(process.env.DATABASE_URL || 'http://localhost').hostname;
     console.log('✓ Database Connected');
     console.log('✓ Prisma Connected');
     console.log(`  - Prisma Version: 7.9.0`);
     console.log(`  - Database Host: ${host}`);
     console.log(`  - Pool Size: 20`);
     console.log(`  - Connection Time: ${Date.now() - start}ms`);
+
+    await validateDatabaseSchema();
   } catch (err) {
-    console.error('❌ Database Connection Failed:', err);
+    console.error('❌ Database Connection / Schema Verification Failed:', err);
+    process.exit(1);
   }
 }
 verifyDatabase();
