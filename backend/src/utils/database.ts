@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import fs from 'fs';
+import path from 'path';
 import { PrismaClient, MigrationState, ItemStatus } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
@@ -72,6 +74,43 @@ const EXPECTED_SCHEMA: Record<string, string[]> = {
 export async function validateDatabaseSchema(): Promise<void> {
   console.log('\n=== Performing Database Schema Validation ===');
   
+  // 1. Audit Migrations
+  let appliedMigrationNames: string[] = [];
+  try {
+    const rawMigrations: Array<{ migration_name: string; finished_at: Date | null }> = await prisma.$queryRaw`
+      SELECT migration_name, finished_at 
+      FROM _prisma_migrations 
+      WHERE rolled_back_at IS NULL AND finished_at IS NOT NULL
+      ORDER BY finished_at ASC
+    `;
+    appliedMigrationNames = rawMigrations.map(m => m.migration_name);
+  } catch (err) {
+    console.warn('⚠️ Could not query _prisma_migrations table:', err);
+  }
+
+  const migrationsDir = path.join(process.cwd(), 'prisma', 'migrations');
+  let expectedMigrations: string[] = [];
+  if (fs.existsSync(migrationsDir)) {
+    expectedMigrations = fs.readdirSync(migrationsDir)
+      .filter(item => fs.statSync(path.join(migrationsDir, item)).isDirectory())
+      .sort();
+  }
+
+  const appliedSet = new Set(appliedMigrationNames);
+  const pendingMigrations = expectedMigrations.filter(m => !appliedSet.has(m));
+  const latestApplied = appliedMigrationNames.length > 0 ? appliedMigrationNames[appliedMigrationNames.length - 1] : 'None';
+
+  console.log(`  - Database Schema Version (Latest Migration): ${latestApplied}`);
+  console.log(`  - Applied Migrations (${appliedMigrationNames.length}): ${appliedMigrationNames.join(', ') || 'None'}`);
+  console.log(`  - Expected Migrations (${expectedMigrations.length}): ${expectedMigrations.join(', ') || 'None'}`);
+  
+  if (pendingMigrations.length > 0) {
+    console.error(`  - Pending Migrations (${pendingMigrations.length}): ${pendingMigrations.join(', ')}`);
+  } else {
+    console.log(`  - Pending Migrations: None (Schema up to date)`);
+  }
+
+  // 2. Audit Columns
   const columnsRaw: Array<{ table_name: string; column_name: string }> = await prisma.$queryRaw`
     SELECT table_name, column_name 
     FROM information_schema.columns 
@@ -86,6 +125,7 @@ export async function validateDatabaseSchema(): Promise<void> {
   }
 
   let mismatchCount = 0;
+  const missingColumnsReport: string[] = [];
 
   for (const [table, expectedColumns] of Object.entries(EXPECTED_SCHEMA)) {
     const existingColumns = dbMap[table];
@@ -98,6 +138,8 @@ export async function validateDatabaseSchema(): Promise<void> {
 
     for (const col of expectedColumns) {
       if (!existingColumns.has(col)) {
+        const msg = `${table}.${col}`;
+        missingColumnsReport.push(msg);
         console.error(`❌ Database Schema Mismatch Detected!`);
         console.error(`   Table: ${table}`);
         console.error(`   Expected column: ${table}.${col}`);
@@ -108,13 +150,15 @@ export async function validateDatabaseSchema(): Promise<void> {
     }
   }
 
-  if (mismatchCount > 0) {
-    console.error(`\n[FATAL] Startup aborted due to ${mismatchCount} database schema mismatch(es).`);
+  if (mismatchCount > 0 || pendingMigrations.length > 0) {
+    console.error(`\n[FATAL] Startup aborted due to database schema mismatch or pending migrations.`);
+    console.error(`[FATAL] Missing Columns (${missingColumnsReport.length}): ${missingColumnsReport.join(', ') || 'None'}`);
+    console.error(`[FATAL] Pending Migrations (${pendingMigrations.length}): ${pendingMigrations.join(', ') || 'None'}`);
     console.error(`[FATAL] Run 'npx prisma migrate deploy' to sync database schema.\n`);
     process.exit(1);
   }
 
-  console.log('✓ Database Schema Validation Passed - All required models and columns present.\n');
+  console.log('✓ Database Schema Validation Passed - All required models, columns, and migrations are present.\n');
 }
 
 process.on('SIGINT', async () => {

@@ -51,11 +51,13 @@ USER node
 # Copy runtime dependencies
 COPY --from=deps --chown=node:node /app/backend/node_modules ./node_modules
 COPY --from=deps --chown=node:node /app/backend/package.json ./
+COPY --from=deps --chown=node:node /app/backend/prisma ./prisma
+COPY --from=deps --chown=node:node /app/backend/prisma.config.ts ./prisma.config.ts
 
 # Copy built files
 COPY --from=builder --chown=node:node /app/backend/dist ./dist
 
 EXPOSE ${PORT:-3000}
 
-# Start the application natively without shell commands
-CMD ["node", "dist/index.js"]
+# Start application after running Prisma migrations
+CMD ["npm", "run", "start:prod"]
