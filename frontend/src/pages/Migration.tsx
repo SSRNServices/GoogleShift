@@ -174,6 +174,13 @@ export default function Migration() {
       if (!sessionId) throw new Error('Session ID is missing.');
       if (sessionData?.discoveryStatus !== 'COMPLETED') throw new Error('Discovery phase is not complete.');
 
+      // Backend pre-flight validation
+      const validation = await migrationApi.validateSession(sessionId);
+      if (!validation.ready) {
+        const errorMsg = validation.errors?.[0] || validation.error || 'Session validation failed. Please check account connections.';
+        throw new Error(errorMsg);
+      }
+
       await migrationApi.startMigration({
         manifestId: currentManifestId,
         sessionId,

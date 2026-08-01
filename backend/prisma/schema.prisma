@@ -72,13 +72,20 @@ model OAuthAccount {
   userId            String
   provider          String
   providerAccountId String
+  email             String?
+  googleAccountId   String?
   accessToken       String?
   refreshToken      String?
   expiresAt         DateTime?
+  scopes            String?
+  tokenVersion      Int      @default(1)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
   
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([provider, providerAccountId])
+  @@index([userId])
 }
 
 model DiscoveryJob {
@@ -277,6 +284,8 @@ model MigrationSession {
   ownerId             String
   sourceEmail         String?
   destinationEmail    String?
+  sourceAccountId     String?
+  destinationAccountId String?
   sourceFolderId      String?
   destinationFolderId String?
   manifestId          String?

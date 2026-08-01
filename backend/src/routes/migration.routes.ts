@@ -76,6 +76,92 @@ router.get('/history', requireUserAuth, async (req, res) => {
   }
 });
 
+// Validation API
+router.get('/validate/:sessionId', requireUserAuth, async (req, res) => {
+  try {
+    const userId = (req as any).user.id;
+    const sessionId = req.params.sessionId as string;
+
+    const session = await prisma.migrationSession.findUnique({
+      where: { id: sessionId, ownerId: userId }
+    });
+
+    if (!session) {
+      return res.status(404).json({
+        ready: false,
+        error: 'Migration session not found',
+        sourceAuthenticated: false,
+        destinationAuthenticated: false,
+        sourceRefreshValid: false,
+        destinationRefreshValid: false,
+        manifestExists: false,
+        discoveryCompleted: false,
+        destinationWritable: false
+      });
+    }
+
+    const { tokenStore } = await import('../auth/token.store');
+    const { googleClientManager } = await import('../auth/google.client');
+
+    const [sourceAccount, destAccount] = await Promise.all([
+      tokenStore.getAccount(userId, 'source'),
+      tokenStore.getAccount(userId, 'destination')
+    ]);
+
+    const sourceAuthenticated = !!sourceAccount && !!sourceAccount.accessToken;
+    const destinationAuthenticated = !!destAccount && !!destAccount.accessToken;
+    const sourceRefreshValid = !!sourceAccount && !!sourceAccount.refreshToken;
+    const destinationRefreshValid = !!destAccount && !!destAccount.refreshToken;
+
+    const manifestId = session.manifestId;
+    let manifestExists = false;
+    let manifestCount = 0;
+    if (manifestId) {
+      manifestCount = await prisma.migrationManifest.count({ where: { jobId: manifestId } });
+      manifestExists = manifestCount > 0;
+    }
+
+    const discoveryCompleted = session.discoveryStatus === 'COMPLETED';
+
+    // Verify destination folder writable/accessible
+    let destinationWritable = false;
+    if (destinationAuthenticated && session.destinationFolderId) {
+      try {
+        const destClient = await googleClientManager.getAuthenticatedClient(userId, 'destination');
+        if (destClient) {
+          destinationWritable = true;
+        }
+      } catch (e) {
+        destinationWritable = false;
+      }
+    }
+
+    const errors: string[] = [];
+    if (!sourceAuthenticated || !sourceRefreshValid) errors.push('Source authentication missing or expired. Reconnect source account.');
+    if (!destinationAuthenticated || !destinationRefreshValid) errors.push('Destination authentication missing or expired. Reconnect destination account.');
+    if (!manifestExists) errors.push('Migration manifest is empty or missing.');
+    if (!discoveryCompleted) errors.push('Discovery phase has not completed.');
+    if (!destinationWritable) errors.push('Destination folder is inaccessible or not writable.');
+
+    const ready = sourceAuthenticated && destinationAuthenticated && sourceRefreshValid && destinationRefreshValid && manifestExists && discoveryCompleted && destinationWritable;
+
+    res.json({
+      ready,
+      sourceAuthenticated,
+      destinationAuthenticated,
+      sourceRefreshValid,
+      destinationRefreshValid,
+      manifestExists,
+      discoveryCompleted,
+      destinationWritable,
+      errors
+    });
+  } catch (error: any) {
+    console.error('Error validating migration session:', error);
+    res.status(500).json({ ready: false, error: error.message });
+  }
+});
+
 router.post('/start', requireBothAuth, async (req, res) => {
   console.log('[Backend] MIGRATION START RECEIVED');
   try {
@@ -111,16 +197,27 @@ router.post('/start', requireBothAuth, async (req, res) => {
       console.warn(`[Migration Routes] Manifest ID mismatch for session ${payload.sessionId}. Expected: ${session.manifestId}, Got: ${payload.manifestId}`);
       res.status(400).json({ error: 'Manifest ID does not match the active session.' });
       return;
-    }const active = await prisma.migrationJob.findFirst({
+    }
+
+    // PRE-MIGRATION BACKEND SAFEGUARDS & TOKEN REFRESH
+    const { googleClientManager } = await import('../auth/google.client');
+    const sourceClient = await googleClientManager.getAuthenticatedClient(userId, 'source');
+    if (!sourceClient) {
+      return res.status(401).json({ error: 'Source account authentication missing or expired. Please reconnect source account.' });
+    }
+
+    const destClient = await googleClientManager.getAuthenticatedClient(userId, 'destination');
+    if (!destClient) {
+      return res.status(401).json({ error: 'Account destination not authenticated. Please reconnect destination account.' });
+    }
+
+    const active = await prisma.migrationJob.findFirst({
       where: { 
         ownerId: userId,
         state: { notIn: ['COMPLETED', 'FAILED', 'CANCELLED'] } 
       }
     });
     
-    // If they already have an active job AND they didn't provide a payload (meaning they just want to resume/poll)
-    // Actually, if this is /start with a specific manifestId, and another job is active, we should maybe prevent concurrent?
-    // Let's just return the active job ONLY if it matches the manifestId they are trying to start, OR reject.
     if (active && active.id === payload.manifestId) {
       return res.status(200).json(serializeBigInt({
         jobId: active.id,
@@ -131,13 +228,7 @@ router.post('/start', requireBothAuth, async (req, res) => {
       return res.status(400).json({ error: 'Another migration is currently active.' });
     }
 
-    // We can rely on session for validation now.
-    // PRE-MIGRATION VALIDATION
-    const discoveryJob = await prisma.discoveryJob.findUnique({ where: { manifestId: payload.manifestId } });
-    if (!discoveryJob || discoveryJob.state !== 'COMPLETED') {
-       return res.status(400).json({ success: false, error: 'Discovery phase is incomplete or failed.' });
-    }
-
+    // Check manifest entries count
     const manifestCount = await prisma.migrationManifest.count({ where: { jobId: payload.manifestId } });
     if (manifestCount === 0) {
        return res.status(400).json({ error: 'Manifest is empty. No files were found to migrate.' });
@@ -178,7 +269,7 @@ router.post('/:jobId/resume', requireUserAuth, async (req, res) => {
     await prisma.migrationJob.update({ where: { id: jobId }, data: { state: 'COPYING' } });
     const { migrationWorker } = await import('../services/MigrationWorker');
     
-    const jobPayload = { ...job, jobId: job.id, sessionId: (req as any).user.id };
+    const jobPayload = { ...job, jobId: job.id, sessionId: job.sessionId || (req as any).user.id };
     migrationWorker.executeMigration(jobPayload as any).catch(err => console.error('[FATAL]', err));
 
     res.json({ success: true, status: 'starting' });

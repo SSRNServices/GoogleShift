@@ -4,8 +4,9 @@ import { prisma } from '../utils/database';
 export type AccountType = 'source' | 'destination';
 
 export interface TokenStore {
-  saveTokens(userId: string, accountType: AccountType, tokens: Credentials): Promise<void>;
+  saveTokens(userId: string, accountType: AccountType, tokens: Credentials, accountInfo?: { email?: string; googleAccountId?: string; scopes?: string }): Promise<void>;
   getTokens(userId: string, accountType: AccountType): Promise<Credentials | null>;
+  getAccount(userId: string, accountType: AccountType): Promise<any | null>;
   deleteTokens(userId: string, accountType: AccountType): Promise<void>;
 }
 
@@ -15,12 +16,30 @@ export class DatabaseTokenStore implements TokenStore {
     return `google-drive-${accountType}`;
   }
 
-  async saveTokens(userId: string, accountType: AccountType, tokens: Credentials): Promise<void> {
+  async saveTokens(
+    userId: string, 
+    accountType: AccountType, 
+    tokens: Credentials, 
+    accountInfo?: { email?: string; googleAccountId?: string; scopes?: string }
+  ): Promise<void> {
     const provider = this.getProviderString(accountType);
     const expiresAt = tokens.expiry_date ? new Date(tokens.expiry_date) : null;
     
-    // We store additional credentials data inside refreshToken if needed,
-    // but typically accessToken, refreshToken, and expiresAt are sufficient.
+    const existing = await prisma.oAuthAccount.findUnique({
+      where: {
+        provider_providerAccountId: {
+          provider,
+          providerAccountId: userId
+        }
+      }
+    });
+
+    const refreshTokenToSave = tokens.refresh_token || existing?.refreshToken || null;
+    const accessTokenToSave = tokens.access_token || existing?.accessToken || null;
+    const scopesToSave = tokens.scope || accountInfo?.scopes || existing?.scopes || null;
+    const emailToSave = accountInfo?.email || existing?.email || null;
+    const googleAccountIdToSave = accountInfo?.googleAccountId || existing?.googleAccountId || null;
+
     await prisma.oAuthAccount.upsert({
       where: {
         provider_providerAccountId: {
@@ -29,25 +48,47 @@ export class DatabaseTokenStore implements TokenStore {
         }
       },
       update: {
-        accessToken: tokens.access_token || undefined,
-        refreshToken: tokens.refresh_token || undefined,
-        expiresAt
+        accessToken: accessTokenToSave,
+        refreshToken: refreshTokenToSave,
+        expiresAt,
+        ...(emailToSave ? { email: emailToSave } : {}),
+        ...(googleAccountIdToSave ? { googleAccountId: googleAccountIdToSave } : {}),
+        ...(scopesToSave ? { scopes: scopesToSave } : {}),
+        updatedAt: new Date()
       },
       create: {
         userId,
         provider,
-        providerAccountId: userId, // We map the internal user ID as the account ID for this provider
-        accessToken: tokens.access_token || null,
-        refreshToken: tokens.refresh_token || null,
-        expiresAt
+        providerAccountId: userId,
+        email: emailToSave,
+        googleAccountId: googleAccountIdToSave,
+        accessToken: accessTokenToSave,
+        refreshToken: refreshTokenToSave,
+        expiresAt,
+        scopes: scopesToSave
       }
     });
+
+    console.log(`[TokenStore] Successfully persisted tokens for user ${userId} (${accountType}). Email: ${emailToSave || 'N/A'}, RefreshToken: ${refreshTokenToSave ? 'EXISTS' : 'MISSING'}`);
   }
 
   async getTokens(userId: string, accountType: AccountType): Promise<Credentials | null> {
+    const account = await this.getAccount(userId, accountType);
+    if (!account) return null;
+
+    return {
+      access_token: account.accessToken,
+      refresh_token: account.refreshToken,
+      expiry_date: account.expiresAt ? account.expiresAt.getTime() : null,
+      token_type: 'Bearer',
+      scope: account.scopes || undefined
+    };
+  }
+
+  async getAccount(userId: string, accountType: AccountType): Promise<any | null> {
     const provider = this.getProviderString(accountType);
     
-    const account = await prisma.oAuthAccount.findUnique({
+    return prisma.oAuthAccount.findUnique({
       where: {
         provider_providerAccountId: {
           provider,
@@ -55,15 +96,6 @@ export class DatabaseTokenStore implements TokenStore {
         }
       }
     });
-
-    if (!account) return null;
-
-    return {
-      access_token: account.accessToken,
-      refresh_token: account.refreshToken,
-      expiry_date: account.expiresAt ? account.expiresAt.getTime() : null,
-      token_type: 'Bearer'
-    };
   }
 
   async deleteTokens(userId: string, accountType: AccountType): Promise<void> {

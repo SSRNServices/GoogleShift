@@ -22,11 +22,22 @@ router.post('/', requireUserAuth, async (req, res) => {
       return res.status(400).json({ success: false, error: 'Missing required fields for session creation', code: 'INVALID_REQUEST', details: {} });
     }
 
+    const [sourceAccount, destAccount] = await Promise.all([
+      prisma.oAuthAccount.findUnique({
+        where: { provider_providerAccountId: { provider: 'google-drive-source', providerAccountId: userId } }
+      }),
+      prisma.oAuthAccount.findUnique({
+        where: { provider_providerAccountId: { provider: 'google-drive-destination', providerAccountId: userId } }
+      })
+    ]);
+
     const session = await prisma.migrationSession.create({
       data: {
         ownerId: userId,
         sourceEmail,
         destinationEmail,
+        sourceAccountId: sourceAccount?.id || null,
+        destinationAccountId: destAccount?.id || null,
         sourceFolderId,
         destinationFolderId,
         discoveryStatus: 'PENDING',

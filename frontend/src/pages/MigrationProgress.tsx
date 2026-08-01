@@ -234,19 +234,51 @@ export default function MigrationProgress() {
     );
   }
 
+  const isFailed = status.status === 'failed';
   const isCompleted = ['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(status.status);
+  
+  // Extract last error log if present
+  const lastErrorLog = status.logs?.slice().reverse().find(l => l.includes('FAILED') || l.includes('Error') || l.includes('not authenticated')) || 'Migration encountered an unrecoverable error.';
 
   return (
     <div className="max-w-5xl mx-auto py-8">
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center">
-            {isCompleted ? <CheckCircle className="w-6 h-6 text-green-500 mr-2" /> : <Loader2 className="w-6 h-6 text-indigo-500 animate-spin mr-2" />}
-            Migration {isCompleted ? 'Finished' : 'in Progress'}
+            {isFailed ? (
+              <XCircle className="w-6 h-6 text-red-500 mr-2" />
+            ) : isCompleted ? (
+              <CheckCircle className="w-6 h-6 text-green-500 mr-2" />
+            ) : (
+              <Loader2 className="w-6 h-6 text-indigo-500 animate-spin mr-2" />
+            )}
+            {isFailed ? 'Migration Failed' : isCompleted ? 'Migration Finished' : 'Migration in Progress'}
           </h1>
           <p className="text-gray-500 capitalize">{status.status}</p>
         </div>
-        {!isCompleted && (
+
+        {isFailed ? (
+          <div className="flex space-x-3">
+            <button 
+              onClick={() => { window.location.href = `${API_URL}/auth/destination`; }}
+              className="flex items-center px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm font-medium"
+            >
+              Reconnect Destination
+            </button>
+            <button 
+              onClick={() => { window.location.href = `${API_URL}/auth/source`; }}
+              className="flex items-center px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm font-medium"
+            >
+              Reconnect Source
+            </button>
+            <button 
+              onClick={() => navigate('/migration')} 
+              className="flex items-center px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 text-sm font-medium"
+            >
+              Restart Migration
+            </button>
+          </div>
+        ) : !isCompleted ? (
           <div className="flex space-x-3">
             {status.status === 'paused' ? (
                <button onClick={handlePauseResume} className="flex items-center px-4 py-2 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 rounded hover:bg-indigo-100">
@@ -261,13 +293,38 @@ export default function MigrationProgress() {
               <XCircle className="w-4 h-4 mr-2" /> Cancel
             </button>
           </div>
-        )}
-        {isCompleted && (
+        ) : (
           <button onClick={() => navigate('/migration')} className="flex items-center px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700">
             <ArrowLeft className="w-4 h-4 mr-2" /> New Migration
           </button>
         )}
       </div>
+
+      {isFailed && (
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-5 mb-8">
+          <div className="flex items-start">
+            <AlertCircle className="w-6 h-6 text-red-600 dark:text-red-400 mr-3 mt-0.5 flex-shrink-0" />
+            <div>
+              <h3 className="text-base font-semibold text-red-900 dark:text-red-200">Failure Reason</h3>
+              <p className="text-sm text-red-700 dark:text-red-300 mt-1 font-mono">{lastErrorLog}</p>
+              <div className="mt-4 flex space-x-3">
+                <button 
+                  onClick={() => { window.location.href = `${API_URL}/auth/destination`; }} 
+                  className="text-xs bg-red-600 text-white px-3 py-1.5 rounded hover:bg-red-700 font-medium"
+                >
+                  Reconnect Destination Account
+                </button>
+                <button 
+                  onClick={() => { window.location.href = `${API_URL}/auth/source`; }} 
+                  className="text-xs bg-red-600 text-white px-3 py-1.5 rounded hover:bg-red-700 font-medium"
+                >
+                  Reconnect Source Account
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-8">
         <div className="mb-6 flex justify-between items-end">

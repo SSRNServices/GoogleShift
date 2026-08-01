@@ -49,9 +49,26 @@ export class AuthService {
         
         // Exchange token
         const { tokens } = await client.getToken(code);
+        client.setCredentials(tokens);
+
+        // Fetch basic google account info
+        let email = '';
+        let googleAccountId = '';
+        try {
+          const oauth2 = google.oauth2({ version: 'v2', auth: client });
+          const userInfo = await oauth2.userinfo.get();
+          email = userInfo.data.email || '';
+          googleAccountId = userInfo.data.id || '';
+        } catch (e) {
+          console.warn(`[Auth] Could not fetch Google userinfo during callback:`, e);
+        }
         
         // Persist tokens securely in TokenStore
-        await tokenStore.saveTokens(userId, type, tokens);
+        await tokenStore.saveTokens(userId, type, tokens, {
+          email,
+          googleAccountId,
+          scopes: tokens.scope || undefined
+        });
         
         if (attempt > 1) {
           console.log(`[Auth Retry] Success on attempt ${attempt}!`);

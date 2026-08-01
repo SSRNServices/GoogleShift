@@ -11,12 +11,41 @@ export class NetworkClient {
     timeout: 60000 // 60s timeout
   });
 
-  public static async getDriveClient(sessionId: string, type: 'source' | 'destination'): Promise<drive_v3.Drive> {
-    const auth = await googleClientManager.getAuthenticatedClient(sessionId, type);
-    if (!auth) throw new Error(`Account ${type} not authenticated`);
-    
-    // googleapis uses gaxios under the hood. We can set the default adapter options globally
-    // or pass it into the drive instance. We'll set it on the drive instance.
+  public static async getDriveClient(sessionIdOrUserId: string, type: 'source' | 'destination'): Promise<drive_v3.Drive> {
+    const { prisma } = await import('../utils/database');
+    const { tokenStore } = await import('../auth/token.store');
+
+    let userId = sessionIdOrUserId;
+    let sessionId: string | null = null;
+
+    // Check if sessionIdOrUserId is a MigrationSession ID
+    try {
+      const session = await prisma.migrationSession.findUnique({
+        where: { id: sessionIdOrUserId }
+      });
+      if (session) {
+        sessionId = session.id;
+        userId = session.ownerId;
+      }
+    } catch (e) {
+      // Ignore lookup error and fall back to using sessionIdOrUserId as userId
+    }
+
+    console.log(`[NetworkClient] Resolving ${type} credentials | Identifier: ${sessionIdOrUserId} -> UserID: ${userId} | SessionID: ${sessionId || 'N/A'}`);
+
+    const account = await tokenStore.getAccount(userId, type);
+    const hasRefreshToken = !!account?.refreshToken;
+    const hasAccessToken = !!account?.accessToken;
+    const isExpired = account?.expiresAt ? account.expiresAt.getTime() < Date.now() : true;
+
+    console.log(`[NetworkClient Diagnostic] Provider: DatabaseTokenStore | Type: ${type} | UserID: ${userId} | SessionID: ${sessionId || 'N/A'} | HasAccessToken: ${hasAccessToken} | HasRefreshToken: ${hasRefreshToken} | TokenExpired: ${isExpired}`);
+
+    const auth = await googleClientManager.getAuthenticatedClient(userId, type);
+    if (!auth) {
+      console.error(`[NetworkClient FATAL] Account ${type} not authenticated | UserID: ${userId} | SessionID: ${sessionId || 'N/A'}`);
+      throw new Error(`Account ${type} not authenticated. Please reconnect ${type} account.`);
+    }
+
     return google.drive({ 
       version: 'v3', 
       auth,

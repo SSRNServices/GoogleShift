@@ -57,6 +57,19 @@ export const migrationApi = {
     return res.json();
   },
 
+  async validateSession(sessionId: string) {
+    const res = await fetch(`${API_URL}/api/migrations/validate/${sessionId}`, { credentials: 'include' });
+    if (!res.ok) {
+      let message = 'Failed to validate session';
+      try {
+        const errorData = await res.json();
+        message = errorData.error || message;
+      } catch (e) {}
+      throw new Error(message);
+    }
+    return res.json();
+  },
+
   async discard(jobId: string) {
     const res = await fetch(`${API_URL}/api/migrations/${jobId}/cancel`, {
       method: 'POST',
