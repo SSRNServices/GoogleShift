@@ -183,6 +183,15 @@ export class MigrationStateManager {
           this.lastEmitTime = now;
       }
       
+      const activeFile = await prisma.migrationManifest.findFirst({
+        where: { jobId: this.jobId, isFolder: false, status: { in: ['UPLOADING', 'DOWNLOADING', 'VERIFYING'] } },
+        select: { name: true }
+      });
+      const activeFolder = await prisma.migrationManifest.findFirst({
+        where: { jobId: this.jobId, isFolder: true, status: { in: ['QUEUED', 'UPLOADING', 'VERIFYING'] } },
+        select: { name: true }
+      });
+
       const updates: any = {
         completedFolders,
         completedFiles,
@@ -193,6 +202,8 @@ export class MigrationStateManager {
         totalBytes,
         speed,
         eta,
+        currentFile: activeFile?.name || '',
+        currentFolder: activeFolder?.name || '',
         pendingDBWrites: this.writeQueue.length
       };
 

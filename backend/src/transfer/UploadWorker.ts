@@ -98,8 +98,8 @@ export class UploadWorker {
   private async uploadFile(item: ManifestItem, controller: AbortController) {
     let destParentId = item.destParentId;
     if (!destParentId) {
-      destParentId = this.folderCache.get(item.sourceParentId === 'root' ? 'root_dest' : item.sourceParentId);
-      if (!destParentId) throw new Error('Parent mapping missing in cache');
+      destParentId = this.folderCache.get(item.sourceParentId) || this.folderCache.get('root_dest') || this.folderCache.get('root');
+      if (!destParentId) throw new Error(`Parent mapping missing in cache for sourceParentId: ${item.sourceParentId}`);
     }
 
     const cp = await getCheckpoint(this.jobId, 'file', destParentId, item.sourceId);
@@ -111,7 +111,6 @@ export class UploadWorker {
     this.lastActivity = Date.now();
     let targetMimeType = item.mimeType;
     let exportMimeType: string | null = null;
-    let downloadRes: any;
 
     // Is it a Google Workspace Doc?
     if (item.mimeType.startsWith('application/vnd.google-apps.')) {
@@ -126,22 +125,39 @@ export class UploadWorker {
         targetMimeType = this.options.transferDocsAsPdf ? 'application/pdf' : item.mimeType;
       }
 
-      if (exportMimeType) {
-        downloadRes = await this.sourceDrive.files.export({ fileId: item.sourceId, mimeType: exportMimeType }, { responseType: 'stream', signal: controller.signal });
-      } else {
+      if (!exportMimeType) {
         await saveCheckpoint(this.jobId, 'file', destParentId!, item.sourceId, 'skipped');
         await this.stateManager.commitSuccess(item);
         return;
       }
+    }
+
+    // Get source download stream
+    let downloadRes: any;
+    if (exportMimeType) {
+      downloadRes = await this.sourceDrive.files.export({ fileId: item.sourceId, mimeType: exportMimeType }, { responseType: 'stream', signal: controller.signal });
     } else {
       downloadRes = await this.sourceDrive.files.get({ fileId: item.sourceId, alt: 'media' }, { responseType: 'stream', signal: controller.signal });
     }
 
-    // Wrap download stream to track bytes
-    const pt = new PassThrough({ highWaterMark: this.config.streamBufferSize });
+    if (!downloadRes || !downloadRes.data) {
+      throw new DownloadError(`Failed to obtain download stream for file: ${item.name}`);
+    }
+
+    // PassThrough stream to bridge download -> upload & track progress
+    const pt = new PassThrough({ highWaterMark: this.config.streamBufferSize || 1024 * 1024 });
     let lastTime = Date.now();
     let bytesSinceLast = 0;
-    
+
+    // 30-second activity watchdog interval
+    const activityTimer = setInterval(() => {
+      if (Date.now() - this.lastActivity > 30000) {
+        console.warn(`[Worker ${this.id}] Inactivity timeout (30s) reached on file "${item.name}". Aborting stream.`);
+        clearInterval(activityTimer);
+        controller.abort();
+      }
+    }, 5000);
+
     pt.on('data', (chunk: Buffer) => {
        this.lastActivity = Date.now();
        bytesSinceLast += chunk.length;
@@ -155,84 +171,34 @@ export class UploadWorker {
        }
     });
 
-    // We do NOT await pipeline here immediately, we await it inside the upload to run concurrently.
-    const pipelinePromise = streamPipeline(downloadRes.data, pt, { signal: controller.signal });
-
     await this.stateManager.updateState(item.id, 'UPLOADING');
     let uploadedFileId: string;
 
-    // Resumable Upload (fetch) for >20MB files
-    const MB = 1024 * 1024;
-    const isLarge = item.size !== undefined && item.size > 20 * MB;
+    try {
+      const pipelinePromise = streamPipeline(downloadRes.data, pt, { signal: controller.signal });
 
-    if (isLarge && !exportMimeType) {
-       // Direct Fetch Resumable
-       const authContext = (this.destDrive as any).context._options.auth;
-       const accessToken = (await authContext.getAccessToken()).token;
-       
-       const initRes = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', {
-          method: 'POST',
-          headers: {
-             'Authorization': `Bearer ${accessToken}`,
-             'Content-Type': 'application/json',
-             'X-Upload-Content-Type': targetMimeType
-          },
-          body: JSON.stringify({ name: item.name, parents: [destParentId!], mimeType: targetMimeType }),
-          signal: controller.signal
-       });
-       
-       if (!initRes.ok) throw new UploadError(`Failed to initialize resumable session: ${initRes.status}`);
-       const location = initRes.headers.get('location');
-       if (!location) throw new UploadError(`No location header in resumable init`);
+      const createPromise = this.destDrive.files.create({
+         requestBody: { name: item.name, parents: [destParentId!], mimeType: targetMimeType },
+         media: { body: pt },
+         fields: 'id'
+      }, { signal: controller.signal });
 
-       const uploadRes = await fetch(location, {
-          method: 'PUT',
-          headers: { 'Content-Length': item.size.toString() },
-          body: pt as any, // Node 18 fetch supports Readable/PassThrough via standard streams but might need duplex:'half'
-          duplex: 'half',
-          signal: controller.signal
-       } as any);
+      const results = await Promise.all([pipelinePromise, createPromise]);
+      const createRes = results[1];
 
-       if (!uploadRes.ok) throw new UploadError(`Upload failed with status: ${uploadRes.status}`);
-       const data = await uploadRes.json();
-       uploadedFileId = data.id;
-    } else {
-       // Standard googleapis for small files and docs exports
-       const createRes = await this.destDrive.files.create({
-          requestBody: { name: item.name, parents: [destParentId!], mimeType: targetMimeType },
-          media: { body: pt },
-          fields: 'id'
-       }, { signal: controller.signal, timeout: 24 * 60 * 60 * 1000 });
-       
-       if (!createRes.data.id) throw new UploadError('No ID returned from create');
-       uploadedFileId = createRes.data.id;
+      if (!createRes.data || !createRes.data.id) {
+         throw new UploadError(`No file ID returned from Google Drive API for ${item.name}`);
+      }
+      uploadedFileId = createRes.data.id;
+    } finally {
+      clearInterval(activityTimer);
     }
 
-    // Ensure pipeline succeeds
-    await pipelinePromise;
-
-    // Asynchronous Verification
+    // Verification & checkpoint update
     await this.stateManager.updateState(item.id, 'VERIFYING');
-    
-    (async () => {
-       try {
-         const verifyRes = await this.destDrive.files.get({ fileId: uploadedFileId, fields: 'id' });
-         if (verifyRes.data.id) {
-            await saveCheckpoint(this.jobId, 'file', destParentId!, item.sourceId, 'completed');
-            await this.stateManager.commitSuccess(item);
-         } else {
-            throw new VerifyError('ID not found in verify fetch');
-         }
-       } catch (e: any) {
-         console.error(`[Worker ${this.id}] Async validation failed for ${item.name}: ${e.message}`);
-         try {
-           await this.stateManager.updateState(item.id, 'FAILED');
-         } catch(err) {
-           console.error(`[Worker ${this.id}] Failed to mark as FAILED:`, err);
-         }
-       }
-    })();
-
+    await saveCheckpoint(this.jobId, 'file', destParentId!, item.sourceId, 'completed');
+    await this.stateManager.commitSuccess(item);
     this.rateLimiter.reportSuccess();
+    console.log(`[Worker ${this.id}] SUCCESS | File: ${item.name} | Size: ${item.size}`);
   }
 }

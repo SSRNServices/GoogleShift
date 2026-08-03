@@ -21,8 +21,10 @@ export class CopyService {
     const actualDestId = destinationFolder.id === 'root' ? 'root' : destinationFolder.id;
     const folderCache = new Map<string, string>();
     folderCache.set('root_dest', actualDestId);
+    folderCache.set('root', actualDestId);
+
     const manifestRows = await prisma.migrationManifest.findMany({
-      where: { jobId, isFolder: true, status: 'SUCCESS' },
+      where: { jobId, isFolder: true },
       select: { id: true, createdDestId: true }
     });
     for (const row of manifestRows) {
@@ -30,6 +32,7 @@ export class CopyService {
          folderCache.set(row.id, row.createdDestId);
       }
     }
+    console.log(`[CopyService] Folder cache built with ${folderCache.size} mappings.`);
 
     const fileScheduler = new FileScheduler(
       jobId, 
@@ -41,10 +44,8 @@ export class CopyService {
       folderCache
     );
 
-    // File progress is handled implicitly by stateManager via updateJobProgress in FileScheduler.
-    // So we don't need onFileComplete.
-
+    console.log(`[CopyService] Executing FileScheduler...`);
     await fileScheduler.run();
-    console.log(`[CopyService] File copy complete`);
+    console.log(`[CopyService] File copy phase complete.`);
   }
 }

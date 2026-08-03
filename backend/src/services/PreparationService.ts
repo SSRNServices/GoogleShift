@@ -28,6 +28,15 @@ export class PreparationService {
     const folderScheduler = new FolderScheduler(jobId, actualDestId, destDrive, options, rateLimiter, stateManager);
     await folderScheduler.run();
 
-    console.log(`[PreparationService] Folder creation complete`);
+    // Ensure all pending files in the manifest are queued for transfer
+    const unqueuedFiles = await prisma.migrationManifest.updateMany({
+      where: { jobId, isFolder: false, status: 'PENDING' },
+      data: { status: 'QUEUED' }
+    });
+    if (unqueuedFiles && unqueuedFiles.count > 0) {
+      console.log(`[PreparationService] Pre-queued ${unqueuedFiles.count} pending files for file scheduler.`);
+    }
+
+    console.log(`[PreparationService] Folder creation & preparation complete.`);
   }
 }

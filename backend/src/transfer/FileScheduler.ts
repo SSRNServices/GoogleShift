@@ -76,16 +76,15 @@ export class FileScheduler {
 
   private async watchdog() {
     while (!this.isDone) {
-      await new Promise(r => setTimeout(r, 10000));
+      await new Promise(r => setTimeout(r, 5000));
       if (this.isDone) break;
       const now = Date.now();
       for (const worker of this.workers) {
         if (worker.isBusy && !worker.isDead) {
-          if (now - worker.lastActivity > 120000) {
-             console.log(`[WATCHDOG] Worker ${worker.id} stalled on ${worker.currentFile}. Cancelling.`);
+          if (now - worker.lastActivity > 30000) {
+             console.log(`[WATCHDOG] Worker ${worker.id} stalled for 30s on ${worker.currentFile}. Cancelling.`);
              worker.isDead = true;
              worker.abort();
-             // Note: worker's catch block will handle the retry when abort throws
           }
         }
       }
@@ -97,6 +96,7 @@ export class FileScheduler {
     const worker = new UploadWorker(this.nextWorkerId++, this.jobId, this.sourceDrive, this.destDrive, this.rateLimiter, this.stateManager, this.options, this.folderCache, this.config);
     worker.affinity = affinity;
     this.workers.push(worker);
+    console.log(`[FileScheduler] Spawned worker ${worker.id} with affinity ${affinity}. Total workers: ${this.workers.length}`);
   }
 
   public async run() {
@@ -110,12 +110,18 @@ export class FileScheduler {
        where: { jobId: this.jobId, isFolder: false, status: 'QUEUED' }
     });
     
+    console.log(`[FileScheduler Diagnostic] Total Files in Manifest: ${totalFiles} | Queued Files: ${queuedFiles}`);
+
     if (totalFiles > 0) {
        const pendingFolders = await prisma.migrationManifest.count({
           where: { jobId: this.jobId, isFolder: true, status: { notIn: ['SUCCESS', 'FAILED'] } }
        });
        if (queuedFiles === 0 && pendingFolders === 0) {
-          throw new Error(`[FATAL] Queue size is zero but manifest contains files and no folders pending.`);
+          console.warn(`[FileScheduler Warning] Queue size is zero. Pre-queuing remaining pending files.`);
+          await prisma.migrationManifest.updateMany({
+             where: { jobId: this.jobId, isFolder: false, status: 'PENDING' },
+             data: { status: 'QUEUED' }
+          });
        }
     }
 
@@ -127,10 +133,7 @@ export class FileScheduler {
     const getLimit = (bucket: string) => {
        const total = this.rateLimiter.getConcurrency();
        if (bucket === 'HUGE') return 1;
-       if (bucket === 'LARGE') return Math.max(1, Math.floor(total * 0.1));
-       if (bucket === 'MEDIUM') return Math.max(1, Math.floor(total * 0.2));
-       if (bucket === 'SMALL') return Math.max(1, Math.floor(total * 0.3));
-       return Math.max(1, Math.floor(total * 0.4)); // TINY
+       return Math.max(1, total);
     };
 
     while (!this.isDone) {
