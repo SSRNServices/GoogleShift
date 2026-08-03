@@ -309,4 +309,35 @@ export class MigrationStateManager {
       }
     });
   }
+
+  public async getSummaryStats() {
+    try {
+      const stats = await prisma.migrationManifest.groupBy({
+        by: ['status', 'isFolder'],
+        where: { jobId: this.jobId },
+        _count: { id: true },
+        _sum: { size: true }
+      });
+
+      let completedFiles = 0;
+      let failedFiles = 0;
+      let transferredBytes = BigInt(0);
+
+      for (const stat of stats) {
+        if (!stat.isFolder) {
+          if (stat.status === 'SUCCESS') {
+            completedFiles += stat._count.id;
+            transferredBytes += stat._sum.size || BigInt(0);
+          } else if (stat.status === 'FAILED') {
+            failedFiles += stat._count.id;
+          }
+        }
+      }
+
+      return { completedFiles, failedFiles, transferredBytes };
+    } catch (e: any) {
+      console.warn(`[MigrationStateManager] getSummaryStats warning: ${e.message}`);
+      return { completedFiles: 0, failedFiles: 0, transferredBytes: BigInt(0) };
+    }
+  }
 }

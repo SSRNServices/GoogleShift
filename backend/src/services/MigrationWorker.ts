@@ -115,19 +115,31 @@ export class MigrationWorker {
       await updateJobStatus(job.jobId, 'COMPLETED');
       await updateJobProgress(job.jobId, { status: finalStatus, networkStatus: 'online' });
       
-      const summaryStats = await stateManager.getStats();
-      await prisma.migrationJob.update({
-         where: { id: job.jobId },
-         data: {
-            completedAt: new Date(),
-            completedFiles: summaryStats.completedFiles,
-            failedFiles: summaryStats.failedFiles,
-            transferredBytes: summaryStats.transferredBytes
-         }
-      });
+      // Isolated Post-Completion Telemetry & Reporting (Non-critical)
+      try {
+        const summaryStats = await stateManager.getSummaryStats();
+        await prisma.migrationJob.update({
+           where: { id: job.jobId },
+           data: {
+              completedAt: new Date(),
+              completedFiles: summaryStats.completedFiles,
+              failedFiles: summaryStats.failedFiles,
+              transferredBytes: summaryStats.transferredBytes
+           }
+        });
+      } catch (postErr: any) {
+        console.warn(`[MigrationWorker] Post-completion summary update warning for ${job.jobId}: ${postErr.message}`);
+      }
       
       console.log(`[EXIT] MigrationWorker.executeMigration | Total Duration: ${Date.now() - startTime}ms`);
     } catch (e: any) {
+      // Terminal State Protection: Once COMPLETED, no subsequent error can degrade status to FAILED
+      const currentJob = await prisma.migrationJob.findUnique({ where: { id: job.jobId } });
+      if (currentJob?.state === 'COMPLETED') {
+         console.warn(`[MigrationWorker] Intercepted non-fatal post-completion error for ${job.jobId}: ${e.message}`);
+         return;
+      }
+
       const errorPayload = {
         name: e.name || 'WorkerError',
         message: e.message,
