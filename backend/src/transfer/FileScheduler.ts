@@ -193,7 +193,32 @@ export class FileScheduler {
             }
          } else {
             deadlockTimer += 50;
-            if (deadlockTimer > 30000) {
+            if (deadlockTimer === 50 || deadlockTimer % 5000 === 0) {
+               const unresolvedItems = await prisma.migrationManifest.findMany({
+                  where: {
+                     jobId: this.jobId,
+                     status: { in: ['PENDING', 'QUEUED', 'UPLOADING', 'VERIFYING'] }
+                  }
+               });
+               console.warn(`[FileScheduler Warning] ${unresolvedCount} unresolved items in DB (Timer: ${deadlockTimer}ms):`);
+               for (const item of unresolvedItems) {
+                  console.warn(`  - ID: ${item.id} | Name: ${item.name} | isFolder: ${item.isFolder} | status: ${item.status} | sourceParentId: ${item.sourceParentId}`);
+               }
+            }
+
+            if (deadlockTimer > 15000) {
+               const unresolvedItems = await prisma.migrationManifest.findMany({
+                  where: {
+                     jobId: this.jobId,
+                     status: { in: ['PENDING', 'QUEUED', 'UPLOADING', 'VERIFYING'] }
+                  }
+               });
+               console.error(`\n=================== FATAL DEADLOCK AUDIT DUMP ===================`);
+               console.error(`Job ID: ${this.jobId} | Unresolved Count: ${unresolvedCount}`);
+               for (const item of unresolvedItems) {
+                  console.error(`  - ID: ${item.id} | Name: ${item.name} | isFolder: ${item.isFolder} | status: ${item.status} | sourceParentId: ${item.sourceParentId}`);
+               }
+               console.error(`=================================================================\n`);
                throw new Error(`FileScheduler Deadlock: ${unresolvedCount} items unresolved in DB but queue empty.`);
             }
          }

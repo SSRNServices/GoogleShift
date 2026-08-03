@@ -130,7 +130,7 @@ export class ManifestStorage {
 
   public static async getPendingFoldersByDepth(jobId: string): Promise<ManifestItem[]> {
     const rows = await prisma.migrationManifest.findMany({
-      where: { jobId, isFolder: true, status: 'PENDING' },
+      where: { jobId, isFolder: true, status: { in: ['PENDING', 'QUEUED'] } },
       orderBy: { depth: 'asc' }
     });
     return rows.map(row => ({
