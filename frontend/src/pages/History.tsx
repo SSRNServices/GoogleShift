@@ -93,7 +93,8 @@ export default function History() {
                       <div className="mt-1">
                         {job.status === 'completed' && <CheckCircle2 className="w-6 h-6 text-emerald-500" />}
                         {job.status === 'failed' && <AlertTriangle className="w-6 h-6 text-destructive" />}
-                        {isActive && <Loader2 className="w-6 h-6 text-primary animate-spin" />}
+                        {job.status === 'paused' && <PlayCircle className="w-6 h-6 text-amber-500" />}
+                        {isActive && job.status !== 'paused' && <Loader2 className="w-6 h-6 text-primary animate-spin" />}
                       </div>
                       <div>
                         <div className="flex items-center gap-2 mb-1">

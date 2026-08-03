@@ -51,23 +51,29 @@ export default function MigrationProgress() {
   const [loading, setLoading] = useState(true);
   const [connectionError, setConnectionError] = useState<string | null>(null);
 
+  const fetchCurrentJob = async () => {
+    try {
+      setLoading(true);
+      setConnectionError(null);
+      const data = await migrationApi.getCurrent();
+      if (data && data.jobId) {
+        setJobId(data.jobId);
+      } else {
+        setLoading(false);
+      }
+    } catch (err: unknown) {
+      console.error(err);
+      setConnectionError(err instanceof Error ? err.message : 'Failed to fetch current migration job');
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     const targetJobId = queryJobId;
     if (targetJobId) {
       setJobId(targetJobId);
     } else {
-      // Fallback to getCurrent if no jobId in URL
-      migrationApi.getCurrent().then(data => {
-        if (data && data.jobId) {
-          setJobId(data.jobId);
-        } else {
-          setLoading(false);
-        }
-      }).catch(err => {
-        console.error(err);
-        setConnectionError('Failed to fetch active migration job.');
-        setLoading(false);
-      });
+      fetchCurrentJob();
     }
   }, [queryJobId]);
 
