@@ -1,7 +1,7 @@
-// @ts-nocheck
+import { v4 as uuidv4 } from 'uuid';
 import { createJob, updateJobStatus, prisma } from '../utils/database';
 import { MigrationRequest, StartMigrationPayload } from '../transfer/types';
-import { RequestValidationError, ManifestError, ShortcutResolutionError } from '../utils/errors';
+import { RequestValidationError, ManifestError } from '../utils/errors';
 
 export class MigrationService {
   public async startMigrationJob(userId: string, sessionId: string, payload: StartMigrationPayload) {
@@ -25,54 +25,51 @@ export class MigrationService {
       throw new RequestValidationError('Missing transfer options in payload.');
     }
 
-    if (payload.manifestId) {
-      const manifestExists = await prisma.migrationManifest.findFirst({
-        where: { jobId: payload.manifestId }
-      });
-      if (!manifestExists) {
-        throw new ManifestError(`Manifest with ID ${payload.manifestId} not found.`);
-      }
+    const manifestId = payload.manifestId || session.manifestId;
+    if (!manifestId) {
+      throw new ManifestError('Manifest ID missing in request or session.');
     }
 
-    const jobId = payload.manifestId || 'manifest_' + Date.now();
+    const manifestExists = await prisma.migrationManifest.findFirst({
+      where: { jobId: manifestId }
+    });
+    if (!manifestExists) {
+      throw new ManifestError(`Manifest with ID ${manifestId} not found.`);
+    }
 
-    const totalFolders = 0;
-    const totalFiles = 0;
-    const totalBytes = 0;
+    // ALWAYS generate a brand new unique MigrationJob ID for every run
+    const migrationJobId = 'migration_' + Date.now() + '_' + uuidv4().substring(0, 8);
 
-    console.log(`[Backend] Creating migration job ${jobId} for session ${sessionId}`);
+    console.log(`[Backend] Creating new MigrationJob ${migrationJobId} for Manifest ${manifestId} and Session ${sessionId}`);
 
-    // Create a payload for createJob that mimics MigrationRequest
     const migrationRequest: MigrationRequest = {
-      sourceSelection: [{ id: session.sourceFolderId, name: 'Source', mimeType: 'application/vnd.google-apps.folder' }],
-      destinationFolder: { id: session.destinationFolderId, name: 'Destination', mimeType: 'application/vnd.google-apps.folder' },
       options: payload.options,
-      manifestId: jobId,
+      manifestId,
       sessionId
     };
 
-    // We will just pass it along
-    await createJob(jobId, migrationRequest, userId); // Use actual userId
+    await createJob(migrationJobId, migrationRequest, userId);
 
-    await updateJobStatus(jobId, 'PREPARING');
+    await updateJobStatus(migrationJobId, 'PREPARING');
     
     const { migrationWorker } = await import('./MigrationWorker');
     
-    // Explicit background dispatch
     migrationWorker.executeMigration({
       ...migrationRequest,
-      jobId,
+      jobId: migrationJobId,
+      manifestId,
       status: 'preparing',
-      totalFolders,
-      totalFiles,
-      totalBytes,
+      totalFolders: 0,
+      totalFiles: 0,
+      totalBytes: 0,
       failedFiles: 0,
       lastSuccessfulFile: '',
       sessionId
-    }).catch(err => console.error('[FATAL]', err));
+    }).catch(err => console.error('[FATAL] MigrationWorker execution error:', err));
 
     return {
-      jobId,
+      jobId: migrationJobId,
+      manifestId,
       status: 'preparing',
       message: 'Migration engine initialized.'
     };

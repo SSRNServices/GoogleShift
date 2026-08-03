@@ -310,11 +310,12 @@ export class MigrationStateManager {
     });
   }
 
-  public async getSummaryStats() {
+  public async getSummaryStats(manifestId?: string) {
     try {
+      const targetId = manifestId || this.jobId;
       const stats = await prisma.migrationManifest.groupBy({
         by: ['status', 'isFolder'],
-        where: { jobId: this.jobId },
+        where: { jobId: targetId },
         _count: { id: true },
         _sum: { size: true }
       });

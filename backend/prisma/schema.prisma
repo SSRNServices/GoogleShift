@@ -116,7 +116,7 @@ model DiscoveryJob {
 model MigrationJob {
   id                  String   @id
   ownerId             String
-  sessionId           String?  @unique
+  sessionId           String?
   manifestId          String?
   state               MigrationState @default(QUEUED)
   sourceEmail         String?
@@ -297,7 +297,7 @@ model MigrationSession {
 
   owner               User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   discoveryJob        DiscoveryJob?
-  migrationJob        MigrationJob?
+  migrationJobs       MigrationJob[]
 
   @@index([ownerId])
 }

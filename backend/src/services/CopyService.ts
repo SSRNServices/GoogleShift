@@ -7,8 +7,8 @@ import { updateJobStatus, logJobEvent, updateJobProgress } from '../utils/databa
 import { prisma } from '../utils/database';
 
 export class CopyService {
-  public static async execute(jobId: string, sessionId: string, options: any, destinationFolder: any, stateManager: MigrationStateManager) {
-    console.log(`\n[STATE] COPYING\nMigration: ${jobId}\nReason: File transfer setup`);
+  public static async execute(jobId: string, manifestId: string, sessionId: string, options: any, destinationFolder: any, stateManager: MigrationStateManager) {
+    console.log(`\n[STATE] COPYING\nMigration: ${jobId} | Manifest: ${manifestId}\nReason: File transfer setup`);
     await logJobEvent(jobId, `[STATE] COPYING`);
     await updateJobStatus(jobId, 'COPYING');
     await updateJobProgress(jobId, { status: 'copying', currentAction: 'Starting file transfers...', event: 'COPY_STARTED' });
@@ -24,7 +24,7 @@ export class CopyService {
     folderCache.set('root', actualDestId);
 
     const manifestRows = await prisma.migrationManifest.findMany({
-      where: { jobId, isFolder: true },
+      where: { jobId: manifestId, isFolder: true },
       select: { id: true, createdDestId: true }
     });
     for (const row of manifestRows) {
@@ -35,7 +35,7 @@ export class CopyService {
     console.log(`[CopyService] Folder cache built with ${folderCache.size} mappings.`);
 
     const fileScheduler = new FileScheduler(
-      jobId, 
+      manifestId, 
       sourceDrive, 
       destDrive, 
       options, 

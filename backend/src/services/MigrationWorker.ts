@@ -86,8 +86,9 @@ export class MigrationWorker {
       }
 
       // Check Manifest
+      const targetManifestId = job.manifestId || job.jobId;
       const totalFiles = await prisma.migrationManifest.count({
-        where: { jobId: job.jobId }
+        where: { jobId: targetManifestId }
       });
       if (totalFiles === 0) {
         throw new Error('FATAL: Manifest is empty or missing. Please ensure the discovery phase completed before starting migration.');
@@ -99,15 +100,15 @@ export class MigrationWorker {
 
       // Phase 1: PREPARING
       await logJobEvent(job.jobId, 'Invoking PreparationService');
-      await PreparationService.execute(job.jobId, job.sessionId, options, destinationFolder, stateManager);
+      await PreparationService.execute(job.jobId, targetManifestId, job.sessionId, options, destinationFolder, stateManager);
 
       // Phase 2: COPYING
       await logJobEvent(job.jobId, 'Invoking CopyService');
-      await CopyService.execute(job.jobId, job.sessionId, options, destinationFolder, stateManager);
+      await CopyService.execute(job.jobId, targetManifestId, job.sessionId, options, destinationFolder, stateManager);
 
       // Phase 3: VERIFYING
       await logJobEvent(job.jobId, 'Invoking VerificationService');
-      await VerificationService.execute(job.jobId);
+      await VerificationService.execute(job.jobId, targetManifestId);
       
       const finalStatus = 'completed';
       console.log(`\n[STATE] COMPLETED\nMigration: ${job.jobId}\nReason: All phases verified and completed successfully`);
@@ -117,7 +118,7 @@ export class MigrationWorker {
       
       // Isolated Post-Completion Telemetry & Reporting (Non-critical)
       try {
-        const summaryStats = await stateManager.getSummaryStats();
+        const summaryStats = await stateManager.getSummaryStats(targetManifestId);
         await prisma.migrationJob.update({
            where: { id: job.jobId },
            data: {

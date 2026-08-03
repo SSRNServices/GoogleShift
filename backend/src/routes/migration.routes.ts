@@ -218,14 +218,13 @@ router.post('/start', requireBothAuth, async (req, res) => {
       }
     });
     
-    if (active && active.id === payload.manifestId) {
-      return res.status(200).json(serializeBigInt({
+    if (active) {
+      return res.status(409).json(serializeBigInt({
+        error: 'Another migration is currently active.',
         jobId: active.id,
         status: active.state.toLowerCase(),
-        message: 'Existing migration found and resumed.'
+        message: 'Active migration in progress.'
       }));
-    } else if (active) {
-      return res.status(400).json({ error: 'Another migration is currently active.' });
     }
 
     // Check manifest entries count
@@ -234,15 +233,9 @@ router.post('/start', requireBothAuth, async (req, res) => {
        return res.status(400).json({ error: 'Manifest is empty. No files were found to migrate.' });
     }
 
-    // Create migration job using the session
+    // Create a new unique migration job
     const job = await migrationService.startMigrationJob(userId, payload.sessionId, payload);
     
-    // Link job to session
-    await prisma.migrationJob.update({
-      where: { id: (job as any).jobId || (job as any).id },
-      data: { sessionId: payload.sessionId }
-    });
-
     await prisma.migrationSession.update({
       where: { id: payload.sessionId },
       data: { migrationStatus: 'RUNNING' }

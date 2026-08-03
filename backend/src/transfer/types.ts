@@ -105,6 +105,7 @@ export interface TransferOptionsState {
 export interface MigrationRequest {
   manifestId: string;
   sessionId: string;
+  options?: TransferOptionsState;
 }
 
 export interface MigrationJob extends MigrationRequest {

@@ -1,8 +1,8 @@
 import { updateJobStatus, logJobEvent, updateJobProgress, prisma } from '../utils/database';
 
 export class VerificationService {
-  public static async execute(jobId: string) {
-    console.log(`\n[STATE] VERIFYING\nMigration: ${jobId}\nReason: Consistency checks`);
+  public static async execute(jobId: string, manifestId: string) {
+    console.log(`\n[STATE] VERIFYING\nMigration: ${jobId} | Manifest: ${manifestId}\nReason: Consistency checks`);
     await logJobEvent(jobId, `[STATE] VERIFYING`);
     await updateJobStatus(jobId, 'VERIFYING');
     await updateJobProgress(jobId, { status: 'verifying', currentAction: 'Verifying files...', event: 'VERIFY_STARTED' });
@@ -10,7 +10,7 @@ export class VerificationService {
     // Ensure all items are SUCCESS or FAILED (no PENDING/QUEUED)
     const stuckItems = await prisma.migrationManifest.count({
       where: {
-         jobId,
+         jobId: manifestId,
          status: { in: ['PENDING', 'QUEUED', 'DOWNLOADING', 'UPLOADING'] }
       }
     });
@@ -19,7 +19,7 @@ export class VerificationService {
        console.warn(`[VerificationService] Found ${stuckItems} stuck items. Marking as FAILED.`);
        await prisma.migrationManifest.updateMany({
          where: {
-            jobId,
+            jobId: manifestId,
             status: { in: ['PENDING', 'QUEUED', 'DOWNLOADING', 'UPLOADING'] }
          },
          data: { status: 'FAILED' }
@@ -27,11 +27,11 @@ export class VerificationService {
     }
 
     const completed = await prisma.migrationManifest.count({
-       where: { jobId, status: 'SUCCESS', isFolder: false }
+       where: { jobId: manifestId, status: 'SUCCESS', isFolder: false }
     });
     
     const failed = await prisma.migrationManifest.count({
-       where: { jobId, status: 'FAILED', isFolder: false }
+       where: { jobId: manifestId, status: 'FAILED', isFolder: false }
     });
 
     await updateJobProgress(jobId, { 
