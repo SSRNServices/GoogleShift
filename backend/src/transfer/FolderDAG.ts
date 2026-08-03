@@ -132,6 +132,18 @@ export class FolderDAG {
     return true;
   }
 
+  public resolveStuckNodes(): number {
+    let resolved = 0;
+    for (const node of this.nodes.values()) {
+      if (node.status === 'WAITING' || node.status === 'CREATING') {
+        console.warn(`[FolderDAG] Auto-failing stuck node ${node.name} (${node.id}) with status ${node.status}`);
+        node.status = 'FAILED';
+        resolved++;
+      }
+    }
+    return resolved;
+  }
+
   public getActiveCount(): number {
     let active = 0;
     for (const node of this.nodes.values()) {

@@ -80,18 +80,24 @@ export class FolderScheduler {
          this.dag.dumpDAG();
          
          // Final check: did all folders succeed anyway?
-         const pendingFolders = await ManifestStorage.getPendingFoldersByDepth(this.jobId);
+         const pendingFolders = await ManifestStorage.getPendingFoldersByDepth(this.manifestId);
          if (pendingFolders.length === 0) {
             console.log(`[FolderScheduler] Deadlock detector overriding fatal error: No pending folders remain. Exiting cleanly.`);
             break;
          }
          
-         throw new Error('FolderScheduler Deadlock');
+         const resolved = this.dag.resolveStuckNodes();
+         if (resolved > 0) {
+            console.log(`[FolderScheduler] Resolved ${resolved} stuck nodes. Continuing completion check.`);
+         } else {
+            throw new Error('FolderScheduler Deadlock');
+         }
       }
 
-      // If nothing is ready and nothing is active, we are stuck (shouldn't happen unless cyclic or failed parents)
+      // If nothing is ready and nothing is active, resolve remaining stuck nodes and exit
       if (readyCount === 0 && activeCount === 0) {
-         console.warn(`[FolderScheduler] Folder DAG is stuck. Remaining nodes are unreachable or failed.`);
+         const resolved = this.dag.resolveStuckNodes();
+         console.warn(`[FolderScheduler] Folder DAG processing finished. Auto-resolved ${resolved} stuck/unreachable nodes.`);
          break;
       }
 
@@ -133,7 +139,7 @@ export class FolderScheduler {
             const existing = await this.destDrive.files.list({
                 q: `name = '${node.name.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.folder' and '${destParentId}' in parents and trashed = false`,
                 fields: 'files(id)'
-            });
+            }, { timeout: 30000 });
             if (existing.data.files && existing.data.files.length > 0 && existing.data.files[0].id) {
                 newDestFolderId = existing.data.files[0].id;
                 folderExists = true;
@@ -154,7 +160,7 @@ export class FolderScheduler {
                     parents: [destParentId]
                 },
                 fields: 'id, name, parents'
-            });
+            }, { timeout: 30000 });
             if (!createRes.data.id) {
                 throw new Error(`Google Drive API created folder but returned no ID for ${node.name}`);
             }
