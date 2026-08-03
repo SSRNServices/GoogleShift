@@ -18,6 +18,7 @@ router.post('/start', requireUserAuth, async (req, res) => {
   try {
     const userId = (req as any).user.id;
     const { itemsParam, sessionId } = req.body;
+    console.log(`[DISCOVERY] Start request received for User: ${userId}, Session: ${sessionId}, Items: ${itemsParam}`);
 
     if (!itemsParam || !sessionId) {
       return res.status(400).json({ error: 'Missing itemsParam or sessionId' });
@@ -28,12 +29,15 @@ router.post('/start', requireUserAuth, async (req, res) => {
     });
 
     if (!session) {
+       console.warn(`[DISCOVERY] Migration session ${sessionId} not found for User: ${userId}`);
        return res.status(404).json({ error: 'Migration session not found' });
     }
 
     if (session.discoveryStatus === 'COMPLETED') {
        const active = await prisma.discoveryJob.findUnique({ where: { sessionId } });
+       console.log(`[DISCOVERY] Session ${sessionId} already completed. Job ID: ${active?.id}`);
        return res.status(200).json(serializeBigInt({
+         id: active?.id,
          jobId: active?.id,
          status: 'completed',
          message: 'Discovery already completed for this session.'
@@ -49,7 +53,9 @@ router.post('/start', requireUserAuth, async (req, res) => {
     });
     
     if (active) {
+      console.log(`[DISCOVERY] Active discovery job ${active.id} found for session ${sessionId}. Resuming.`);
       return res.status(200).json(serializeBigInt({
+        ...active,
         jobId: active.id,
         status: active.state.toLowerCase(),
         message: 'Existing discovery found and resumed.'
@@ -57,10 +63,11 @@ router.post('/start', requireUserAuth, async (req, res) => {
     }
 
     const manifestId = 'manifest_scan_' + Date.now();
+    const jobId = uuidv4();
     
     const job = await prisma.discoveryJob.create({
       data: {
-        id: uuidv4(),
+        id: jobId,
         ownerId: userId,
         sessionId,
         manifestId,
@@ -69,16 +76,21 @@ router.post('/start', requireUserAuth, async (req, res) => {
       }
     });
 
-    discoveryWorker.executeDiscovery(job).catch(err => console.error('[FATAL]', err));
+    console.log(`[DISCOVERY] Job created: ${jobId} (Manifest: ${manifestId}) for User: ${userId}`);
 
-    res.status(200).json(serializeBigInt(job));
+    discoveryWorker.executeDiscovery(job).catch(err => console.error('[FATAL] DiscoveryWorker error:', err));
+
+    res.status(200).json(serializeBigInt({
+      ...job,
+      jobId: job.id
+    }));
   } catch (error: any) {
-    console.error('Error starting discovery:', error);
+    console.error('[DISCOVERY] Error starting discovery:', error);
     res.status(500).json({ error: error.message || 'Failed to start discovery' });
   }
 });
 
-router.get('/:jobId/status', async (req, res) => {
+router.get('/:jobId/status', requireUserAuth, async (req, res) => {
   const jobId = req.params.jobId as string;
 
   res.setHeader('Content-Type', 'text/event-stream');

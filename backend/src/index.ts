@@ -141,7 +141,7 @@ app.use('/auth', authRoutes);
 app.use('/api/drive', requireUserAuth, driveRoutes);
 app.use('/api/migrations', requireUserAuth, migrationRoutes);
 app.use('/api/migration/session', requireUserAuth, sessionRoutes);
-app.use('/api/discovery', discoveryRoutes);
+app.use('/api/discovery', requireUserAuth, discoveryRoutes);
 
 // Print all registered routes
 const printRoutes = () => {

@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef } from 'react';
 import { API_URL } from '../config/api';
 import { migrationApi } from '../api/migrationApi';
-import { Loader2, FolderOpen, File as FileIcon, AlertTriangle, CheckCircle } from 'lucide-react';
+import { useAuthStore } from '../store/useAuthStore';
+import { Loader2, FolderOpen, File as FileIcon, AlertTriangle, CheckCircle, RefreshCw } from 'lucide-react';
 
 interface DiscoveryScannerProps {
   sourceId: string;
@@ -20,6 +21,7 @@ const formatBytes = (bytes: number) => {
 
 export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: DiscoveryScannerProps) {
   const [jobId, setJobId] = useState<string | null>(null);
+  const [initError, setInitError] = useState<string | null>(null);
   const [stats, setStats] = useState({
     folders: 0,
     files: 0,
@@ -34,27 +36,24 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
   const abortControllerRef = useRef<AbortController | null>(null);
   const hasStartedRef = useRef(false);
 
+  const startDiscoveryProcess = async () => {
+    setInitError(null);
+    try {
+      const job = await migrationApi.startDiscovery(sourceId, sessionId);
+      setJobId(job.jobId || job.id);
+    } catch (err: any) {
+      const errMsg = err.message || 'Failed to initialize discovery';
+      setInitError(errMsg);
+      onError(errMsg);
+      hasStartedRef.current = false; // Allow retry on failure
+    }
+  };
+
   useEffect(() => {
-    let active = true;
-
-    const initDiscovery = async () => {
-      if (hasStartedRef.current) return;
-      hasStartedRef.current = true;
-      try {
-        const job = await migrationApi.startDiscovery(sourceId, sessionId);
-        if (active) setJobId(job.jobId || job.id);
-      } catch (err: any) {
-        if (active) {
-           onError(err.message || 'Failed to initialize discovery');
-           hasStartedRef.current = false; // Allow retry on failure
-        }
-      }
-    };
-
-    initDiscovery();
-
-    return () => { active = false; };
-  }, [sourceId, sessionId, onError]);
+    if (hasStartedRef.current) return;
+    hasStartedRef.current = true;
+    startDiscoveryProcess();
+  }, [sourceId, sessionId]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -64,8 +63,15 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
 
     const streamDiscovery = async () => {
       try {
+        const { accessToken } = useAuthStore.getState();
+        const headers: Record<string, string> = {};
+        if (accessToken) {
+          headers['Authorization'] = `Bearer ${accessToken}`;
+        }
+
         abortControllerRef.current = new AbortController();
         const response = await fetch(`${API_URL}/api/discovery/${jobId}/status`, {
+          headers,
           credentials: 'include',
           signal: abortControllerRef.current.signal
         });
@@ -96,6 +102,7 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
                 
                 if (data.error) {
                   onError(data.error);
+                  setInitError(data.error);
                   isActive = false;
                   break;
                 }
@@ -145,6 +152,25 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
       clearTimeout(pollTimeout);
     };
   }, [jobId, onComplete, onError]);
+
+  if (initError) {
+    return (
+      <div className="bg-red-50 dark:bg-red-900/20 p-6 rounded-lg border border-red-200 dark:border-red-800 text-center">
+        <AlertTriangle className="w-10 h-10 text-red-500 mx-auto mb-3" />
+        <h3 className="text-lg font-semibold text-red-800 dark:text-red-300 mb-2">Discovery Failed to Start</h3>
+        <p className="text-sm text-red-600 dark:text-red-400 mb-4">{initError}</p>
+        <button
+          onClick={() => {
+            hasStartedRef.current = true;
+            startDiscoveryProcess();
+          }}
+          className="inline-flex items-center px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-medium text-sm rounded-md transition-colors shadow-sm"
+        >
+          <RefreshCw className="w-4 h-4 mr-2" /> Retry Discovery
+        </button>
+      </div>
+    );
+  }
 
   if (completed && finalSummary) {
     return (
@@ -211,3 +237,4 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
     </div>
   );
 }
+

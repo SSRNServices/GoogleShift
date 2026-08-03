@@ -16,6 +16,7 @@ export const requireUserAuth = async (req: Request, res: Response, next: NextFun
     }
 
     if (!token) {
+      console.warn(`[AUTH 401] ${req.method} ${req.originalUrl || req.url} - Missing token. Auth Header: ${!!authHeader}, Cookie: ${!!(req.cookies && req.cookies.accessToken)}`);
       return res.status(401).json({ authenticated: false, error: 'Unauthorized', message: 'Missing token.' });
     }
 
@@ -23,6 +24,7 @@ export const requireUserAuth = async (req: Request, res: Response, next: NextFun
     
     const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
     if (!user || user.status === 'PENDING' || !user.isActive) {
+      console.warn(`[AUTH 403] ${req.method} ${req.originalUrl || req.url} - User not active or pending. User ID: ${decoded.userId}`);
       return res.status(403).json({ error: 'Forbidden', message: 'User not active or pending approval.' });
     }
 
@@ -30,7 +32,8 @@ export const requireUserAuth = async (req: Request, res: Response, next: NextFun
     (req as any).user = userWithoutPassword;
     
     next();
-  } catch (error) {
+  } catch (error: any) {
+    console.warn(`[AUTH 401] ${req.method} ${req.originalUrl || req.url} - JWT verification failed: ${error.message}`);
     return res.status(401).json({ authenticated: false, error: 'Unauthorized', message: 'Invalid or expired token.' });
   }
 };
