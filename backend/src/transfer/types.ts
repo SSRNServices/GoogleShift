@@ -106,6 +106,8 @@ export interface MigrationRequest {
   manifestId: string;
   sessionId: string;
   options?: TransferOptionsState;
+  destinationFolder?: { id: string; name?: string; mimeType?: string };
+  sourceSelection?: Array<{ id: string; name?: string; mimeType?: string }>;
 }
 
 export interface MigrationJob extends MigrationRequest {

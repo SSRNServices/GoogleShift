@@ -38,6 +38,9 @@ export class MigrationWorker {
         throw new Error(`Migration session not found for ID: ${job.sessionId}`);
       }
 
+      const resolvedDestinationFolder = job.destinationFolder || { id: session.destinationFolderId || 'root', name: 'Destination', mimeType: 'application/vnd.google-apps.folder' };
+      const resolvedSourceSelection = job.sourceSelection || [{ id: session.sourceFolderId || 'root', name: 'Source', mimeType: 'application/vnd.google-apps.folder' }];
+
       const userId = session.ownerId;
       const { tokenStore } = await import('../auth/token.store');
       const { googleClientManager } = await import('../auth/google.client');
@@ -100,11 +103,11 @@ export class MigrationWorker {
 
       // Phase 1: PREPARING
       await logJobEvent(job.jobId, 'Invoking PreparationService');
-      await PreparationService.execute(job.jobId, targetManifestId, job.sessionId, options, destinationFolder, stateManager);
+      await PreparationService.execute(job.jobId, targetManifestId, job.sessionId, options, resolvedDestinationFolder, stateManager);
 
       // Phase 2: COPYING
       await logJobEvent(job.jobId, 'Invoking CopyService');
-      await CopyService.execute(job.jobId, targetManifestId, job.sessionId, options, destinationFolder, stateManager);
+      await CopyService.execute(job.jobId, targetManifestId, job.sessionId, options, resolvedDestinationFolder, stateManager);
 
       // Phase 3: VERIFYING
       await logJobEvent(job.jobId, 'Invoking VerificationService');

@@ -20,6 +20,10 @@ export class PreparationService {
       data: { status: 'PENDING', createdDestId: null }
     });
 
+    if (!destinationFolder || !destinationFolder.id) {
+      throw new Error(`Destination folder configuration missing for migration job ${jobId}`);
+    }
+
     const destDrive = await NetworkClient.getDriveClient(sessionId, 'destination');
     const rateLimiter = new AdaptiveRateLimiter(DEFAULT_MIGRATION_CONFIG.workerCount, 2, 20);
     const actualDestId = destinationFolder.id === 'root' ? 'root' : destinationFolder.id;

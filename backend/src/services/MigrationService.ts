@@ -44,6 +44,8 @@ export class MigrationService {
 
     const migrationRequest: MigrationRequest = {
       options: payload.options,
+      destinationFolder: { id: session.destinationFolderId || 'root', name: 'Destination', mimeType: 'application/vnd.google-apps.folder' },
+      sourceSelection: [{ id: session.sourceFolderId || 'root', name: 'Source', mimeType: 'application/vnd.google-apps.folder' }],
       manifestId,
       sessionId
     };
