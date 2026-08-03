@@ -62,7 +62,10 @@ router.get('/:sessionId', requireUserAuth, async (req, res) => {
       where: { id: sessionId },
       include: {
         discoveryJob: true,
-        migrationJob: true
+        migrationJobs: {
+          orderBy: { startedAt: 'desc' },
+          take: 1
+        }
       }
     });
 
@@ -79,7 +82,16 @@ router.get('/:sessionId', requireUserAuth, async (req, res) => {
       });
     }
 
-    res.status(200).json({ success: true, session: serializeBigInt({ ...session, scanSummary }) });
+    const latestMigrationJob = session.migrationJobs?.[0] || null;
+
+    res.status(200).json({
+      success: true,
+      session: serializeBigInt({
+        ...session,
+        migrationJob: latestMigrationJob,
+        scanSummary
+      })
+    });
   } catch (error: any) {
     console.error('Error fetching session:', error);
     res.status(500).json({ success: false, error: 'Internal Server Error', code: 'INTERNAL_ERROR', details: error.message });
