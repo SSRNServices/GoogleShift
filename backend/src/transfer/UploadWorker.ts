@@ -18,6 +18,7 @@ export class UploadWorker {
   private rateLimiter: AdaptiveRateLimiter;
   private stateManager: MigrationStateManager;
   private jobId: string;
+  private manifestId: string;
   private options: any;
   private folderCache: Map<string, string>;
   private config: MigrationConfig;
@@ -35,6 +36,7 @@ export class UploadWorker {
   constructor(
     id: number,
     jobId: string,
+    manifestId: string,
     sourceDrive: drive_v3.Drive,
     destDrive: drive_v3.Drive,
     rateLimiter: AdaptiveRateLimiter,
@@ -45,6 +47,7 @@ export class UploadWorker {
   ) {
     this.id = id;
     this.jobId = jobId;
+    this.manifestId = manifestId;
     this.sourceDrive = sourceDrive;
     this.destDrive = destDrive;
     this.rateLimiter = rateLimiter;

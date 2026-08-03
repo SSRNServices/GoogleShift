@@ -9,6 +9,7 @@ import os from 'os';
 
 export class FileScheduler {
   private jobId: string;
+  private manifestId: string;
   private sourceDrive: drive_v3.Drive;
   private destDrive: drive_v3.Drive;
   private rateLimiter: AdaptiveRateLimiter;
@@ -31,8 +32,9 @@ export class FileScheduler {
   private isDone: boolean = false;
   private nextWorkerId: number = 1;
 
-  constructor(jobId: string, sourceDrive: drive_v3.Drive, destDrive: drive_v3.Drive, options: any, rateLimiter: AdaptiveRateLimiter, stateManager: MigrationStateManager, folderCache: Map<string, string>) {
+  constructor(jobId: string, manifestId: string, sourceDrive: drive_v3.Drive, destDrive: drive_v3.Drive, options: any, rateLimiter: AdaptiveRateLimiter, stateManager: MigrationStateManager, folderCache: Map<string, string>) {
     this.jobId = jobId;
+    this.manifestId = manifestId;
     this.sourceDrive = sourceDrive;
     this.destDrive = destDrive;
     this.options = options;
@@ -48,7 +50,7 @@ export class FileScheduler {
 
   private retryJob = async (item: ManifestItem) => {
     if (item.status === 'SUCCESS' || item.status === 'FAILED') return;
-    const count = await ManifestStorage.incrementRetryCount(this.jobId, item.id);
+    const count = await ManifestStorage.incrementRetryCount(this.manifestId, item.id);
     if (count >= 5) {
       console.log(`[FileScheduler] Max retries reached for ${item.name}. Marking FAILED.`);
       await this.stateManager.updateState(item.id, 'FAILED');
@@ -93,33 +95,33 @@ export class FileScheduler {
   }
 
   private spawnWorker(affinity: string) {
-    const worker = new UploadWorker(this.nextWorkerId++, this.jobId, this.sourceDrive, this.destDrive, this.rateLimiter, this.stateManager, this.options, this.folderCache, this.config);
+    const worker = new UploadWorker(this.nextWorkerId++, this.jobId, this.manifestId, this.sourceDrive, this.destDrive, this.rateLimiter, this.stateManager, this.options, this.folderCache, this.config);
     worker.affinity = affinity;
     this.workers.push(worker);
     console.log(`[FileScheduler] Spawned worker ${worker.id} with affinity ${affinity}. Total workers: ${this.workers.length}`);
   }
 
   public async run() {
-    console.log(`[FileScheduler] Starting bucketing scheduler...`);
+    console.log(`[FileScheduler] Starting bucketing scheduler for Job ${this.jobId} and Manifest ${this.manifestId}...`);
 
     const { prisma } = await import('../utils/database');
     const totalFiles = await prisma.migrationManifest.count({
-       where: { jobId: this.jobId, isFolder: false }
+       where: { jobId: this.manifestId, isFolder: false }
     });
     const queuedFiles = await prisma.migrationManifest.count({
-       where: { jobId: this.jobId, isFolder: false, status: 'QUEUED' }
+       where: { jobId: this.manifestId, isFolder: false, status: 'QUEUED' }
     });
     
     console.log(`[FileScheduler Diagnostic] Total Files in Manifest: ${totalFiles} | Queued Files: ${queuedFiles}`);
 
     if (totalFiles > 0) {
        const pendingFolders = await prisma.migrationManifest.count({
-          where: { jobId: this.jobId, isFolder: true, status: { notIn: ['SUCCESS', 'FAILED'] } }
+          where: { jobId: this.manifestId, isFolder: true, status: { notIn: ['SUCCESS', 'FAILED'] } }
        });
        if (queuedFiles === 0 && pendingFolders === 0) {
           console.warn(`[FileScheduler Warning] Queue size is zero. Pre-queuing remaining pending files.`);
           await prisma.migrationManifest.updateMany({
-             where: { jobId: this.jobId, isFolder: false, status: 'PENDING' },
+             where: { jobId: this.manifestId, isFolder: false, status: 'PENDING' },
              data: { status: 'QUEUED' }
           });
        }
@@ -140,7 +142,7 @@ export class FileScheduler {
       // Replenish DB Items
       const totalPending = Object.values(this.buckets).reduce((acc, b) => acc + b.length, 0);
       if (totalPending < this.rateLimiter.getConcurrency() * 2) {
-         const items = await ManifestStorage.getPendingFiles(this.jobId, 500);
+         const items = await ManifestStorage.getPendingFiles(this.manifestId, 500);
          for (const item of items) {
            this.categorizeAndPush(item);
          }
@@ -179,7 +181,7 @@ export class FileScheduler {
          const { prisma } = await import('../utils/database');
          const unresolvedCount = await prisma.migrationManifest.count({
             where: {
-               jobId: this.jobId,
+               jobId: this.manifestId,
                status: { in: ['PENDING', 'QUEUED', 'UPLOADING', 'VERIFYING'] }
             }
          });
@@ -196,7 +198,7 @@ export class FileScheduler {
             if (deadlockTimer === 50 || deadlockTimer % 5000 === 0) {
                const unresolvedItems = await prisma.migrationManifest.findMany({
                   where: {
-                     jobId: this.jobId,
+                     jobId: this.manifestId,
                      status: { in: ['PENDING', 'QUEUED', 'UPLOADING', 'VERIFYING'] }
                   }
                });
@@ -209,12 +211,12 @@ export class FileScheduler {
             if (deadlockTimer > 15000) {
                const unresolvedItems = await prisma.migrationManifest.findMany({
                   where: {
-                     jobId: this.jobId,
+                     jobId: this.manifestId,
                      status: { in: ['PENDING', 'QUEUED', 'UPLOADING', 'VERIFYING'] }
                   }
                });
                console.error(`\n=================== FATAL DEADLOCK AUDIT DUMP ===================`);
-               console.error(`Job ID: ${this.jobId} | Unresolved Count: ${unresolvedCount}`);
+               console.error(`Job ID: ${this.jobId} | Manifest ID: ${this.manifestId} | Unresolved Count: ${unresolvedCount}`);
                for (const item of unresolvedItems) {
                   console.error(`  - ID: ${item.id} | Name: ${item.name} | isFolder: ${item.isFolder} | status: ${item.status} | sourceParentId: ${item.sourceParentId}`);
                }

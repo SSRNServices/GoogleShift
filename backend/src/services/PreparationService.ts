@@ -35,7 +35,7 @@ export class PreparationService {
 
     await updateJobProgress(jobId, { currentAction: 'Creating destination folders...', event: 'PREPARATION_PROGRESS' });
     
-    const folderScheduler = new FolderScheduler(manifestId, actualDestId, destDrive, options, rateLimiter, stateManager);
+    const folderScheduler = new FolderScheduler(jobId, manifestId, actualDestId, destDrive, options, rateLimiter, stateManager);
     await folderScheduler.run();
 
     // Ensure all pending files in the manifest are queued for transfer

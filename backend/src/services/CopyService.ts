@@ -34,7 +34,16 @@ export class CopyService {
     }
     console.log(`[CopyService] Folder cache built with ${folderCache.size} mappings.`);
 
+    const existingJob = await prisma.migrationJob.findUnique({
+      where: { id: jobId }
+    });
+    console.log(`[CopyService Pre-flight Check] Job Exists: ${!!existingJob} | Job ID: ${jobId} | Manifest ID: ${manifestId} | Session ID: ${sessionId}`);
+    if (!existingJob) {
+      throw new Error(`MigrationJob ${jobId} does not exist in database before starting FileScheduler.`);
+    }
+
     const fileScheduler = new FileScheduler(
+      jobId,
       manifestId, 
       sourceDrive, 
       destDrive, 

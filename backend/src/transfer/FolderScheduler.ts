@@ -10,13 +10,15 @@ import { MigrationStateManager } from '../services/MigrationStateManager';
 export class FolderScheduler {
   private destDrive: drive_v3.Drive;
   private jobId: string;
+  private manifestId: string;
   private options: any;
   private rateLimiter: AdaptiveRateLimiter;
   private dag: FolderDAG;
   private stateManager: MigrationStateManager;
   
-  constructor(jobId: string, rootDestId: string, destDrive: drive_v3.Drive, options: any, rateLimiter: AdaptiveRateLimiter, stateManager: MigrationStateManager) {
+  constructor(jobId: string, manifestId: string, rootDestId: string, destDrive: drive_v3.Drive, options: any, rateLimiter: AdaptiveRateLimiter, stateManager: MigrationStateManager) {
     this.jobId = jobId;
+    this.manifestId = manifestId;
     this.destDrive = destDrive;
     this.options = options;
     this.rateLimiter = rateLimiter;
@@ -25,9 +27,9 @@ export class FolderScheduler {
   }
 
   public async run() {
-    console.log(`\n[ENTRY] FolderScheduler.run()`);
+    console.log(`\n[ENTRY] FolderScheduler.run() for Job ${this.jobId} and Manifest ${this.manifestId}`);
     const runStart = Date.now();
-    const folders = await ManifestStorage.getPendingFoldersByDepth(this.jobId);
+    const folders = await ManifestStorage.getPendingFoldersByDepth(this.manifestId);
     if (folders.length === 0) {
        console.log(`[EXIT] FolderScheduler.run() | 0 folders found`);
        return;
