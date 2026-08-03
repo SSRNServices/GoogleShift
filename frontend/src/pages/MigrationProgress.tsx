@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { migrationApi } from '../api/migrationApi';
 import { Play, Pause, XCircle, ArrowLeft, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 import { API_URL } from '../config/api';
@@ -24,7 +24,12 @@ interface MigrationStatus {
 
 export default function MigrationProgress() {
   const navigate = useNavigate();
-  const [jobId, setJobId] = useState<string | null>(null);
+  const params = useParams<{ jobId?: string }>();
+  const [searchParams] = useSearchParams();
+  
+  const queryJobId = searchParams.get('jobId') || params.jobId || null;
+  const [jobId, setJobId] = useState<string | null>(queryJobId);
+  
   const [status, setStatus] = useState<MigrationStatus>({
     status: 'idle',
     percentage: 0,
@@ -46,33 +51,71 @@ export default function MigrationProgress() {
   const [loading, setLoading] = useState(true);
   const [connectionError, setConnectionError] = useState<string | null>(null);
 
-  const fetchCurrentJob = async () => {
-    try {
-      setLoading(true);
-      setConnectionError(null);
-      const data = await migrationApi.getCurrent();
-      if (data && data.jobId) {
-        setJobId(data.jobId);
-      } else {
-        // No active job
+  useEffect(() => {
+    const targetJobId = queryJobId;
+    if (targetJobId) {
+      setJobId(targetJobId);
+    } else {
+      // Fallback to getCurrent if no jobId in URL
+      migrationApi.getCurrent().then(data => {
+        if (data && data.jobId) {
+          setJobId(data.jobId);
+        } else {
+          setLoading(false);
+        }
+      }).catch(err => {
+        console.error(err);
+        setConnectionError('Failed to fetch active migration job.');
+        setLoading(false);
+      });
+    }
+  }, [queryJobId]);
+
+  // Initial state hydration from backend single source of truth
+  useEffect(() => {
+    if (!jobId) return;
+
+    const hydrateFromBackend = async () => {
+      try {
+        setLoading(true);
+        setConnectionError(null);
+        console.log('[MigrationProgress] Hydrating state from backend for Job ID:', jobId);
+        const details = await migrationApi.getJobDetails(jobId);
+        
+        if (details && details.progress) {
+          setStatus({
+            status: details.status || 'idle',
+            percentage: details.progress.percentage || 0,
+            totalFolders: details.progress.totalFolders || 0,
+            totalFiles: details.progress.totalFiles || 0,
+            completedFiles: details.progress.completedFiles || 0,
+            failedFiles: details.progress.failedFiles || 0,
+            totalBytes: Number(details.progress.totalBytes || 0),
+            transferredBytes: Number(details.progress.transferredBytes || 0),
+            currentFile: details.progress.currentFile || '',
+            currentFolder: details.progress.currentFolder || '',
+            currentAction: details.progress.currentAction || '',
+            speedBytesPerSecond: details.progress.speedBytesPerSecond || 0,
+            remainingSeconds: details.progress.remainingSeconds || 0,
+            retryCount: 0,
+            logs: details.logs || []
+          });
+        }
+        setLoading(false);
+      } catch (err: any) {
+        console.warn('[MigrationProgress] Direct details fetch warning:', err.message);
+        // Fall back to SSE connection even if initial detail fetch has warning
         setLoading(false);
       }
-    } catch (err: unknown) {
-      console.error(err);
-      setConnectionError(err instanceof Error ? err.message : 'Failed to fetch current migration job');
-      setLoading(false);
-    }
-  };
+    };
 
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    fetchCurrentJob();
-  }, []);
+    hydrateFromBackend();
+  }, [jobId]);
 
   useEffect(() => {
     if (!jobId) return;
     
-    // 2. Connect SSE
+    // Connect SSE for live updates
     const eventSource = new EventSource(`${API_URL}/api/migrations/${jobId}/status`, {
       withCredentials: true
     });
@@ -100,16 +143,20 @@ export default function MigrationProgress() {
         }
         
         setStatus((prev: MigrationStatus) => {
-          const newLogs = [...prev.logs];
-          if (data.currentAction && data.currentAction !== prev.currentAction) {
-             newLogs.push(`[${new Date().toLocaleTimeString()}] ${data.currentAction}`);
+          const combinedLogs = [...prev.logs];
+          if (data.logs && Array.isArray(data.logs)) {
+             for (const l of data.logs) {
+                if (!combinedLogs.includes(l)) combinedLogs.push(l);
+             }
           }
-          if (data.logs) newLogs.push(...data.logs);
+          if (data.currentAction && !combinedLogs.includes(data.currentAction)) {
+             combinedLogs.push(`[${new Date().toLocaleTimeString()}] ${data.currentAction}`);
+          }
 
           return {
             ...prev,
             ...data,
-            logs: newLogs.slice(-50)
+            logs: combinedLogs.slice(-100)
           };
         });
         
@@ -127,7 +174,7 @@ export default function MigrationProgress() {
     eventSource.onerror = (err) => {
       console.error('EventSource failed', err);
       clearTimeout(timeoutId);
-      setConnectionError('Lost connection to migration service. Please retry.');
+      // Fallback polling loop if SSE drops
       setLoading(false);
       eventSource.close();
     };

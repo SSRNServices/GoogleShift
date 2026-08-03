@@ -62,6 +62,8 @@ export default function App() {
             <Route path="/dashboard" element={<UserDashboard />} />
             <Route path="/migration" element={<Migration />} />
             <Route path="/migration/progress" element={<MigrationProgress />} />
+            <Route path="/migration/progress/:jobId" element={<MigrationProgress />} />
+            <Route path="/migration/:jobId" element={<MigrationProgress />} />
             <Route path="/history" element={<History />} />
             <Route path="/settings" element={<Settings />} />
           </Route>

@@ -30,6 +30,14 @@ export const migrationApi = {
     return apiClient(`/api/migrations/validate/${sessionId}`);
   },
 
+  async getJobDetails(jobId: string) {
+    return apiClient(`/api/migrations/${jobId}`);
+  },
+
+  async getJobLive(jobId: string) {
+    return apiClient(`/api/migrations/${jobId}/live`);
+  },
+
   async discard(jobId: string) {
     return apiClient(`/api/migrations/${jobId}/cancel`, {
       method: 'POST'

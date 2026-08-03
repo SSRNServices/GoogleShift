@@ -53,6 +53,9 @@ router.get('/history', requireUserAuth, async (req, res) => {
     const userId = (req as any).user.id;
     const history = await prisma.migrationJob.findMany({
       where: { ownerId: userId },
+      include: {
+        session: true
+      },
       orderBy: { startedAt: 'desc' },
       take: 50
     });
@@ -65,14 +68,134 @@ router.get('/history', requireUserAuth, async (req, res) => {
        completedFiles: job.completedFiles,
        totalFiles: job.totalFiles,
        failedFiles: job.failedFiles,
+       totalFolders: job.totalFolders,
+       completedFolders: (job as any).completedFolders || 0,
        totalBytes: job.totalBytes,
-       transferredBytes: job.transferredBytes
+       transferredBytes: job.transferredBytes,
+       speed: job.speed,
+       eta: job.eta,
+       currentAction: job.currentAction,
+       currentFile: (job as any).currentFile,
+       currentFolder: (job as any).currentFolder,
+       sourceSelection: job.session ? [{ name: job.session.sourceFolderId }] : [],
+       destinationFolder: job.session ? { name: job.session.destinationFolderId } : undefined
     }));
 
     res.json(serializeBigInt({ migrations: mappedHistory }));
   } catch (error: any) {
     console.error('Error fetching history:', error);
     res.status(500).json({ error: 'Failed to fetch migration history' });
+  }
+});
+
+// Fetch full migration details by jobId
+router.get('/:jobId', requireUserAuth, async (req, res) => {
+  try {
+    const userId = (req as any).user.id;
+    const jobId = req.params.jobId as string;
+
+    const job = await prisma.migrationJob.findUnique({
+      where: { id: jobId },
+      include: {
+        session: true,
+        logs: {
+          orderBy: { createdAt: 'asc' },
+          take: 100
+        }
+      }
+    });
+
+    if (!job || job.ownerId !== userId) {
+      return res.status(404).json({ error: 'Migration job not found' });
+    }
+
+    const logs = job.logs.map(l => l.message);
+
+    res.json(serializeBigInt({
+      jobId: job.id,
+      status: job.state.toLowerCase(),
+      sessionId: job.sessionId,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt,
+      sourceEmail: job.session?.sourceEmail,
+      destinationEmail: job.session?.destinationEmail,
+      progress: {
+        status: job.state.toLowerCase(),
+        percentage: job.totalBytes > BigInt(0) ? Math.min(100, Math.floor((Number(job.transferredBytes) / Number(job.totalBytes)) * 100)) : (job.totalFiles > 0 ? Math.min(100, Math.floor(((job.completedFiles + job.failedFiles) / job.totalFiles) * 100)) : 0),
+        totalFiles: job.totalFiles,
+        completedFiles: job.completedFiles,
+        failedFiles: job.failedFiles,
+        totalFolders: job.totalFolders,
+        completedFolders: (job as any).completedFolders || 0,
+        totalBytes: job.totalBytes,
+        transferredBytes: job.transferredBytes,
+        speedBytesPerSecond: job.speed,
+        remainingSeconds: job.eta,
+        currentAction: job.currentAction,
+        currentFile: (job as any).currentFile || '',
+        currentFolder: (job as any).currentFolder || ''
+      },
+      logs,
+      errors: logs.filter(l => l.includes('FAILED') || l.includes('Error'))
+    }));
+  } catch (error: any) {
+    console.error('Error fetching migration details:', error);
+    res.status(500).json({ error: error.message || 'Failed to fetch migration details' });
+  }
+});
+
+// Fetch current live runtime state by jobId (polling fallback)
+router.get('/:jobId/live', requireUserAuth, async (req, res) => {
+  try {
+    const userId = (req as any).user.id;
+    const jobId = req.params.jobId as string;
+
+    const job = await prisma.migrationJob.findUnique({
+      where: { id: jobId },
+      include: {
+        logs: {
+          orderBy: { createdAt: 'desc' },
+          take: 20
+        }
+      }
+    });
+
+    if (!job || job.ownerId !== userId) {
+      return res.status(404).json({ error: 'Migration job not found' });
+    }
+
+    const transferred = Number(job.transferredBytes);
+    const totalBytes = Number(job.totalBytes);
+    const completed = job.completedFiles;
+    const totalFiles = job.totalFiles;
+    const failed = job.failedFiles;
+
+    let percentage = 0;
+    if (totalBytes > 0) percentage = Math.floor((transferred / totalBytes) * 100);
+    else if (totalFiles > 0) percentage = Math.floor(((completed + failed) / totalFiles) * 100);
+
+    const elapsed = job.startedAt ? Date.now() - job.startedAt.getTime() : 0;
+
+    res.json(serializeBigInt({
+      status: job.state.toLowerCase(),
+      percentage: Math.min(percentage, 100),
+      totalFolders: job.totalFolders,
+      completedFolders: (job as any).completedFolders || 0,
+      totalFiles,
+      completedFiles: completed,
+      failedFiles: failed,
+      totalBytes,
+      transferredBytes: transferred,
+      speedBytesPerSecond: job.speed,
+      remainingSeconds: job.eta,
+      elapsed,
+      currentAction: job.currentAction,
+      currentFile: (job as any).currentFile || '',
+      currentFolder: (job as any).currentFolder || '',
+      logs: job.logs.map(l => l.message).reverse()
+    }));
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to fetch live migration state' });
   }
 });
 
