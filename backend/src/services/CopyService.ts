@@ -7,17 +7,35 @@ import { updateJobStatus, logJobEvent, updateJobProgress } from '../utils/databa
 import { prisma } from '../utils/database';
 
 export class CopyService {
-  public static async execute(jobId: string, manifestId: string, sessionId: string, options: any, destinationFolder: any, stateManager: MigrationStateManager) {
-    console.log(`\n[STATE] COPYING\nMigration: ${jobId} | Manifest: ${manifestId}\nReason: File transfer setup`);
+  public static async execute(
+    jobId: string,
+    manifestId: string,
+    sessionId: string,
+    options: any,
+    destinationFolder: any,
+    stateManager: MigrationStateManager
+  ) {
+    console.log(
+      `\n[STATE] COPY_START | JobId: ${jobId} | ManifestId: ${manifestId} | ` +
+      `Timestamp: ${new Date().toISOString()}`
+    );
     await logJobEvent(jobId, `[STATE] COPYING`);
     await updateJobStatus(jobId, 'COPYING');
-    await updateJobProgress(jobId, { status: 'copying', currentAction: 'Starting file transfers...', event: 'COPY_STARTED' });
+    await updateJobProgress(jobId, {
+      status: 'copying',
+      currentAction: 'Starting file transfers...',
+      event: 'COPY_STARTED'
+    });
+
+    // ── Recover any items left stuck in UPLOADING/VERIFYING from a previous run ──
+    console.log(`[CopyService] RECOVERY_CHECK | JobId: ${jobId}`);
+    await stateManager.recoverStalledItems();
 
     const sourceDrive = await NetworkClient.getDriveClient(sessionId, 'source');
     const destDrive = await NetworkClient.getDriveClient(sessionId, 'destination');
     const rateLimiter = new AdaptiveRateLimiter(DEFAULT_MIGRATION_CONFIG.workerCount, 2, 20);
 
-    // Generate mapping cache
+    // ── Build folder cache ────────────────────────────────────────────────────────
     const actualDestId = destinationFolder.id === 'root' ? 'root' : destinationFolder.id;
     const folderCache = new Map<string, string>();
     folderCache.set('root_dest', actualDestId);
@@ -29,32 +47,37 @@ export class CopyService {
     });
     for (const row of manifestRows) {
       if (row.createdDestId) {
-         folderCache.set(row.id, row.createdDestId);
+        folderCache.set(row.id, row.createdDestId);
       }
     }
-    console.log(`[CopyService] Folder cache built with ${folderCache.size} mappings.`);
+    console.log(
+      `[CopyService] FOLDER_CACHE | Size: ${folderCache.size} | JobId: ${jobId}`
+    );
 
-    const existingJob = await prisma.migrationJob.findUnique({
-      where: { id: jobId }
-    });
-    console.log(`[CopyService Pre-flight Check] Job Exists: ${!!existingJob} | Job ID: ${jobId} | Manifest ID: ${manifestId} | Session ID: ${sessionId}`);
+    const existingJob = await prisma.migrationJob.findUnique({ where: { id: jobId } });
+    console.log(
+      `[CopyService] PREFLIGHT | JobExists: ${!!existingJob} | JobId: ${jobId} | ` +
+      `ManifestId: ${manifestId}`
+    );
     if (!existingJob) {
-      throw new Error(`MigrationJob ${jobId} does not exist in database before starting FileScheduler.`);
+      throw new Error(
+        `MigrationJob ${jobId} does not exist in database before starting FileScheduler.`
+      );
     }
 
     const fileScheduler = new FileScheduler(
       jobId,
-      manifestId, 
-      sourceDrive, 
-      destDrive, 
-      options, 
-      rateLimiter, 
+      manifestId,
+      sourceDrive,
+      destDrive,
+      options,
+      rateLimiter,
       stateManager,
       folderCache
     );
 
-    console.log(`[CopyService] Executing FileScheduler...`);
+    console.log(`[CopyService] SCHEDULER_START | JobId: ${jobId}`);
     await fileScheduler.run();
-    console.log(`[CopyService] File copy phase complete.`);
+    console.log(`[CopyService] COPY_COMPLETE | JobId: ${jobId} | Timestamp: ${new Date().toISOString()}`);
   }
 }

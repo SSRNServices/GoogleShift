@@ -15,6 +15,7 @@ import authAdminRoutes from './routes/auth.admin.routes';
 import discoveryRoutes from './routes/discovery.routes';
 import sessionRoutes from './routes/session.routes';
 import helmet from 'helmet';
+import { workerWatchdog } from './transfer/WorkerWatchdog';
 
 dotenv.config();
 
@@ -199,5 +200,8 @@ app.listen(PORT, "0.0.0.0", async () => {
   
   printRoutes();
   await runDiagnostics();
-  
+
+  // Start global job stall watchdog
+  workerWatchdog.start();
+  console.log('[WorkerWatchdog] Started — monitoring COPYING jobs every 60s for stalls.\n');
 });
