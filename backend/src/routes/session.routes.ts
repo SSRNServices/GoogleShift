@@ -45,6 +45,8 @@ router.post('/', requireUserAuth, async (req, res) => {
       }
     });
 
+    console.log(`[SESSION CREATED] Session ID: ${session.id} | User: ${userId} | sourceFolderId: ${sourceFolderId} | destinationFolderId: ${destinationFolderId}`);
+
     res.status(200).json({ success: true, session });
   } catch (error: any) {
     console.error('Error creating session:', error);

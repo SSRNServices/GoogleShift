@@ -28,8 +28,9 @@ export const useMigrationSessionStore = create<MigrationSessionState>()(
       error: null,
 
       createSession: async (payload) => {
-        set({ isLoading: true, error: null });
+        set({ sessionId: null, sessionData: null, isLoading: true, error: null });
         try {
+          console.log('[Frontend] Creating new MigrationSession with payload:', payload);
           const response = await apiClient('/api/migration/session', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -38,6 +39,7 @@ export const useMigrationSessionStore = create<MigrationSessionState>()(
           
           if (!response.success) throw new Error(response.error);
           
+          console.log('[Frontend] MigrationSession created successfully. Session ID:', response.session.id);
           set({ 
             sessionId: response.session.id, 
             sessionData: response.session,

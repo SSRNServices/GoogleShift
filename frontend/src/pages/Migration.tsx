@@ -99,7 +99,7 @@ export default function Migration() {
   const [sourceProfile, setSourceProfile] = useState<{state?: string; profile?: {email?: string}} | null>(null);
   const [destProfile, setDestProfile] = useState<{state?: string; profile?: {email?: string}} | null>(null);
   
-  const { sessionId, sessionData, createSession, fetchSession } = useMigrationSessionStore();
+  const { sessionId, sessionData, createSession, fetchSession, clearSession } = useMigrationSessionStore();
 
   const [sourceSelected, setSourceSelected] = useState<DriveItem | null>(null);
   const [destSelected, setDestSelected] = useState<DriveItem | null>(null);
@@ -123,6 +123,9 @@ export default function Migration() {
   const [manifestId, setManifestId] = useState<string | null>(null);
 
   useEffect(() => {
+    // Always clear old session data on fresh wizard mount
+    clearSession();
+
     const fetchProfiles = async () => {
       try {
         const [srcRes, destRes] = await Promise.all([
@@ -145,20 +148,19 @@ export default function Migration() {
   }, [sessionId]);
 
   const handleNext = async () => {
-    // If moving to summary (step 5 to 6), ensure session is created
+    // When moving to summary (step 5 to 6), ALWAYS create a brand-new session for current folder selections
     if (step === 5) {
-      if (!sessionId) {
-        try {
-          await createSession({
-            sourceEmail: sourceProfile?.profile?.email || '',
-            destinationEmail: destProfile?.profile?.email || '',
-            sourceFolderId: sourceSelected?.id || '',
-            destinationFolderId: destSelected?.id || ''
-          });
-        } catch (e) {
-          alert('Failed to create migration session');
-          return;
-        }
+      try {
+        console.log('[Frontend Wizard] Creating new MigrationSession for source folder:', sourceSelected?.name, sourceSelected?.id);
+        await createSession({
+          sourceEmail: sourceProfile?.profile?.email || '',
+          destinationEmail: destProfile?.profile?.email || '',
+          sourceFolderId: sourceSelected?.id || '',
+          destinationFolderId: destSelected?.id || ''
+        });
+      } catch (e) {
+        toast.error('Failed to create migration session');
+        return;
       }
     }
     setStep((s) => Math.min(s + 1, 6) as Step);

@@ -35,13 +35,15 @@ router.post('/start', requireUserAuth, async (req, res) => {
 
     if (session.discoveryStatus === 'COMPLETED') {
        const active = await prisma.discoveryJob.findUnique({ where: { sessionId } });
-       console.log(`[DISCOVERY] Session ${sessionId} already completed. Job ID: ${active?.id}`);
-       return res.status(200).json(serializeBigInt({
-         id: active?.id,
-         jobId: active?.id,
-         status: 'completed',
-         message: 'Discovery already completed for this session.'
-       }));
+       if (active && active.itemsParam === itemsParam) {
+         console.log(`[DISCOVERY] Session ${sessionId} already completed for itemsParam ${itemsParam}. Job ID: ${active.id}`);
+         return res.status(200).json(serializeBigInt({
+           id: active.id,
+           jobId: active.id,
+           status: 'completed',
+           message: 'Discovery already completed for this session.'
+         }));
+       }
     }
 
     const active = await prisma.discoveryJob.findFirst({
