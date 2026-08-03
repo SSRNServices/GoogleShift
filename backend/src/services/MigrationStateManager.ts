@@ -4,6 +4,7 @@ import { prisma, updateJobStatus, updateJobProgress, logJobEvent } from "../util
 
 export class MigrationStateManager {
   private jobId: string;
+  private manifestId: string;
   private isFinalized: boolean = false;
   private invariantViolation: boolean = false;
   
@@ -12,8 +13,9 @@ export class MigrationStateManager {
   private isProcessingQueue: boolean = false;
   private intervalId: NodeJS.Timeout;
 
-  constructor(jobId: string) {
+  constructor(jobId: string, manifestId: string) {
     this.jobId = jobId;
+    this.manifestId = manifestId;
     this.intervalId = setInterval(() => {
       if (!this.isFinalized && !this.invariantViolation) {
         this.enqueueMutation(async () => {
@@ -71,7 +73,7 @@ export class MigrationStateManager {
 
   public commitSuccess(item: ManifestItem): Promise<void> {
     return this.enqueueMutationAndWait(async () => {
-      await ManifestStorage.updateItemStatus(this.jobId, item.id, 'SUCCESS');
+      await ManifestStorage.updateItemStatus(this.manifestId, item.id, 'SUCCESS');
     });
   }
 
@@ -80,7 +82,7 @@ export class MigrationStateManager {
       try {
         await prisma.$transaction([
           prisma.migrationManifest.update({
-            where: { jobId_id: { jobId: this.jobId, id: sourceId } },
+            where: { jobId_id: { jobId: this.manifestId, id: sourceId } },
             data: { createdDestId: destId, status: 'SUCCESS' }
           })
         ]);
@@ -93,14 +95,14 @@ export class MigrationStateManager {
 
   public commitFolderError(sourceId: string): Promise<void> {
     return this.enqueueMutationAndWait(async () => {
-      await ManifestStorage.updateItemStatus(this.jobId, sourceId, 'FAILED');
+      await ManifestStorage.updateItemStatus(this.manifestId, sourceId, 'FAILED');
     });
   }
 
   public queueChildren(sourceParentId: string): Promise<void> {
     return this.enqueueMutationAndWait(async () => {
       const res = await prisma.migrationManifest.updateMany({
-        where: { jobId: this.jobId, sourceParentId, status: 'PENDING' },
+        where: { jobId: this.manifestId, sourceParentId, status: 'PENDING' },
         data: { status: 'QUEUED' }
       });
       if (res && res.count > 0) {
@@ -111,7 +113,7 @@ export class MigrationStateManager {
 
   public updateState(itemId: string, status: ManifestItem['status']): Promise<void> {
     return this.enqueueMutationAndWait(async () => {
-      await ManifestStorage.updateItemStatus(this.jobId, itemId, status);
+      await ManifestStorage.updateItemStatus(this.manifestId, itemId, status);
     });
   }
 
@@ -130,7 +132,7 @@ export class MigrationStateManager {
     try {
       const stats = await prisma.migrationManifest.groupBy({
         by: ['status', 'isFolder'],
-        where: { jobId: this.jobId },
+        where: { jobId: this.manifestId },
         _count: { id: true },
         _sum: { size: true }
       });
@@ -184,11 +186,11 @@ export class MigrationStateManager {
       }
       
       const activeFile = await prisma.migrationManifest.findFirst({
-        where: { jobId: this.jobId, isFolder: false, status: { in: ['UPLOADING', 'DOWNLOADING', 'VERIFYING'] } },
+        where: { jobId: this.manifestId, isFolder: false, status: { in: ['UPLOADING', 'DOWNLOADING', 'VERIFYING'] } },
         select: { name: true }
       });
       const activeFolder = await prisma.migrationManifest.findFirst({
-        where: { jobId: this.jobId, isFolder: true, status: { in: ['QUEUED', 'UPLOADING', 'VERIFYING'] } },
+        where: { jobId: this.manifestId, isFolder: true, status: { in: ['QUEUED', 'UPLOADING', 'VERIFYING'] } },
         select: { name: true }
       });
 
@@ -218,7 +220,7 @@ export class MigrationStateManager {
     try {
       const stats = await prisma.migrationManifest.groupBy({
         by: ['status'],
-        where: { jobId: this.jobId },
+        where: { jobId: this.manifestId },
         _count: { id: true }
       });
 
@@ -270,7 +272,7 @@ export class MigrationStateManager {
         try {
           const stats = await prisma.migrationManifest.groupBy({
             by: ['status'],
-            where: { jobId: this.jobId },
+            where: { jobId: this.manifestId },
             _count: { id: true }
           });
 
@@ -312,7 +314,7 @@ export class MigrationStateManager {
 
   public async getSummaryStats(manifestId?: string) {
     try {
-      const targetId = manifestId || this.jobId;
+      const targetId = manifestId || this.manifestId;
       const stats = await prisma.migrationManifest.groupBy({
         by: ['status', 'isFolder'],
         where: { jobId: targetId },

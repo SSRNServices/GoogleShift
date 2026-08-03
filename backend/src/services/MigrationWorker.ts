@@ -18,11 +18,8 @@ export class MigrationWorker {
     const destinationFolder = job.destinationFolder;
     const options = job.options;
 
-    console.log(`\n[ENTRY] MigrationWorker.executeMigration | Job: ${job.jobId}`);
-    await logJobEvent(job.jobId, `[STATE] STARTING - Initializing worker`);
-    await updateJobStatus(job.jobId, 'QUEUED');
-
-    const stateManager = new MigrationStateManager(job.jobId);
+    const targetManifestId = job.manifestId || job.jobId;
+    const stateManager = new MigrationStateManager(job.jobId, targetManifestId);
 
     try {
       if (!job.sessionId) {
