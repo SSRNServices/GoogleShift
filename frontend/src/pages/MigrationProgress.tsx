@@ -1,12 +1,14 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { migrationApi } from '../api/migrationApi';
-import { Play, Pause, XCircle, ArrowLeft, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import { Play, Pause, XCircle, ArrowLeft, Loader2, CheckCircle, AlertCircle, AlertTriangle, RefreshCw, Zap } from 'lucide-react';
 import { API_URL } from '../config/api';
 
 interface MigrationStatus {
   status: string;
   percentage: number;
+  bytePercentage?: number;
+  filePercentage?: number;
   totalFiles: number;
   totalFolders?: number;
   completedFiles: number;
@@ -17,7 +19,9 @@ interface MigrationStatus {
   currentFolder: string;
   currentAction?: string;
   speedBytesPerSecond: number;
-  remainingSeconds: number;
+  remainingSeconds: number | null;
+  stalled?: boolean;
+  recovering?: boolean;
   retryCount?: number;
   logs: string[];
 }
@@ -26,13 +30,15 @@ export default function MigrationProgress() {
   const navigate = useNavigate();
   const params = useParams<{ jobId?: string }>();
   const [searchParams] = useSearchParams();
-  
+
   const queryJobId = searchParams.get('jobId') || params.jobId || null;
   const [jobId, setJobId] = useState<string | null>(queryJobId);
-  
+
   const [status, setStatus] = useState<MigrationStatus>({
     status: 'idle',
     percentage: 0,
+    bytePercentage: 0,
+    filePercentage: 0,
     totalFolders: 0,
     totalFiles: 0,
     completedFiles: 0,
@@ -43,13 +49,19 @@ export default function MigrationProgress() {
     currentFolder: '',
     currentAction: '',
     speedBytesPerSecond: 0,
-    remainingSeconds: 0,
+    remainingSeconds: null,
+    stalled: false,
+    recovering: false,
     retryCount: 0,
     logs: []
   });
 
   const [loading, setLoading] = useState(true);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+
+  // Speed moving average (last 10 samples)
+  const speedSamplesRef = useRef<number[]>([]);
+  const [averageSpeed, setAverageSpeed] = useState(0);
 
   const fetchCurrentJob = async () => {
     try {
@@ -69,29 +81,27 @@ export default function MigrationProgress() {
   };
 
   useEffect(() => {
-    const targetJobId = queryJobId;
-    if (targetJobId) {
-      setJobId(targetJobId);
+    if (queryJobId) {
+      setJobId(queryJobId);
     } else {
       fetchCurrentJob();
     }
   }, [queryJobId]);
 
-  // Initial state hydration from backend single source of truth
+  // Initial hydration
   useEffect(() => {
     if (!jobId) return;
-
     const hydrateFromBackend = async () => {
       try {
         setLoading(true);
         setConnectionError(null);
-        console.log('[MigrationProgress] Hydrating state from backend for Job ID:', jobId);
         const details = await migrationApi.getJobDetails(jobId);
-        
         if (details && details.progress) {
           setStatus({
             status: details.status || 'idle',
             percentage: details.progress.percentage || 0,
+            bytePercentage: details.progress.bytePercentage || 0,
+            filePercentage: details.progress.filePercentage || 0,
             totalFolders: details.progress.totalFolders || 0,
             totalFiles: details.progress.totalFiles || 0,
             completedFiles: details.progress.completedFiles || 0,
@@ -102,30 +112,30 @@ export default function MigrationProgress() {
             currentFolder: details.progress.currentFolder || '',
             currentAction: details.progress.currentAction || '',
             speedBytesPerSecond: details.progress.speedBytesPerSecond || 0,
-            remainingSeconds: details.progress.remainingSeconds || 0,
+            remainingSeconds: details.progress.remainingSeconds || null,
+            stalled: false,
+            recovering: false,
             retryCount: 0,
             logs: details.logs || []
           });
         }
         setLoading(false);
       } catch (err: any) {
-        console.warn('[MigrationProgress] Direct details fetch warning:', err.message);
-        // Fall back to SSE connection even if initial detail fetch has warning
+        console.warn('[MigrationProgress] Hydration warning:', err.message);
         setLoading(false);
       }
     };
-
     hydrateFromBackend();
   }, [jobId]);
 
+  // SSE live updates
   useEffect(() => {
     if (!jobId) return;
-    
-    // Connect SSE for live updates
+
     const eventSource = new EventSource(`${API_URL}/api/migrations/${jobId}/status`, {
       withCredentials: true
     });
-    
+
     const timeoutId = setTimeout(() => {
       if (loading) {
         setConnectionError('Connection timed out while waiting for migration service.');
@@ -133,7 +143,7 @@ export default function MigrationProgress() {
         eventSource.close();
       }
     }, 10000);
-    
+
     eventSource.onmessage = (event) => {
       try {
         clearTimeout(timeoutId);
@@ -147,25 +157,36 @@ export default function MigrationProgress() {
           eventSource.close();
           return;
         }
-        
+
+        // Update moving average speed
+        if (data.speedBytesPerSecond > 0) {
+          speedSamplesRef.current.push(data.speedBytesPerSecond);
+          if (speedSamplesRef.current.length > 10) speedSamplesRef.current.shift();
+          const avg = speedSamplesRef.current.reduce((a, b) => a + b, 0) / speedSamplesRef.current.length;
+          setAverageSpeed(avg);
+        } else if (data.stalled) {
+          setAverageSpeed(0);
+        }
+
         setStatus((prev: MigrationStatus) => {
           const combinedLogs = [...prev.logs];
           if (data.logs && Array.isArray(data.logs)) {
-             for (const l of data.logs) {
-                if (!combinedLogs.includes(l)) combinedLogs.push(l);
-             }
+            for (const l of data.logs) {
+              if (!combinedLogs.includes(l)) combinedLogs.push(l);
+            }
           }
           if (data.currentAction && !combinedLogs.includes(data.currentAction)) {
-             combinedLogs.push(`[${new Date().toLocaleTimeString()}] ${data.currentAction}`);
+            combinedLogs.push(`[${new Date().toLocaleTimeString()}] ${data.currentAction}`);
           }
-
           return {
             ...prev,
             ...data,
+            // Ensure remainingSeconds is properly handled (null = calculating)
+            remainingSeconds: data.remainingSeconds ?? null,
             logs: combinedLogs.slice(-100)
           };
         });
-        
+
         setLoading(false);
         setConnectionError(null);
 
@@ -180,7 +201,6 @@ export default function MigrationProgress() {
     eventSource.onerror = (err) => {
       console.error('EventSource failed', err);
       clearTimeout(timeoutId);
-      // Fallback polling loop if SSE drops
       setLoading(false);
       eventSource.close();
     };
@@ -191,30 +211,12 @@ export default function MigrationProgress() {
     };
   }, [jobId]);
 
-  const handlePauseResume = async () => {
-    if (!jobId) return;
-    try {
-      if (status.status === 'paused') {
-        await migrationApi.resume(jobId);
-        setStatus({ ...status, status: 'starting' });
-      } else {
-        // Assume there is a pause endpoint, but it wasn't specified in `migrationApi.ts`.
-        // Let's add it ad-hoc if needed, or just let backend handle it if we create it.
-        // I'll skip pause since I only saw discard/resume in the backend. 
-        // Wait, the backend has /cancel. Does it have /pause? 
-        // I won't implement pause if it's not strictly available. I'll implement cancel.
-      }
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
   const handleCancel = async () => {
     if (!jobId) return;
-    if (!confirm('Are you sure you want to cancel the migration?')) return;
+    if (!confirm('Are you sure you want to cancel the migration? Active transfers will be aborted.')) return;
     try {
       await migrationApi.discard(jobId);
-      setStatus({ ...status, status: 'cancelled' });
+      setStatus(prev => ({ ...prev, status: 'cancelled' }));
     } catch (e) {
       console.error(e);
     }
@@ -228,12 +230,22 @@ export default function MigrationProgress() {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  const formatTime = (seconds: number) => {
-    if (!seconds || seconds <= 0) return '00:00:00';
+  const formatSpeed = (bps: number) => {
+    if (!bps || bps === 0) return '0 B/s';
+    const k = 1024;
+    const sizes = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+    const i = Math.floor(Math.log(bps) / Math.log(k));
+    return parseFloat((bps / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  };
+
+  const formatTime = (seconds: number | null) => {
+    if (seconds === null || seconds === undefined || seconds <= 0) return null;
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
     const s = Math.floor(seconds % 60);
-    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    if (h > 0) return `${h}h ${m}m ${s}s`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
   };
 
   if (loading) {
@@ -251,14 +263,14 @@ export default function MigrationProgress() {
         <AlertCircle className="w-12 h-12 text-red-500 mb-4" />
         <h2 className="text-xl font-bold mb-2">Connection Error</h2>
         <p className="text-gray-500 mb-6">{connectionError}</p>
-        <button 
+        <button
           onClick={() => {
             setLoading(true);
             setConnectionError(null);
             if (jobId) {
-              const currentJobId = jobId;
+              const cur = jobId;
               setJobId(null);
-              setTimeout(() => setJobId(currentJobId), 100);
+              setTimeout(() => setJobId(cur), 100);
             } else {
               fetchCurrentJob();
             }
@@ -277,7 +289,7 @@ export default function MigrationProgress() {
         <AlertCircle className="w-12 h-12 text-yellow-500 mx-auto mb-4" />
         <h2 className="text-2xl font-bold mb-2">No Active Migration</h2>
         <p className="text-gray-500 mb-6">There is no active migration running at the moment.</p>
-        <button 
+        <button
           onClick={() => navigate('/migration')}
           className="bg-indigo-600 text-white px-6 py-2 rounded-md hover:bg-indigo-700"
         >
@@ -289,89 +301,101 @@ export default function MigrationProgress() {
 
   const isFailed = status.status === 'failed';
   const isCompleted = ['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(status.status);
-  
-  // Extract last error log if present
+  const isActive = ['copying', 'preparing'].includes(status.status);
   const lastErrorLog = status.logs?.slice().reverse().find(l => l.includes('FAILED') || l.includes('Error') || l.includes('not authenticated')) || 'Migration encountered an unrecoverable error.';
 
+  const etaDisplay = (() => {
+    if (!isActive) return null;
+    if (status.stalled && !status.recovering) return '⚠ Stalled';
+    if (status.recovering) return '↺ Recovering...';
+    const formatted = formatTime(status.remainingSeconds);
+    return formatted ?? 'Calculating...';
+  })();
+
+  const byteProgressPct = Math.min(100, status.bytePercentage ?? status.percentage ?? 0);
+  const fileProgressPct = Math.min(100, status.filePercentage ?? 0);
+
   return (
-    <div className="max-w-5xl mx-auto py-8">
-      <div className="flex items-center justify-between mb-8">
+    <div className="max-w-5xl mx-auto py-8 space-y-6">
+
+      {/* Header */}
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
             {isFailed ? (
-              <XCircle className="w-6 h-6 text-red-500 mr-2" />
+              <XCircle className="w-6 h-6 text-red-500" />
             ) : isCompleted ? (
-              <CheckCircle className="w-6 h-6 text-green-500 mr-2" />
+              <CheckCircle className="w-6 h-6 text-green-500" />
+            ) : status.stalled ? (
+              <AlertTriangle className="w-6 h-6 text-yellow-500" />
             ) : (
-              <Loader2 className="w-6 h-6 text-indigo-500 animate-spin mr-2" />
+              <Loader2 className="w-6 h-6 text-indigo-500 animate-spin" />
             )}
-            {isFailed ? 'Migration Failed' : isCompleted ? 'Migration Finished' : 'Migration in Progress'}
+            {isFailed ? 'Migration Failed' : isCompleted ? 'Migration Finished' : status.stalled ? 'Migration Stalled' : 'Migration in Progress'}
           </h1>
-          <p className="text-gray-500 capitalize">{status.status}</p>
+          <p className="text-gray-500 capitalize mt-1">{status.status.replace(/_/g, ' ')}</p>
         </div>
 
-        {isFailed ? (
-          <div className="flex space-x-3">
-            <button 
-              onClick={() => { window.location.href = `${API_URL}/auth/destination`; }}
-              className="flex items-center px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm font-medium"
-            >
-              Reconnect Destination
-            </button>
-            <button 
-              onClick={() => { window.location.href = `${API_URL}/auth/source`; }}
-              className="flex items-center px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm font-medium"
-            >
-              Reconnect Source
-            </button>
-            <button 
-              onClick={() => navigate('/migration')} 
-              className="flex items-center px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 text-sm font-medium"
-            >
-              Restart Migration
-            </button>
-          </div>
-        ) : !isCompleted ? (
-          <div className="flex space-x-3">
-            {status.status === 'paused' ? (
-               <button onClick={handlePauseResume} className="flex items-center px-4 py-2 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 rounded hover:bg-indigo-100">
-                 <Play className="w-4 h-4 mr-2" /> Resume
-               </button>
-            ) : (
-               <button onClick={handlePauseResume} disabled className="flex items-center px-4 py-2 bg-yellow-50 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-500 rounded opacity-50 cursor-not-allowed">
-                 <Pause className="w-4 h-4 mr-2" /> Pause (N/A)
-               </button>
-            )}
-            <button onClick={handleCancel} className="flex items-center px-4 py-2 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-400 rounded hover:bg-red-100">
+        <div className="flex gap-3">
+          {isFailed ? (
+            <>
+              <button onClick={() => { window.location.href = `${API_URL}/auth/destination`; }} className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm font-medium">
+                Reconnect Destination
+              </button>
+              <button onClick={() => { window.location.href = `${API_URL}/auth/source`; }} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm font-medium">
+                Reconnect Source
+              </button>
+              <button onClick={() => navigate('/migration')} className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 text-sm font-medium">
+                Restart Migration
+              </button>
+            </>
+          ) : !isCompleted ? (
+            <button onClick={handleCancel} className="flex items-center px-4 py-2 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-400 rounded hover:bg-red-100 text-sm">
               <XCircle className="w-4 h-4 mr-2" /> Cancel
             </button>
-          </div>
-        ) : (
-          <button onClick={() => navigate('/migration')} className="flex items-center px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700">
-            <ArrowLeft className="w-4 h-4 mr-2" /> New Migration
-          </button>
-        )}
+          ) : (
+            <button onClick={() => navigate('/migration')} className="flex items-center px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-sm">
+              <ArrowLeft className="w-4 h-4 mr-2" /> New Migration
+            </button>
+          )}
+        </div>
       </div>
 
+      {/* Stall / Recovery Banner */}
+      {status.stalled && !isCompleted && (
+        <div className={`rounded-xl border p-4 flex items-center gap-3 ${status.recovering
+          ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-700'
+          : 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-700'}`}>
+          {status.recovering
+            ? <RefreshCw className="w-5 h-5 text-blue-600 dark:text-blue-400 animate-spin flex-shrink-0" />
+            : <AlertTriangle className="w-5 h-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />}
+          <div>
+            <p className={`font-medium text-sm ${status.recovering ? 'text-blue-900 dark:text-blue-200' : 'text-yellow-900 dark:text-yellow-200'}`}>
+              {status.recovering
+                ? 'Recovering stalled transfer — watchdog is restarting stuck workers...'
+                : 'Migration appears stalled — waiting for watchdog recovery...'}
+            </p>
+            {status.currentFile && (
+              <p className="text-xs text-gray-500 mt-0.5 font-mono truncate">Stuck on: {status.currentFile}</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Failure banner */}
       {isFailed && (
-        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-5 mb-8">
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-5">
           <div className="flex items-start">
             <AlertCircle className="w-6 h-6 text-red-600 dark:text-red-400 mr-3 mt-0.5 flex-shrink-0" />
             <div>
               <h3 className="text-base font-semibold text-red-900 dark:text-red-200">Failure Reason</h3>
               <p className="text-sm text-red-700 dark:text-red-300 mt-1 font-mono">{lastErrorLog}</p>
-              <div className="mt-4 flex space-x-3">
-                <button 
-                  onClick={() => { window.location.href = `${API_URL}/auth/destination`; }} 
-                  className="text-xs bg-red-600 text-white px-3 py-1.5 rounded hover:bg-red-700 font-medium"
-                >
-                  Reconnect Destination Account
+              <div className="mt-3 flex gap-3">
+                <button onClick={() => { window.location.href = `${API_URL}/auth/destination`; }} className="text-xs bg-red-600 text-white px-3 py-1.5 rounded hover:bg-red-700 font-medium">
+                  Reconnect Destination
                 </button>
-                <button 
-                  onClick={() => { window.location.href = `${API_URL}/auth/source`; }} 
-                  className="text-xs bg-red-600 text-white px-3 py-1.5 rounded hover:bg-red-700 font-medium"
-                >
-                  Reconnect Source Account
+                <button onClick={() => { window.location.href = `${API_URL}/auth/source`; }} className="text-xs bg-red-600 text-white px-3 py-1.5 rounded hover:bg-red-700 font-medium">
+                  Reconnect Source
                 </button>
               </div>
             </div>
@@ -379,62 +403,125 @@ export default function MigrationProgress() {
         </div>
       )}
 
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-8">
-        <div className="mb-6 flex justify-between items-end">
+      {/* Main progress card */}
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+
+        {/* ETA row */}
+        <div className="flex justify-between items-end mb-4">
           <div>
-            <div className="text-sm text-gray-500 mb-1">{status.status === 'scanning' ? 'Scan Progress' : 'Overall Progress'}</div>
-            <div className="text-3xl font-bold text-gray-900 dark:text-white">{status.status === 'scanning' ? 'SCANNING...' : `${status.percentage}%`}</div>
+            <div className="text-xs text-gray-400 mb-1 uppercase tracking-wide">Overall Progress</div>
+            <div className="text-3xl font-bold text-gray-900 dark:text-white">
+              {status.status === 'scanning' ? 'SCANNING...' : `${byteProgressPct}%`}
+            </div>
           </div>
-          <div className="text-right">
-            <div className="text-sm text-gray-500 mb-1">Estimated Time Remaining</div>
-            <div className="text-xl font-mono text-gray-900 dark:text-white">{formatTime(status.remainingSeconds)}</div>
+          {etaDisplay && (
+            <div className="text-right">
+              <div className="text-xs text-gray-400 mb-1 uppercase tracking-wide">ETA</div>
+              <div className={`text-xl font-mono font-semibold ${
+                status.stalled ? 'text-yellow-600 dark:text-yellow-400' :
+                status.recovering ? 'text-blue-600 dark:text-blue-400' :
+                'text-gray-900 dark:text-white'
+              }`}>
+                {etaDisplay}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Byte progress bar */}
+        <div className="mb-2">
+          <div className="flex justify-between text-xs text-gray-400 mb-1">
+            <span>Data Transfer</span>
+            <span>{formatBytes(status.transferredBytes)} / {formatBytes(status.totalBytes)}</span>
+          </div>
+          <div className="w-full bg-gray-100 dark:bg-gray-700 rounded-full h-3 overflow-hidden">
+            <div
+              className={`h-3 rounded-full transition-all duration-500 ${
+                status.stalled
+                  ? 'bg-yellow-400'
+                  : status.recovering
+                  ? 'bg-blue-500 animate-pulse'
+                  : 'bg-indigo-600'
+              }`}
+              style={{ width: `${byteProgressPct}%` }}
+            />
           </div>
         </div>
 
-        <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-4 mb-8 overflow-hidden">
-          <div 
-            className="bg-indigo-600 h-4 rounded-full transition-all duration-500" 
-            style={{ width: `${status.percentage}%` }}
-          ></div>
+        {/* File progress bar */}
+        <div className="mb-6">
+          <div className="flex justify-between text-xs text-gray-400 mb-1">
+            <span>Files Transferred</span>
+            <span>{status.completedFiles} success · {status.failedFiles} failed / {status.totalFiles} total</span>
+          </div>
+          <div className="w-full bg-gray-100 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
+            <div
+              className="h-2 rounded-full bg-emerald-500 transition-all duration-500"
+              style={{ width: `${fileProgressPct}%` }}
+            />
+          </div>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-          <div>
-            <div className="text-xs text-gray-500 mb-1">Data Copied</div>
-            <div className="font-semibold">{formatBytes(status.transferredBytes)} / {formatBytes(status.totalBytes)}</div>
+        {/* Stat grid */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-3">
+            <div className="text-xs text-gray-400 mb-1">Current Speed</div>
+            <div className="font-semibold text-gray-900 dark:text-white flex items-center gap-1">
+              <Zap className="w-3 h-3 text-yellow-400" />
+              {status.speedBytesPerSecond > 0 ? formatSpeed(status.speedBytesPerSecond) : (status.stalled ? '0 B/s' : '—')}
+            </div>
           </div>
-          <div>
-            <div className="text-xs text-gray-500 mb-1">Files Copied</div>
-            <div className="font-semibold">{status.status === 'scanning' ? `Found: ${status.totalFiles}` : `${status.completedFiles} / ${status.totalFiles}`}</div>
+          <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-3">
+            <div className="text-xs text-gray-400 mb-1">Avg Speed</div>
+            <div className="font-semibold text-gray-900 dark:text-white">
+              {averageSpeed > 0 ? formatSpeed(averageSpeed) : '—'}
+            </div>
           </div>
-          <div>
-            <div className="text-xs text-gray-500 mb-1">Folders Discovered</div>
-            <div className="font-semibold">{status.totalFolders || 0}</div>
+          <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-3">
+            <div className="text-xs text-gray-400 mb-1">Failed Files</div>
+            <div className={`font-semibold ${status.failedFiles > 0 ? 'text-red-500' : 'text-gray-900 dark:text-white'}`}>
+              {status.failedFiles}
+            </div>
           </div>
-          <div>
-            <div className="text-xs text-gray-500 mb-1">Failed / Retries</div>
-            <div className="font-semibold text-red-500">{status.failedFiles} / {status.retryCount}</div>
+          <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-3">
+            <div className="text-xs text-gray-400 mb-1">Folders</div>
+            <div className="font-semibold text-gray-900 dark:text-white">{status.totalFolders || 0}</div>
           </div>
         </div>
       </div>
 
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-8">
+      {/* Current operation */}
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
         <h3 className="font-semibold text-gray-900 dark:text-white mb-4">Current Operation</h3>
-        <div className="space-y-4">
+        <div className="space-y-3">
           <div>
-            <div className="text-xs text-gray-500 mb-1">Folder</div>
-            <div className="text-sm truncate bg-gray-50 dark:bg-gray-900 p-2 rounded">{status.currentFolder || 'N/A'}</div>
+            <div className="text-xs text-gray-400 mb-1">Folder</div>
+            <div className="text-sm truncate bg-gray-50 dark:bg-gray-900 p-2 rounded font-mono">
+              {status.currentFolder || 'N/A'}
+            </div>
           </div>
           <div>
-            <div className="text-xs text-gray-500 mb-1">File</div>
-            <div className="text-sm truncate bg-gray-50 dark:bg-gray-900 p-2 rounded">{status.currentFile || 'N/A'}</div>
+            <div className="text-xs text-gray-400 mb-1">File</div>
+            <div className={`text-sm truncate bg-gray-50 dark:bg-gray-900 p-2 rounded font-mono ${status.stalled ? 'text-yellow-600 dark:text-yellow-400' : ''}`}>
+              {status.currentFile || 'N/A'}
+              {status.stalled && status.currentFile && <span className="ml-2 text-xs opacity-70">(stalled)</span>}
+            </div>
           </div>
+          {status.currentAction && (
+            <div>
+              <div className="text-xs text-gray-400 mb-1">Action</div>
+              <div className="text-sm truncate bg-gray-50 dark:bg-gray-900 p-2 rounded text-gray-600 dark:text-gray-400">
+                {status.currentAction}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
+      {/* Live Logs */}
       <div className="bg-gray-900 rounded-xl shadow-sm border border-gray-800 p-6 h-64 flex flex-col">
-        <h3 className="font-semibold text-gray-100 mb-4 flex items-center">
-          <span className="w-2 h-2 rounded-full bg-green-500 mr-2 animate-pulse"></span>
+        <h3 className="font-semibold text-gray-100 mb-4 flex items-center gap-2">
+          <span className={`w-2 h-2 rounded-full ${status.stalled ? 'bg-yellow-400' : 'bg-green-500 animate-pulse'}`} />
           Live Logs
         </h3>
         <div className="flex-1 overflow-y-auto font-mono text-xs space-y-1 text-gray-300">
@@ -442,7 +529,20 @@ export default function MigrationProgress() {
             <div className="text-gray-600 italic">No logs available yet...</div>
           ) : (
             status.logs.map((log: string, idx: number) => (
-              <div key={idx}>{log}</div>
+              <div
+                key={idx}
+                className={`${
+                  log.includes('FAILED') || log.includes('ERROR') || log.includes('Error')
+                    ? 'text-red-400'
+                    : log.includes('STALLED') || log.includes('STALL')
+                    ? 'text-yellow-400'
+                    : log.includes('SUCCESS') || log.includes('COMPLETE')
+                    ? 'text-green-400'
+                    : 'text-gray-300'
+                }`}
+              >
+                {log}
+              </div>
             ))
           )}
         </div>

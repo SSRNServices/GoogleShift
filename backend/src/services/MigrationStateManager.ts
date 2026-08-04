@@ -1,41 +1,68 @@
 // @ts-nocheck
 import { ManifestStorage, ManifestItem } from '../utils/ManifestStorage';
-import { prisma, updateJobStatus, updateJobProgress, logJobEvent } from "../utils/database";
-
-/** Maximum time to wait for a single DB write-queue mutation before aborting it */
-const MUTATION_TIMEOUT_MS = 30_000; // 30 seconds
+import { prisma, updateJobStatus, updateJobProgress, logJobEvent } from '../utils/database';
 
 /** How often to emit progress to the DB */
 const PROGRESS_EMIT_INTERVAL_MS = 2_000;
 
+/**
+ * How many consecutive zero-byte samples before we declare the migration stalled.
+ * Each sample is taken every PROGRESS_EMIT_INTERVAL_MS, so 5 samples = 10 seconds.
+ */
+const STALL_SAMPLE_THRESHOLD = 5;
+
+/** Maximum time (ms) any individual DB write may take before it is considered hung */
+const DB_WRITE_TIMEOUT_MS = 20_000;
+
+/**
+ * MigrationStateManager
+ *
+ * Responsibilities:
+ *  1. Emit live progress (bytes, speed, ETA, file counts) to the DB on an interval
+ *  2. Provide atomic state-transition helpers for workers (commitSuccess, updateState, …)
+ *  3. Detect stalled progress and expose that via `isStalled`
+ *  4. Finalize the migration when all work is done
+ *
+ * KEY FIX vs previous version:
+ *  - Write mutations are NO LONGER serialized through a single queue bottleneck.
+ *    Independent writes (e.g. two workers committing different files) run in parallel.
+ *    Only writes that MUST be ordered (commitFolderSuccess → queueChildren) are
+ *    chained explicitly by the caller.
+ *  - ETA: when bytesDiff === 0 for STALL_SAMPLE_THRESHOLD consecutive samples,
+ *    speed is set to 0 and eta is set to null (displayed as "Calculating…" in the UI).
+ *  - transferredBytes in progress reports uses DB-authoritative SUCCESS sum, with
+ *    in-flight bytes used only as an optimistic upper-bound hint.
+ */
 export class MigrationStateManager {
   private jobId: string;
   private manifestId: string;
   private isFinalized: boolean = false;
-  private invariantViolation: boolean = false;
 
-  // ─── Serialized write queue for blocking mutations (commitSuccess, updateState, etc.)
-  private writeQueue: Array<{ fn: () => Promise<void>; resolve: () => void; reject: (e: any) => void }> = [];
-  private isProcessingQueue: boolean = false;
+  // ── Progress interval ─────────────────────────────────────────────────────────
+  private progressIntervalId: NodeJS.Timeout | null = null;
 
-  // ─── Separate non-blocking progress interval (never blocks the write queue)
-  private progressIntervalId: NodeJS.Timeout;
-
-  // ─── In-memory byte counter (updated from worker data events; never awaited)
+  // ── In-memory byte counter (updated synchronously from worker data events) ────
   private activeTransferredBytes: bigint = BigInt(0);
+
+  // ── Speed / ETA tracking ──────────────────────────────────────────────────────
   private speedSamples: number[] = [];
   private lastEmitTime: number = Date.now();
   private lastTransferredBytes: bigint = BigInt(0);
+  private zeroSpeedCount: number = 0;
+
+  // ── Stall flag (read by FileScheduler / WorkerWatchdog) ──────────────────────
+  public isStalled: boolean = false;
+
+  // ── Pending write counter (used by FileScheduler to detect idle) ──────────────
+  private pendingWrites: number = 0;
 
   constructor(jobId: string, manifestId: string) {
     this.jobId = jobId;
     this.manifestId = manifestId;
 
-    // Progress emission runs independently — it NEVER goes into the write queue.
-    // This prevents the progress interval from blocking commitSuccess() calls and
-    // prevents commitSuccess() from being starved behind a slow progress query.
+    // Progress emission runs independently — never blocks worker commits
     this.progressIntervalId = setInterval(async () => {
-      if (!this.isFinalized && !this.invariantViolation) {
+      if (!this.isFinalized) {
         try {
           await this.emitProgress();
         } catch (e: any) {
@@ -45,63 +72,47 @@ export class MigrationStateManager {
     }, PROGRESS_EMIT_INTERVAL_MS);
   }
 
+  // ── Pending write count (FileScheduler uses this to wait for quiescence) ──────
+
   public getPendingWriteCount(): number {
-    return this.writeQueue.length;
+    return this.pendingWrites;
   }
 
-  // ─── Write queue processor (only used for mutations that callers await) ──────
-  private enqueueWrite(fn: () => Promise<void>): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      this.writeQueue.push({ fn, resolve, reject });
-      this.drainQueue();
-    });
-  }
+  // ── Private write wrapper with timeout ────────────────────────────────────────
 
-  private async drainQueue() {
-    if (this.isProcessingQueue) return;
-    this.isProcessingQueue = true;
-
-    while (this.writeQueue.length > 0) {
-      if (this.invariantViolation) {
-        // Drain remaining items by rejecting them
-        for (const item of this.writeQueue) {
-          item.reject(new Error('MigrationStateManager: invariant violation, aborting writes'));
-        }
-        this.writeQueue = [];
-        break;
-      }
-
-      const item = this.writeQueue.shift();
-      if (!item) continue;
-
-      try {
-        // Per-mutation timeout guard: no single DB write may block forever
-        await Promise.race([
-          item.fn(),
-          new Promise<never>((_, rej) =>
-            setTimeout(() => rej(new Error(`Mutation timeout after ${MUTATION_TIMEOUT_MS}ms`)), MUTATION_TIMEOUT_MS)
+  private async timedWrite<T>(label: string, fn: () => Promise<T>): Promise<T> {
+    this.pendingWrites++;
+    try {
+      return await Promise.race([
+        fn(),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`DB write timeout [${label}] after ${DB_WRITE_TIMEOUT_MS}ms`)),
+            DB_WRITE_TIMEOUT_MS
           )
-        ]);
-        item.resolve();
-      } catch (e: any) {
-        console.error(`[MigrationStateManager] Write queue mutation failed: ${e.message}`);
-        item.reject(e);
-      }
+        )
+      ]);
+    } finally {
+      this.pendingWrites = Math.max(0, this.pendingWrites - 1);
     }
-
-    this.isProcessingQueue = false;
   }
 
-  // ─── Public API ───────────────────────────────────────────────────────────────
+  // ── Public write API — all parallel (no single-lane bottleneck) ───────────────
 
-  public commitSuccess(item: ManifestItem): Promise<void> {
-    return this.enqueueWrite(async () => {
+  /**
+   * Mark a file as SUCCESS. Parallel with other commitSuccess calls.
+   */
+  public async commitSuccess(item: ManifestItem): Promise<void> {
+    return this.timedWrite(`commitSuccess(${item.id})`, async () => {
       await ManifestStorage.updateItemStatus(this.manifestId, item.id, 'SUCCESS');
     });
   }
 
-  public commitFolderSuccess(sourceId: string, destId: string): Promise<void> {
-    return this.enqueueWrite(async () => {
+  /**
+   * Mark a folder as created in the destination. Must be awaited before queueChildren.
+   */
+  public async commitFolderSuccess(sourceId: string, destId: string): Promise<void> {
+    return this.timedWrite(`commitFolderSuccess(${sourceId})`, async () => {
       try {
         await prisma.$transaction([
           prisma.migrationManifest.update({
@@ -118,14 +129,18 @@ export class MigrationStateManager {
     });
   }
 
-  public commitFolderError(sourceId: string): Promise<void> {
-    return this.enqueueWrite(async () => {
+  public async commitFolderError(sourceId: string): Promise<void> {
+    return this.timedWrite(`commitFolderError(${sourceId})`, async () => {
       await ManifestStorage.updateItemStatus(this.manifestId, sourceId, 'FAILED');
     });
   }
 
-  public queueChildren(sourceParentId: string): Promise<void> {
-    return this.enqueueWrite(async () => {
+  /**
+   * Queue the children of a freshly-created folder.
+   * Caller must await commitFolderSuccess first to ensure destId is available.
+   */
+  public async queueChildren(sourceParentId: string): Promise<void> {
+    return this.timedWrite(`queueChildren(${sourceParentId})`, async () => {
       const res = await prisma.migrationManifest.updateMany({
         where: { jobId: this.manifestId, sourceParentId, status: 'PENDING' },
         data: { status: 'QUEUED' }
@@ -138,16 +153,37 @@ export class MigrationStateManager {
     });
   }
 
-  public updateState(itemId: string, status: ManifestItem['status']): Promise<void> {
-    return this.enqueueWrite(async () => {
+  /**
+   * Transition a single manifest item to a new status.
+   * Uses ManifestStorage which guards against backwards transitions (SUCCESS → anything else).
+   */
+  public async updateState(itemId: string, status: ManifestItem['status']): Promise<void> {
+    return this.timedWrite(`updateState(${itemId}, ${status})`, async () => {
       await ManifestStorage.updateItemStatus(this.manifestId, itemId, status);
     });
   }
 
   /**
-   * Recover stuck UPLOADING/DOWNLOADING items back to QUEUED.
-   * Called at the start of CopyService to heal items left in a terminal-pending
-   * state by a previous crashed run.
+   * Directly set a file back to QUEUED, bypassing the SUCCESS guard.
+   * Used by the watchdog and retry path to rescue stuck UPLOADING items.
+   */
+  public async resetToQueued(itemId: string): Promise<void> {
+    return this.timedWrite(`resetToQueued(${itemId})`, async () => {
+      // Only reset if NOT already in a terminal state
+      await prisma.migrationManifest.updateMany({
+        where: {
+          jobId: this.manifestId,
+          id: itemId,
+          status: { in: ['UPLOADING', 'DOWNLOADING', 'VERIFYING', 'QUEUED'] }
+        },
+        data: { status: 'QUEUED' }
+      });
+    });
+  }
+
+  /**
+   * Recover items stuck in UPLOADING/DOWNLOADING/VERIFYING at the start of a run.
+   * Called once by CopyService before the worker pool starts.
    */
   public async recoverStalledItems(): Promise<void> {
     const recovered = await prisma.migrationManifest.updateMany({
@@ -166,15 +202,18 @@ export class MigrationStateManager {
     }
   }
 
-  /** Called by UploadWorker data events — intentionally synchronous & non-blocking */
-  public reportProgressBytes(bytes: number) {
+  /**
+   * Called by UploadWorker data events — synchronous, never awaited.
+   * Updates the in-memory byte counter for real-time progress display.
+   */
+  public reportProgressBytes(bytes: number): void {
     this.activeTransferredBytes += BigInt(bytes);
   }
 
-  // ─── Progress emission (runs on its own interval, never in the write queue) ──
+  // ── Progress emission ─────────────────────────────────────────────────────────
 
-  private async emitProgress() {
-    if (this.isFinalized || this.invariantViolation) return;
+  private async emitProgress(): Promise<void> {
+    if (this.isFinalized) return;
 
     try {
       const stats = await prisma.migrationManifest.groupBy({
@@ -186,6 +225,7 @@ export class MigrationStateManager {
 
       let completedFolders = 0, completedFiles = 0, dbTransferredBytes = BigInt(0);
       let failedFiles = 0, totalFolders = 0, totalFiles = 0, totalBytes = BigInt(0);
+      let uploadingFiles = 0, queuedFiles = 0;
 
       for (const stat of stats) {
         if (stat.isFolder) {
@@ -196,37 +236,63 @@ export class MigrationStateManager {
           totalBytes += stat._sum.size || BigInt(0);
           if (stat.status === 'SUCCESS') {
             completedFiles += stat._count.id;
+            // DB-authoritative: bytes of successfully transferred files
             dbTransferredBytes += stat._sum.size || BigInt(0);
           }
           if (stat.status === 'FAILED') failedFiles += stat._count.id;
+          if (stat.status === 'UPLOADING') uploadingFiles += stat._count.id;
+          if (stat.status === 'QUEUED') queuedFiles += stat._count.id;
         }
       }
 
-      // Use in-flight bytes if ahead of DB-committed bytes
+      // Use in-flight bytes only as an upper-bound hint — never less than DB bytes
       const transferredBytes =
         this.activeTransferredBytes > dbTransferredBytes
           ? this.activeTransferredBytes
           : dbTransferredBytes;
 
+      // ── Speed and ETA calculation ─────────────────────────────────────────────
       const now = Date.now();
       const elapsedSec = (now - this.lastEmitTime) / 1000;
       let speed = 0;
-      let eta = 0;
+      let eta: number | null = null;
 
       if (elapsedSec >= 1.0) {
         const bytesDiff = Number(transferredBytes - this.lastTransferredBytes);
+
         if (bytesDiff > 0) {
+          // Progress is being made
+          this.zeroSpeedCount = 0;
           speed = bytesDiff / elapsedSec;
+
+          // Rolling average over last 10 samples
           this.speedSamples.push(speed);
-          if (this.speedSamples.length > 5) this.speedSamples.shift();
+          if (this.speedSamples.length > 10) this.speedSamples.shift();
+
           const avgSpeed = this.speedSamples.reduce((a, b) => a + b, 0) / this.speedSamples.length;
           const remainingBytes = Number(totalBytes - transferredBytes);
-          if (avgSpeed > 0 && remainingBytes > 0) eta = remainingBytes / avgSpeed;
+
+          if (avgSpeed > 0 && remainingBytes > 0) {
+            eta = remainingBytes / avgSpeed;
+          }
+
+          this.isStalled = false;
+        } else {
+          // No byte progress this interval
+          this.zeroSpeedCount++;
+          speed = 0;
+          eta = null; // "Calculating..." — do NOT use stale ETA
+
+          if (this.zeroSpeedCount >= STALL_SAMPLE_THRESHOLD) {
+            this.isStalled = true;
+          }
         }
+
         this.lastTransferredBytes = transferredBytes;
         this.lastEmitTime = now;
       }
 
+      // ── Current active file / folder ──────────────────────────────────────────
       const activeFile = await prisma.migrationManifest.findFirst({
         where: {
           jobId: this.manifestId,
@@ -239,12 +305,12 @@ export class MigrationStateManager {
         where: {
           jobId: this.manifestId,
           isFolder: true,
-          status: { in: ['QUEUED', 'UPLOADING', 'VERIFYING'] }
+          status: { in: ['QUEUED', 'UPLOADING'] }
         },
         select: { name: true }
       });
 
-      const updates: any = {
+      await updateJobProgress(this.jobId, {
         completedFolders,
         completedFiles,
         transferredBytes,
@@ -253,87 +319,78 @@ export class MigrationStateManager {
         totalFiles,
         totalBytes,
         speed,
-        eta,
+        eta: eta ?? 0, // DB stores 0 for null/unknown — UI interprets 0 as "Calculating..."
         currentFile: activeFile?.name || '',
         currentFolder: activeFolder?.name || '',
-        pendingDBWrites: this.writeQueue.length
-      };
+        pendingDBWrites: this.pendingWrites
+      });
 
-      await updateJobProgress(this.jobId, updates);
-
-      // Lightweight invariant: never emit completed > total
-      if (completedFiles > totalFiles || completedFolders > totalFolders) {
-        this.invariantViolation = true;
-        const msg =
-          `[INVARIANT VIOLATION] Completed (files=${completedFiles}, folders=${completedFolders}) ` +
-          `> Total (files=${totalFiles}, folders=${totalFolders})`;
-        console.error(msg);
-        await updateJobStatus(this.jobId, 'failed');
-      }
     } catch (e: any) {
       console.error(`[MigrationStateManager] emitProgress error: ${e.message}`);
     }
   }
 
-  // ─── Finalization ─────────────────────────────────────────────────────────────
+  // ── Finalization ──────────────────────────────────────────────────────────────
 
-  public finalizeMigration(activeWorkers: number, queueLength: number): Promise<void> {
-    return this.enqueueWrite(async () => {
-      if (this.isFinalized) return;
+  public async finalizeMigration(activeWorkers: number, queueLength: number): Promise<void> {
+    if (this.isFinalized) return;
+    if (activeWorkers !== 0 || queueLength !== 0) return;
 
-      if (activeWorkers === 0 && queueLength === 0) {
-        try {
-          const stats = await prisma.migrationManifest.groupBy({
-            by: ['status'],
-            where: { jobId: this.manifestId },
-            _count: { id: true }
-          });
+    try {
+      const stats = await prisma.migrationManifest.groupBy({
+        by: ['status'],
+        where: { jobId: this.manifestId },
+        _count: { id: true }
+      });
 
-          let pending = 0, queued = 0, uploading = 0, verifying = 0, failed = 0;
-          for (const stat of stats) {
-            if (stat.status === 'PENDING') pending += stat._count.id;
-            else if (stat.status === 'QUEUED') queued += stat._count.id;
-            else if (stat.status === 'UPLOADING') uploading += stat._count.id;
-            else if (stat.status === 'VERIFYING') verifying += stat._count.id;
-            else if (stat.status === 'FAILED') failed += stat._count.id;
-          }
-
-          const unresolved = pending + queued + uploading + verifying;
-
-          if (unresolved > 0) {
-            this.invariantViolation = true;
-            const msg =
-              `[INVARIANT VIOLATION] Attempted to finalize but found ${unresolved} ` +
-              `non-terminal items (Pending: ${pending}, Queued: ${queued}, ` +
-              `Uploading: ${uploading}, Verifying: ${verifying}).`;
-            console.error(msg);
-            await updateJobStatus(this.jobId, 'failed');
-            throw new Error(msg);
-          }
-
-          this.isFinalized = true;
-          clearInterval(this.progressIntervalId);
-
-          const finalStatus = failed > 0 ? 'completed_with_errors' : 'completed';
-          await prisma.migrationJob.update({
-            where: { id: this.jobId },
-            data: { state: 'COMPLETED', completedAt: new Date() }
-          });
-          await logJobEvent(this.jobId, `[STATE] COMPLETED - Final Status: ${finalStatus}`);
-          console.log(
-            `[MigrationStateManager] JOB_COMPLETE | JobId: ${this.jobId} | ` +
-            `Status: ${finalStatus} | Failed: ${failed}`
-          );
-        } catch (e: any) {
-          console.error(`[MigrationStateManager] Finalization failed: ${e.message}`);
-          throw e;
-        }
+      let pending = 0, queued = 0, uploading = 0, verifying = 0, failed = 0;
+      for (const stat of stats) {
+        if (stat.status === 'PENDING') pending += stat._count.id;
+        else if (stat.status === 'QUEUED') queued += stat._count.id;
+        else if (stat.status === 'UPLOADING') uploading += stat._count.id;
+        else if (stat.status === 'VERIFYING') verifying += stat._count.id;
+        else if (stat.status === 'FAILED') failed += stat._count.id;
       }
-    });
+
+      const unresolved = pending + queued + uploading + verifying;
+
+      if (unresolved > 0) {
+        const msg =
+          `[INVARIANT VIOLATION] Attempted to finalize but found ${unresolved} ` +
+          `non-terminal items (Pending: ${pending}, Queued: ${queued}, ` +
+          `Uploading: ${uploading}, Verifying: ${verifying}).`;
+        console.error(msg);
+        await updateJobStatus(this.jobId, 'failed');
+        throw new Error(msg);
+      }
+
+      this.isFinalized = true;
+      if (this.progressIntervalId) {
+        clearInterval(this.progressIntervalId);
+        this.progressIntervalId = null;
+      }
+
+      const finalStatus = failed > 0 ? 'completed_with_errors' : 'completed';
+      await prisma.migrationJob.update({
+        where: { id: this.jobId },
+        data: { state: 'COMPLETED', completedAt: new Date() }
+      });
+      await logJobEvent(this.jobId, `[STATE] COMPLETED - Final Status: ${finalStatus}`);
+      console.log(
+        `[MigrationStateManager] JOB_COMPLETE | JobId: ${this.jobId} | ` +
+        `Status: ${finalStatus} | Failed: ${failed}`
+      );
+    } catch (e: any) {
+      console.error(`[MigrationStateManager] Finalization failed: ${e.message}`);
+      throw e;
+    }
   }
 
-  public stopProgressInterval() {
-    clearInterval(this.progressIntervalId);
+  public stopProgressInterval(): void {
+    if (this.progressIntervalId) {
+      clearInterval(this.progressIntervalId);
+      this.progressIntervalId = null;
+    }
   }
 
   public async getSummaryStats(manifestId?: string) {

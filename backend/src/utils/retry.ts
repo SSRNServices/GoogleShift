@@ -1,84 +1,148 @@
+import { classifyError, MigrationError } from './errors';
+
+/**
+ * Options for RetryHelper.withRetry
+ */
+export interface RetryOptions {
+  /** Maximum number of attempts (default: 5) */
+  maxAttempts?: number;
+  /** Base backoff delay in milliseconds for exponential backoff (default: 1000ms) */
+  baseDelayMs?: number;
+  /** Maximum backoff delay cap in milliseconds (default: 30000ms) */
+  maxDelayMs?: number;
+  /** Jitter factor 0–1 applied to backoff (default: 0.3 = ±30%) */
+  jitter?: number;
+  /** If provided, called on each retry attempt */
+  onRetry?: (attempt: number, error: any, delayMs: number) => void;
+  /** If provided, called when a 429 rate-limit is encountered */
+  onRateLimit?: () => void;
+  /** Log function (default: console.log) */
+  logFn?: (msg: string) => void;
+}
+
+/**
+ * RetryHelper — wraps any async operation with exponential backoff and jitter.
+ *
+ * Key behaviours:
+ * - Permanent errors (401, 403, 404, 400) are NOT retried — thrown immediately
+ * - Retryable errors (429, 5xx, ECONNRESET, ETIMEDOUT, AbortError) are retried
+ * - Unknown errors that are not classified as permanent are retried by default
+ *   (conservative: prefer retry over permanent failure for unknown states)
+ * - Every retry logs at the operation level with attempt count and delay
+ */
 export class RetryHelper {
-  private static isTransientError(e: any): boolean {
-    const code = e?.code || e?.cause?.code;
-    const status = e?.response?.status || e?.status;
-
-    // Node network errors
-    const transientCodes = ['EAI_AGAIN', 'ENOTFOUND', 'ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EPIPE', 'SQLITE_BUSY', 'SQLITE_LOCKED'];
-    if (code && transientCodes.includes(code)) return true;
-    if (e.message && e.message.includes('socket hang up')) return true;
-    if (e.message && e.message.includes('TLS')) return true;
-    if (e.message && e.message.includes('SQLITE_BUSY')) return true;
-
-    // Google API transient errors
-    if (status === 429) return true; // Rate limit
-    if (status >= 500) return true; // 500, 502, 503, 504
-
-    return false;
-  }
-
-  private static isPermanentError(e: any): boolean {
-    const status = e?.response?.status || e?.status;
-    if (status === 401 || status === 403 || status === 404 || status === 400) {
-      if (status === 403 && (e.message?.includes('Rate limit') || e.message?.includes('User rate limit exceeded'))) {
-         return false; // Actually transient
-      }
-      return true;
-    }
-    if (e.message && e.message.includes('invalid credentials')) return true;
-    return false;
-  }
-
   public static async withRetry<T>(
-      operationName: string, 
-      operation: () => Promise<T>, 
-      logFn?: (msg: string) => void,
-      onRateLimit?: () => void
+    operationName: string,
+    operation: () => Promise<T>,
+    logFnOrOptions?: ((msg: string) => void) | RetryOptions,
+    onRateLimit?: () => void
   ): Promise<T> {
-    const backoffs = [1, 2, 4, 8, 16]; // in seconds
-    const maxRetries = 5;
-    
-    console.log(`[ENTRY] RetryHelper.withRetry | Operation: ${operationName}`);
-    const rStart = Date.now();
+    // Backwards-compatible overload: accept (name, fn, logFn, onRateLimit)
+    let opts: RetryOptions = {};
+    if (typeof logFnOrOptions === 'function') {
+      opts = { logFn: logFnOrOptions, onRateLimit };
+    } else if (logFnOrOptions && typeof logFnOrOptions === 'object') {
+      opts = logFnOrOptions;
+    }
 
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const {
+      maxAttempts = 5,
+      baseDelayMs = 1000,
+      maxDelayMs = 30_000,
+      jitter = 0.3,
+      onRetry,
+      onRateLimit: onRateLimitOpt,
+      logFn = (msg: string) => console.log(msg),
+    } = opts;
+
+    const effectiveOnRateLimit = onRateLimit ?? onRateLimitOpt;
+
+    const startMs = Date.now();
+    let lastError: any;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         const result = await operation();
-        console.log(`[EXIT] RetryHelper.withRetry | Operation: ${operationName} | Duration: ${Date.now() - rStart}ms | Status: Success`);
+        if (attempt > 0) {
+          logFn(
+            `[RetryHelper] SUCCESS after ${attempt + 1} attempt(s) | ` +
+            `Operation: ${operationName} | Elapsed: ${Date.now() - startMs}ms`
+          );
+        }
         return result;
       } catch (e: any) {
-        if (this.isPermanentError(e)) {
-          console.log(`[EXIT] RetryHelper.withRetry | Operation: ${operationName} | Duration: ${Date.now() - rStart}ms | Status: Permanent Error`);
-          throw e; // Do not retry permanent errors
-        }
-        
-        if (this.isTransientError(e) || (e.response?.status === 403 && e.message?.includes('User rate limit exceeded'))) {
-          if (attempt === maxRetries - 1) {
-            console.log(`[EXIT] RetryHelper.withRetry | Operation: ${operationName} | Duration: ${Date.now() - rStart}ms | Status: Max Retries Reached`);
-            throw e;
-          }
-          
-          if (e.response?.status === 429 || (e.response?.status === 403 && e.message?.includes('rate limit'))) {
-             if (onRateLimit) onRateLimit();
-          }
-          
-          const delaySecs = backoffs[Math.min(attempt, backoffs.length - 1)] || 16;
-          const jitter = Math.random() * 1000;
-          const delayMs = delaySecs * 1000 + jitter;
+        lastError = e;
 
-          if (logFn) logFn(`[${operationName}] Network error (${e.code || e.status || '403 Rate Limit'}). Retrying (${attempt + 1}/${maxRetries}) in ${delaySecs}s...`);
-          
-          await new Promise(res => setTimeout(res, delayMs));
-          
-          if (logFn) logFn(`Resuming ${operationName}...`);
-        } else {
-          console.log(`[EXIT] RetryHelper.withRetry | Operation: ${operationName} | Duration: ${Date.now() - rStart}ms | Status: Unknown Error`);
-          throw e; // Unknown error, bubble up
+        const classification = classifyError(e);
+        const httpStatus = e?.response?.status ?? e?.status;
+        const errorCode = e?.code ?? '';
+
+        // Permanent errors — throw immediately, do not retry
+        if (classification === 'permanent' || (e instanceof MigrationError && e.isPermanent)) {
+          logFn(
+            `[RetryHelper] PERMANENT_ERROR | Operation: ${operationName} | ` +
+            `Status: ${httpStatus || errorCode || 'N/A'} | Error: ${e.message} | ` +
+            `Attempt: ${attempt + 1}/${maxAttempts} | Elapsed: ${Date.now() - startMs}ms`
+          );
+          throw e;
         }
+
+        // Last attempt — throw regardless
+        if (attempt === maxAttempts - 1) {
+          logFn(
+            `[RetryHelper] MAX_RETRIES_EXCEEDED | Operation: ${operationName} | ` +
+            `Attempts: ${maxAttempts} | Status: ${httpStatus || errorCode || 'N/A'} | ` +
+            `Error: ${e.message} | Elapsed: ${Date.now() - startMs}ms`
+          );
+          throw e;
+        }
+
+        // Calculate exponential backoff with jitter
+        const expDelay = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, attempt));
+        const jitterMs = expDelay * jitter * (Math.random() * 2 - 1); // ±jitter%
+        const delayMs = Math.max(100, Math.floor(expDelay + jitterMs));
+
+        // Report rate limit if applicable
+        if (httpStatus === 429 || httpStatus === 403) {
+          effectiveOnRateLimit?.();
+        }
+
+        logFn(
+          `[RetryHelper] RETRY | Operation: ${operationName} | ` +
+          `Attempt: ${attempt + 1}/${maxAttempts} | ` +
+          `Status: ${httpStatus || errorCode || 'N/A'} | ` +
+          `Error: ${e.message} | ` +
+          `DelayMs: ${delayMs} | Classification: ${classification}`
+        );
+
+        onRetry?.(attempt + 1, e, delayMs);
+
+        await new Promise(res => setTimeout(res, delayMs));
       }
     }
-    
-    console.log(`[EXIT] RetryHelper.withRetry | Operation: ${operationName} | Duration: ${Date.now() - rStart}ms | Status: Unreachable`);
-    throw new Error('Unreachable');
+
+    // Unreachable — TypeScript satisfaction
+    throw lastError ?? new Error(`RetryHelper: exhausted ${maxAttempts} attempts for ${operationName}`);
+  }
+
+  /**
+   * Classify error for external callers who need to make their own retry decisions
+   */
+  public static classifyError(e: any): 'retryable' | 'permanent' | 'unknown' {
+    return classifyError(e);
+  }
+
+  /**
+   * Quick helper: is this error retryable?
+   */
+  public static isRetryable(e: any): boolean {
+    return classifyError(e) === 'retryable';
+  }
+
+  /**
+   * Quick helper: is this error permanent (should never retry)?
+   */
+  public static isPermanent(e: any): boolean {
+    return classifyError(e) === 'permanent';
   }
 }

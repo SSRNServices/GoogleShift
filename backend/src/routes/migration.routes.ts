@@ -3,6 +3,7 @@ import { migrationService } from '../services/MigrationService';
 import { prisma } from "../utils/database";
 import { requireBothAuth, requireUserAuth } from '../auth/auth.middleware';
 import { StartMigrationPayload } from '../transfer/types';
+import { jobRegistry } from '../transfer/JobRegistry';
 
 const router = Router();
 
@@ -397,9 +398,21 @@ router.post('/:jobId/resume', requireUserAuth, async (req, res) => {
 router.post('/:jobId/cancel', requireUserAuth, async (req, res) => {
   try {
     const jobId = req.params.jobId as string;
-    await prisma.migrationJob.update({ where: { id: jobId }, data: { state: 'CANCELLED', cancelledAt: new Date() } });
+
+    // 1. Update DB state first (so the scheduler sees it if it polls)
+    await prisma.migrationJob.update({
+      where: { id: jobId },
+      data: { state: 'CANCELLED', cancelledAt: new Date() }
+    });
+
+    // 2. Signal the active scheduler (if any) to abort all workers and destroy streams.
+    //    This is the key fix: previously cancel only updated the DB and left workers running.
+    await jobRegistry.cancelJob(jobId);
+
+    console.log(`[migration.routes] CANCEL_COMPLETE | JobId: ${jobId}`);
     res.json({ success: true });
   } catch (error: any) {
+    console.error(`[migration.routes] CANCEL_ERROR | ${error.message}`);
     res.status(500).json({ error: error.message });
   }
 });
@@ -414,12 +427,18 @@ router.get('/:jobId/status', async (req, res) => {
 
   let lastCheckedDate = lastEventId !== '0' ? new Date(parseInt(lastEventId as string)) : new Date(0);
 
+  // Stall detection state for this SSE connection
+  let prevTransferred = -1;
+  let prevCompleted = -1;
+  let stallTickCount = 0;
+  const STALL_TICK_THRESHOLD = 3; // 3 ticks × 2s = 6 seconds without change → stalled
+
   const interval = setInterval(async () => {
     try {
-      res.write(':\n\n'); // SSE Heartbeat (every 2s by interval)
+      res.write(':\n\n'); // SSE comment heartbeat
 
       const job = await prisma.migrationJob.findUnique({ where: { id: jobId } });
-      
+
       if (!job) {
         res.write(`data: ${JSON.stringify({ error: 'Job not found' })}\n\n`);
         clearInterval(interval);
@@ -428,12 +447,11 @@ router.get('/:jobId/status', async (req, res) => {
       }
 
       const logs = await prisma.migrationLog.findMany({
-         where: { jobId, createdAt: { gt: lastCheckedDate } },
-         orderBy: { createdAt: 'asc' }
+        where: { jobId, createdAt: { gt: lastCheckedDate } },
+        orderBy: { createdAt: 'asc' }
       });
-
       if (logs.length > 0) {
-         lastCheckedDate = logs[logs.length - 1].createdAt;
+        lastCheckedDate = logs[logs.length - 1].createdAt;
       }
 
       const transferred = Number(job.transferredBytes);
@@ -441,25 +459,57 @@ router.get('/:jobId/status', async (req, res) => {
       const completed = job.completedFiles;
       const totalFiles = job.totalFiles;
       const failed = job.failedFiles;
-      
-      let percentage = 0;
-      if (totalBytes > 0) percentage = Math.floor((transferred / totalBytes) * 100);
-      else if (totalFiles > 0) percentage = Math.floor(((completed + failed) / totalFiles) * 100);
-      
+
+      // ── Separate byte-based and file-based progress — never mix ──────────────
+      let bytePercentage = 0;
+      let filePercentage = 0;
+      if (totalBytes > 0) bytePercentage = Math.min(100, Math.floor((transferred / totalBytes) * 100));
+      if (totalFiles > 0) filePercentage = Math.min(100, Math.floor(((completed + failed) / totalFiles) * 100));
+
+      // Use byte percentage as primary if available; fall back to file percentage
+      const percentage = totalBytes > 0 ? bytePercentage : filePercentage;
+
+      // ── Stall detection ───────────────────────────────────────────────────────
+      const isActive = ['COPYING', 'PREPARING'].includes(job.state);
+      let stalled = false;
+      let recovering = false;
+
+      if (isActive) {
+        if (transferred === prevTransferred && completed === prevCompleted) {
+          stallTickCount++;
+        } else {
+          stallTickCount = 0;
+          prevTransferred = transferred;
+          prevCompleted = completed;
+        }
+        stalled = stallTickCount >= STALL_TICK_THRESHOLD;
+        // Check if the watchdog is actively recovering this job
+        const handle = jobRegistry.get(jobId);
+        recovering = stalled && !!handle;
+      }
+
+      // ── ETA: null (speed=0) maps to 0 in DB; send null to frontend ────────────
+      const speed = job.speed || 0;
+      const remainingSeconds = (job.eta && job.eta > 0 && speed > 0) ? job.eta : null;
+
       const elapsed = job.startedAt ? Date.now() - job.startedAt.getTime() : 0;
 
       res.write(`id: ${lastCheckedDate.getTime()}\n`);
       res.write(`data: ${JSON.stringify({
         status: job.state.toLowerCase(),
         percentage: Math.min(percentage, 100),
+        bytePercentage,
+        filePercentage,
         totalFolders: job.totalFolders,
         totalFiles,
         completedFiles: completed,
         failedFiles: failed,
         totalBytes,
         transferredBytes: transferred,
-        speedBytesPerSecond: job.speed,
-        remainingSeconds: job.eta,
+        speedBytesPerSecond: speed,
+        remainingSeconds,
+        stalled,
+        recovering,
         elapsed,
         currentAction: job.currentAction,
         currentFile: (job as any).currentFile,
@@ -471,7 +521,6 @@ router.get('/:jobId/status', async (req, res) => {
         clearInterval(interval);
         res.end();
       }
-
     } catch (e: any) {
       console.error('SSE Error:', e);
       res.write(`data: ${JSON.stringify({ error: 'Internal server error while fetching job status' })}\n\n`);
