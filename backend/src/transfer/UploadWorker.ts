@@ -17,6 +17,61 @@ import {
 import { MigrationConfig } from './types';
 import { prisma } from '../utils/database';
 
+// TASK 3: MONKEY-PATCH PASSTHROUGH TO CAPTURE STACK TRACE ON PUSH AFTER EOF
+let monkeyPatchInstalled = false;
+function installPassThroughMonkeyPatch() {
+  if (monkeyPatchInstalled) return;
+  monkeyPatchInstalled = true;
+
+  const originalPush = PassThrough.prototype.push;
+  PassThrough.prototype.push = function (chunk: any, encoding?: any) {
+    if (this.readableEnded || (this as any)._readableState?.ended) {
+      console.error(
+        `\n${'='.repeat(80)}\n` +
+        `[CRITICAL_STREAM_DEBUG] PUSH_AFTER_EOF DETECTED!\n` +
+        `Chunk: ${chunk ? (chunk.length ? `${chunk.length} bytes` : typeof chunk) : 'null/EOF'}\n` +
+        `ReadableEnded: ${this.readableEnded} | Destroyed: ${this.destroyed} | Closed: ${(this as any).closed}\n` +
+        `STACK TRACE:\n${new Error().stack}\n` +
+        `${'='.repeat(80)}\n`
+      );
+    }
+    return originalPush.call(this, chunk, encoding);
+  };
+
+  const originalWrite = PassThrough.prototype.write;
+  PassThrough.prototype.write = function (chunk: any, encoding?: any, cb?: any) {
+    if (this.writableEnded || (this as any)._writableState?.ended) {
+      console.error(
+        `\n${'='.repeat(80)}\n` +
+        `[CRITICAL_STREAM_DEBUG] WRITE_AFTER_END DETECTED!\n` +
+        `WritableEnded: ${this.writableEnded} | Destroyed: ${this.destroyed}\n` +
+        `STACK TRACE:\n${new Error().stack}\n` +
+        `${'='.repeat(80)}\n`
+      );
+    }
+    return originalWrite.call(this, chunk, encoding, cb);
+  };
+
+  const originalEnd = PassThrough.prototype.end;
+  PassThrough.prototype.end = function (chunk?: any, encoding?: any, cb?: any) {
+    if (this.writableEnded || (this as any)._writableState?.ended) {
+      // Ignore duplicate end if harmless, but log if chunk provided
+      if (chunk) {
+        console.error(
+          `\n${'='.repeat(80)}\n` +
+          `[CRITICAL_STREAM_DEBUG] END_WITH_CHUNK_AFTER_ENDED DETECTED!\n` +
+          `WritableEnded: ${this.writableEnded}\n` +
+          `STACK TRACE:\n${new Error().stack}\n` +
+          `${'='.repeat(80)}\n`
+        );
+      }
+    }
+    return originalEnd.call(this, chunk, encoding, cb);
+  };
+}
+
+installPassThroughMonkeyPatch();
+
 const MIN_EXPECTED_SPEED_BYTES_PER_SEC = 512 * 1024; // 512 KB/s
 const MIN_FILE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_FILE_TIMEOUT_MS = 8 * 60 * 60 * 1000; // 8 hours
@@ -353,13 +408,6 @@ export class UploadWorker {
     });
     this.activePassThrough = progressPT;
 
-    const detachStreams = () => {
-      try { srcStream.unpipe(progressPT); } catch (_) {}
-    };
-    srcStream.once('end', detachStreams);
-    srcStream.once('close', detachStreams);
-    srcStream.once('error', detachStreams);
-
     let bytesSinceLast = 0;
     let lastSpeedTime = Date.now();
     let lastStallBytes = 0;
@@ -391,6 +439,7 @@ export class UploadWorker {
       console.error(
         `[Worker ${this.id}] DOWNLOAD_STREAM_ERROR | File: ${item.name} | Error: ${err.message}`
       );
+      try { srcStream.unpipe(progressPT); } catch (_) {}
       if (!progressPT.destroyed) try { progressPT.destroy(err); } catch (_) {}
     });
 
@@ -400,7 +449,22 @@ export class UploadWorker {
     };
     controller.signal.addEventListener('abort', abortHandler, { once: true });
 
-    srcStream.pipe(progressPT);
+    // CRITICAL STREAM LIFECYCLE FIX (TASK 4 & 6):
+    // Pass { end: false } to pipe() and explicitly unpipe on srcStream 'end'/'close'
+    // BEFORE calling progressPT.end(). This prevents trailing socket close events on srcStream
+    // from attempting push()/write() on progressPT after progressPT is ended!
+    srcStream.pipe(progressPT, { end: false });
+
+    srcStream.once('end', () => {
+      try { srcStream.unpipe(progressPT); } catch (_) {}
+      if (!progressPT.writableEnded && !(progressPT as any)._writableState?.ended) {
+        try { progressPT.end(); } catch (_) {}
+      }
+    });
+
+    srcStream.once('close', () => {
+      try { srcStream.unpipe(progressPT); } catch (_) {}
+    });
 
     // PRE-UPLOAD STREAM STATE VALIDATION (ISSUE 2)
     if (
