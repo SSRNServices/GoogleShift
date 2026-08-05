@@ -133,12 +133,45 @@ export class UploadWorker {
     }
   }
 
+  private logStreamDiagnostics(stage: string, item: ManifestItem, stream: any): void {
+    if (!stream) return;
+    console.log(
+      `[Worker ${this.id}] STREAM_DIAGNOSTICS [${stage}] | File: ${item.name} | ` +
+      `Constructor: ${stream.constructor?.name || 'unknown'} | ` +
+      `Readable: ${!!stream.readable} | Ended: ${!!stream.readableEnded} | ` +
+      `Destroyed: ${!!stream.destroyed} | Closed: ${!!stream.closed} | ` +
+      `Paused: ${typeof stream.isPaused === 'function' ? stream.isPaused() : 'N/A'} | ` +
+      `DataListeners: ${typeof stream.listenerCount === 'function' ? stream.listenerCount('data') : 'N/A'} | ` +
+      `BytesMoved: ${this.uploadBytesTracked}/${item.size || 'unknown'}`
+    );
+  }
+
   public async processFile(
     item: ManifestItem,
     releaseWorker: (workerId: number) => void,
     retryJob: (item: ManifestItem) => Promise<void>
   ) {
     this.isBusy = true;
+
+    // PRE-EXECUTION DB MANIFEST CHECK (ISSUE 7, 8, 9)
+    try {
+      const dbRow = await prisma.migrationManifest.findUnique({
+        where: { jobId_id: { jobId: this.manifestId || this.jobId, id: item.id } },
+        select: { status: true, retryCount: true }
+      });
+      if (dbRow && (dbRow.status === 'FAILED' || dbRow.status === 'SUCCESS')) {
+        console.warn(
+          `[Worker ${this.id}] REJECT_ASSIGNMENT | File: ${item.name} | ` +
+          `FileId: ${item.sourceId} | DB Status is already ${dbRow.status}. Skipping execution.`
+        );
+        this.isBusy = false;
+        this.currentFile = null;
+        this.currentItem = null;
+        releaseWorker(this.id);
+        return;
+      }
+    } catch (_) {}
+
     this.currentFile = item.name;
     this.currentItem = item;
     this.startedAt = Date.now();
@@ -208,14 +241,7 @@ export class UploadWorker {
         });
       } catch (_) {}
 
-      try {
-        await this.stateManager.resetToQueued(item.id);
-      } catch (resetErr: any) {
-        console.error(
-          `[Worker ${this.id}] RESET_QUEUED_FAILED | File: ${item.name} | Error: ${resetErr.message}`
-        );
-      }
-
+      // Atomic retry delegation without pre-emptive resetToQueued
       await retryJob(item);
     } finally {
       clearTimeout(globalTimeoutHandle);
@@ -327,6 +353,13 @@ export class UploadWorker {
     });
     this.activePassThrough = progressPT;
 
+    const detachStreams = () => {
+      try { srcStream.unpipe(progressPT); } catch (_) {}
+    };
+    srcStream.once('end', detachStreams);
+    srcStream.once('close', detachStreams);
+    srcStream.once('error', detachStreams);
+
     let bytesSinceLast = 0;
     let lastSpeedTime = Date.now();
     let lastStallBytes = 0;
@@ -384,6 +417,8 @@ export class UploadWorker {
         { isRetryable: true }
       );
     }
+
+    this.logStreamDiagnostics('PRE_UPLOAD', item, progressPT);
 
     const uploadStallTimer = setInterval(() => {
       if (controller.signal.aborted) {
@@ -467,6 +502,7 @@ export class UploadWorker {
       }
 
       uploadedFileId = createRes.data.id;
+      this.logStreamDiagnostics('POST_UPLOAD', item, progressPT);
     } finally {
       clearInterval(uploadStallTimer);
       controller.signal.removeEventListener('abort', abortHandler);
