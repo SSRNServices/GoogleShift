@@ -34,13 +34,16 @@ export class VerificationService {
        where: { jobId: manifestId, status: 'FAILED', isFolder: false }
     });
 
+    const finalStatus = failed > 0 ? 'completed_with_errors' : 'completed';
+
     await updateJobProgress(jobId, { 
        completedFiles: completed,
        failedFiles: failed,
        event: 'VERIFY_COMPLETED',
-       currentAction: 'Verification complete.'
+       currentAction: `Verification complete. Status: ${finalStatus}`,
+       status: finalStatus
     });
 
-    console.log(`[VerificationService] Verification complete. Completed: ${completed}, Failed: ${failed}`);
+    console.log(`[VerificationService] Verification complete. Status: ${finalStatus}. Completed: ${completed}, Failed: ${failed}`);
   }
 }

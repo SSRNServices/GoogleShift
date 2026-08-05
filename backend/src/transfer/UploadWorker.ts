@@ -17,42 +17,38 @@ import {
 import { MigrationConfig } from './types';
 import { prisma } from '../utils/database';
 
-/**
- * Minimum expected transfer speed used for adaptive timeout calculation.
- * 512 KB/s is a conservative lower bound — even on throttled connections.
- * This means a 2 GB file gets at least 2000/0.512 ≈ 65 minutes before timeout.
- */
 const MIN_EXPECTED_SPEED_BYTES_PER_SEC = 512 * 1024; // 512 KB/s
-
-/**
- * Absolute minimum file transfer timeout regardless of file size.
- * No file should have less than 10 minutes to complete.
- */
 const MIN_FILE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
-
-/**
- * Absolute maximum file transfer timeout cap.
- * Even a 200 GB file won't get more than 8 hours.
- */
 const MAX_FILE_TIMEOUT_MS = 8 * 60 * 60 * 1000; // 8 hours
-
-/**
- * If no upload progress bytes are received for this long → abort as a stall.
- * This is a rolling stall watchdog, distinct from the global per-file timeout.
- */
-const UPLOAD_STALL_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes without any byte progress
-
-/** How often to check upload stall status */
+const UPLOAD_STALL_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
 const UPLOAD_STALL_CHECK_INTERVAL_MS = 15_000; // 15 seconds
 
-/**
- * Calculate adaptive transfer timeout for a given file size.
- * Formula: max(MIN_TIMEOUT, fileSize / MIN_SPEED)
- * Capped at MAX_TIMEOUT.
- */
 function computeTransferTimeout(fileSizeBytes: number): number {
   const sizeBasedTimeout = (fileSizeBytes / MIN_EXPECTED_SPEED_BYTES_PER_SEC) * 1000;
   return Math.min(MAX_FILE_TIMEOUT_MS, Math.max(MIN_FILE_TIMEOUT_MS, sizeBasedTimeout));
+}
+
+function classifyErrorDetails(e: any): string {
+  const msg = e?.message || '';
+  if (msg.includes('push() after EOF') || msg.includes('ERR_STREAM_PUSH_AFTER_EOF') || e?.name === 'StreamLifecycleError') {
+    return 'Stream Lifecycle Error';
+  }
+  if (e?.name === 'DownloadTimeoutError' || e?.name === 'UploadTimeoutError' || msg.includes('timeout')) {
+    return 'Timeout Error';
+  }
+  if (e?.name === 'DownloadStallError' || e?.name === 'UploadStallError' || msg.includes('stall')) {
+    return 'Network Stall Error';
+  }
+  if (e?.name === 'GoogleApiError' || e?.response?.status || msg.includes('Google Drive API')) {
+    return 'Google API Error';
+  }
+  if (msg.includes('ECONNRESET') || msg.includes('ETIMEDOUT') || msg.includes('socket hang up')) {
+    return 'Network Connection Error';
+  }
+  const generalClass = classifyError(e);
+  if (generalClass === 'permanent') return 'Permanent Error';
+  if (generalClass === 'retryable') return 'Retryable Network Error';
+  return 'Transfer Error';
 }
 
 export class UploadWorker {
@@ -76,11 +72,9 @@ export class UploadWorker {
   public lastActivity: number = 0;
   public uploadBytesTracked: number = 0;
   public lastUploadBytes: number = 0;
-  public lastProgressAt: number = Date.now(); // Last time ANY byte was moved
+  public lastProgressAt: number = Date.now();
 
   private controller: AbortController | null = null;
-
-  // Active streams — tracked so we can force-destroy on abort
   private activeSourceStream: NodeJS.ReadableStream | null = null;
   private activePassThrough: PassThrough | null = null;
 
@@ -110,12 +104,6 @@ export class UploadWorker {
 
   public get isIdle() { return !this.isBusy && !this.isDead; }
 
-  /**
-   * Abort the current transfer.
-   * This:
-   * 1. Signals the AbortController (best-effort for the API call)
-   * 2. Force-destroys both streams to release buffers and close the TCP socket
-   */
   public abort(reason?: string): void {
     const tag = `[Worker ${this.id}] ABORT`;
     console.warn(`${tag} | File: ${this.currentFile || 'none'} | Reason: ${reason || 'external'}`);
@@ -124,14 +112,23 @@ export class UploadWorker {
       this.controller.abort();
     }
 
-    // Force-destroy streams — this closes the underlying socket regardless of
-    // whether the AbortController was honoured by the API client
+    this.cleanupActiveStreams();
+  }
+
+  private cleanupActiveStreams(): void {
     if (this.activeSourceStream) {
-      try { (this.activeSourceStream as any).destroy(new Error('Aborted')); } catch (_) {}
+      try {
+        if (this.activePassThrough) this.activeSourceStream.unpipe(this.activePassThrough);
+        this.activeSourceStream.removeAllListeners();
+        (this.activeSourceStream as any).destroy?.();
+      } catch (_) {}
       this.activeSourceStream = null;
     }
     if (this.activePassThrough) {
-      try { this.activePassThrough.destroy(new Error('Aborted')); } catch (_) {}
+      try {
+        this.activePassThrough.removeAllListeners();
+        this.activePassThrough.destroy?.();
+      } catch (_) {}
       this.activePassThrough = null;
     }
   }
@@ -150,7 +147,6 @@ export class UploadWorker {
     this.uploadBytesTracked = 0;
     this.lastUploadBytes = 0;
 
-    // Adaptive timeout — depends on file size
     const transferTimeoutMs = computeTransferTimeout(item.size || 0);
 
     console.log(
@@ -161,7 +157,6 @@ export class UploadWorker {
 
     this.controller = new AbortController();
 
-    // Global per-file timeout
     const globalTimeoutHandle = setTimeout(() => {
       const elapsed = Date.now() - this.startedAt;
       console.error(
@@ -186,50 +181,54 @@ export class UploadWorker {
         e.type === 'aborted' ||
         e.message?.includes('Aborted');
 
+      const classification = classifyErrorDetails(e);
+      const formattedErrorMsg = `${e.message || 'Transfer failed'} | Classification: ${classification}`;
+
       if (isAbort) {
         console.warn(
           `[Worker ${this.id}] FILE_ABORTED | File: ${item.name} | FileId: ${item.sourceId} | ` +
           `BytesMoved: ${this.uploadBytesTracked} | Queuing retry.`
         );
       } else {
-        const classification = classifyError(e);
         console.error(
           `[Worker ${this.id}] FILE_FAILED | File: ${item.name} | FileId: ${item.sourceId} | ` +
-          `Error: ${e.message} | Status: ${e?.response?.status || 'N/A'} | ` +
-          `Classification: ${classification} | BytesMoved: ${this.uploadBytesTracked}`
+          `Error: ${e.message} | Classification: ${classification} | BytesMoved: ${this.uploadBytesTracked}`
         );
         if (e.response && e.response.status === 429) this.rateLimiter.reportRateLimit();
       }
 
-      // CRITICAL FIX: Reset manifest state from UPLOADING → QUEUED BEFORE calling retryJob
-      // Without this, ManifestStorage.getPendingFiles() (which queries QUEUED status) will
-      // never see this item again, and it silently disappears from the queue.
+      // Persist failure details in checkpoint
+      try {
+        const destParentId = item.destParentId || this.folderCache.get(item.sourceParentId) || 'root';
+        await saveCheckpoint(this.jobId, 'file', destParentId, item.sourceId, 'failed', {
+          fileName: item.name,
+          mimeType: item.mimeType,
+          size: item.size,
+          error: formattedErrorMsg
+        });
+      } catch (_) {}
+
       try {
         await this.stateManager.resetToQueued(item.id);
       } catch (resetErr: any) {
         console.error(
-          `[Worker ${this.id}] RESET_QUEUED_FAILED | File: ${item.name} | ` +
-          `Error: ${resetErr.message}`
+          `[Worker ${this.id}] RESET_QUEUED_FAILED | File: ${item.name} | Error: ${resetErr.message}`
         );
       }
 
       await retryJob(item);
     } finally {
       clearTimeout(globalTimeoutHandle);
+      this.cleanupActiveStreams();
       this.controller = null;
-      this.activeSourceStream = null;
-      this.activePassThrough = null;
       this.currentFile = null;
       this.currentItem = null;
       this.isBusy = false;
-      // Note: isDead is intentionally NOT reset here — if the worker was marked dead
-      // by stall detection, it stays dead so FileScheduler replaces it with a fresh one.
       releaseWorker(this.id);
     }
   }
 
   private async uploadFile(item: ManifestItem, controller: AbortController) {
-    // ─── Step 1: Resolve destination parent ───────────────────────────────────
     let destParentId = item.destParentId;
     if (!destParentId) {
       destParentId =
@@ -243,7 +242,6 @@ export class UploadWorker {
       }
     }
 
-    // ─── Step 2: Duplicate check (checkpoint) ─────────────────────────────────
     const cp = await getCheckpoint(this.jobId, 'file', destParentId, item.sourceId);
     if (cp === 'completed' || cp === 'skipped') {
       console.log(
@@ -257,8 +255,7 @@ export class UploadWorker {
     this.lastActivity = Date.now();
     this.lastProgressAt = Date.now();
 
-    // ─── Step 3: Determine MIME types ─────────────────────────────────────────
-    let targetMimeType = item.mimeType;
+    let targetMimeType = item.mimeType || 'application/octet-stream';
     let exportMimeType: string | null = null;
 
     if (item.mimeType.startsWith('application/vnd.google-apps.')) {
@@ -266,21 +263,20 @@ export class UploadWorker {
         exportMimeType = this.options.transferDocsAsPdf
           ? 'application/pdf'
           : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-        targetMimeType = this.options.transferDocsAsPdf ? 'application/pdf' : item.mimeType;
+        targetMimeType = this.options.transferDocsAsPdf ? 'application/pdf' : exportMimeType;
       } else if (item.mimeType === 'application/vnd.google-apps.spreadsheet') {
         exportMimeType = this.options.transferDocsAsPdf
           ? 'application/pdf'
           : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-        targetMimeType = this.options.transferDocsAsPdf ? 'application/pdf' : item.mimeType;
+        targetMimeType = this.options.transferDocsAsPdf ? 'application/pdf' : exportMimeType;
       } else if (item.mimeType === 'application/vnd.google-apps.presentation') {
         exportMimeType = this.options.transferDocsAsPdf
           ? 'application/pdf'
           : 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
-        targetMimeType = this.options.transferDocsAsPdf ? 'application/pdf' : item.mimeType;
+        targetMimeType = this.options.transferDocsAsPdf ? 'application/pdf' : exportMimeType;
       }
 
       if (!exportMimeType) {
-        // Unsupported Google Workspace type — skip gracefully
         console.log(
           `[Worker ${this.id}] FILE_SKIP | File: ${item.name} | FileId: ${item.sourceId} | ` +
           `Reason: Unsupported Google Workspace MIME: ${item.mimeType}`
@@ -291,10 +287,9 @@ export class UploadWorker {
       }
     }
 
-    // ─── Step 4: Download stream with timeout ──────────────────────────────────
     console.log(
       `[Worker ${this.id}] DOWNLOAD_START | File: ${item.name} | FileId: ${item.sourceId} | ` +
-      `Size: ${item.size} | ExportMIME: ${exportMimeType || 'none'}`
+      `Size: ${item.size} | TargetMIME: ${targetMimeType} | ExportMIME: ${exportMimeType || 'none'}`
     );
 
     let downloadRes: any;
@@ -327,11 +322,6 @@ export class UploadWorker {
     const srcStream = downloadRes.data;
     this.activeSourceStream = srcStream;
 
-    console.log(
-      `[Worker ${this.id}] DOWNLOAD_STREAM_OBTAINED | File: ${item.name} | FileId: ${item.sourceId}`
-    );
-
-    // ─── Step 5: Build progress-tracking PassThrough ──────────────────────────
     const progressPT = new PassThrough({
       highWaterMark: this.config.streamBufferSize || 4 * 1024 * 1024
     });
@@ -344,7 +334,7 @@ export class UploadWorker {
 
     progressPT.on('data', (chunk: Buffer) => {
       this.lastActivity = Date.now();
-      this.lastProgressAt = Date.now(); // Update global progress timestamp for stall detection
+      this.lastProgressAt = Date.now();
       this.uploadBytesTracked += chunk.length;
       bytesSinceLast += chunk.length;
       this.stateManager.reportProgressBytes(chunk.length);
@@ -358,38 +348,43 @@ export class UploadWorker {
       }
     });
 
-    progressPT.on('error', (err) => {
+    progressPT.on('error', (err: Error) => {
       console.error(
-        `[Worker ${this.id}] PROGRESS_STREAM_ERROR | File: ${item.name} | ` +
-        `FileId: ${item.sourceId} | Error: ${err.message}`
+        `[Worker ${this.id}] PROGRESS_STREAM_ERROR | File: ${item.name} | Error: ${err.message}`
       );
     });
 
-    // Forward errors from source stream into passthrough
     srcStream.on('error', (err: Error) => {
       console.error(
-        `[Worker ${this.id}] DOWNLOAD_STREAM_ERROR | File: ${item.name} | ` +
-        `FileId: ${item.sourceId} | Error: ${err.message}`
+        `[Worker ${this.id}] DOWNLOAD_STREAM_ERROR | File: ${item.name} | Error: ${err.message}`
       );
-      if (!progressPT.destroyed) progressPT.destroy(err);
+      if (!progressPT.destroyed) try { progressPT.destroy(err); } catch (_) {}
     });
 
-    // Abort signal handler — force-destroys streams for immediate socket release
     const abortHandler = () => {
-      console.warn(
-        `[Worker ${this.id}] ABORT_SIGNAL | File: ${item.name} | Destroying streams.`
-      );
-      if (!srcStream.destroyed) try { (srcStream as any).destroy(new Error('Aborted')); } catch (_) {}
-      if (!progressPT.destroyed) try { progressPT.destroy(new Error('Aborted')); } catch (_) {}
+      console.warn(`[Worker ${this.id}] ABORT_SIGNAL | File: ${item.name} | Cleaning streams.`);
+      this.cleanupActiveStreams();
     };
     controller.signal.addEventListener('abort', abortHandler, { once: true });
 
-    // Pipe download → passthrough (non-blocking, drives upload body)
     srcStream.pipe(progressPT);
 
-    // ─── Step 6: Upload stall watchdog ────────────────────────────────────────
-    // Independently checks byte progress every 15s.
-    // If no bytes for UPLOAD_STALL_TIMEOUT_MS → abort with UploadStallError.
+    // PRE-UPLOAD STREAM STATE VALIDATION (ISSUE 2)
+    if (
+      srcStream.readableEnded ||
+      srcStream.destroyed ||
+      (srcStream as any).closed ||
+      progressPT.readableEnded ||
+      progressPT.destroyed ||
+      progressPT.closed
+    ) {
+      this.cleanupActiveStreams();
+      throw new DownloadError(
+        `Download stream for file "${item.name}" reached EOF or was destroyed before upload creation.`,
+        { isRetryable: true }
+      );
+    }
+
     const uploadStallTimer = setInterval(() => {
       if (controller.signal.aborted) {
         clearInterval(uploadStallTimer);
@@ -400,41 +395,32 @@ export class UploadWorker {
       if (stallElapsed >= UPLOAD_STALL_CHECK_INTERVAL_MS) {
         const bytesDelta = this.uploadBytesTracked - lastStallBytes;
         if (bytesDelta === 0) {
-          // No progress since last check
           const totalStall = now - this.lastProgressAt;
           if (totalStall >= UPLOAD_STALL_TIMEOUT_MS) {
             console.error(
               `[Worker ${this.id}] UPLOAD_STALL_DETECTED | File: ${item.name} | ` +
-              `FileId: ${item.sourceId} | BytesTransferred: ${this.uploadBytesTracked} | ` +
               `StallDuration: ${Math.round(totalStall / 1000)}s | Aborting.`
             );
             this.isDead = true;
             this.abort('upload stall');
           }
         } else {
-          // Progress was made — reset stall baseline
           lastStallBytes = this.uploadBytesTracked;
           lastStallCheckTime = now;
         }
       }
     }, UPLOAD_STALL_CHECK_INTERVAL_MS);
 
-    // ─── Step 7: Mark as UPLOADING ────────────────────────────────────────────
     await this.stateManager.updateState(item.id, 'UPLOADING');
 
     console.log(
       `[Worker ${this.id}] UPLOAD_START | File: ${item.name} | FileId: ${item.sourceId} | ` +
-      `DestParentId: ${destParentId} | TargetMIME: ${targetMimeType} | ` +
-      `TimeoutMs: ${computeTransferTimeout(item.size || 0)}`
+      `TargetMIME: ${targetMimeType}`
     );
 
     let uploadedFileId: string;
 
     try {
-      // ─── Step 8: Upload with race against a hard socket-destroying timeout ───
-      // KEY FIX: We cannot rely on AbortController alone to terminate drive.files.create()
-      // when it's already streaming. We use Promise.race() where the reject branch
-      // destroys the streams AND the controller, ensuring the HTTP socket is released.
       const uploadPromise = this.destDrive.files.create(
         {
           requestBody: {
@@ -442,16 +428,16 @@ export class UploadWorker {
             parents: [destParentId!],
             mimeType: targetMimeType
           },
-          media: { body: progressPT },
+          media: {
+            mimeType: targetMimeType,
+            body: progressPT
+          },
           fields: 'id'
         },
         { signal: controller.signal }
       );
 
       const timeoutPromise = new Promise<never>((_, reject) => {
-        // The upload part of the timeout: if 5 minutes pass without upload completing,
-        // force-kill the streams. Note: the global timeout already covers this, but
-        // this provides an additional safety net specifically for the upload phase.
         const uploadPhaseTimeout = Math.max(
           5 * 60 * 1000,
           computeTransferTimeout(item.size || 0)
@@ -462,9 +448,7 @@ export class UploadWorker {
               `[Worker ${this.id}] UPLOAD_PHASE_TIMEOUT | File: ${item.name} | ` +
               `BytesMoved: ${this.uploadBytesTracked}`
             );
-            // Force-destroy streams to break the upload body pump
-            if (!srcStream.destroyed) try { (srcStream as any).destroy(); } catch (_) {}
-            if (!progressPT.destroyed) try { progressPT.destroy(); } catch (_) {}
+            this.cleanupActiveStreams();
           }
           reject(new UploadTimeoutError(
             `Upload phase timeout for file "${item.name}" (${item.sourceId})`,
@@ -483,28 +467,24 @@ export class UploadWorker {
       }
 
       uploadedFileId = createRes.data.id;
-      console.log(
-        `[Worker ${this.id}] UPLOAD_COMPLETE | File: ${item.name} | FileId: ${item.sourceId} | ` +
-        `DestFileId: ${uploadedFileId} | BytesTransferred: ${this.uploadBytesTracked} | ` +
-        `Duration: ${Date.now() - this.startedAt}ms`
-      );
     } finally {
       clearInterval(uploadStallTimer);
       controller.signal.removeEventListener('abort', abortHandler);
-      // Guaranteed stream cleanup regardless of success or failure
-      if (!progressPT.destroyed) try { progressPT.destroy(); } catch (_) {}
-      if (!srcStream.destroyed) try { (srcStream as any).destroy(); } catch (_) {}
+      this.cleanupActiveStreams();
     }
 
-    // ─── Step 9: Commit checkpoint and mark SUCCESS ───────────────────────────
     await this.stateManager.updateState(item.id, 'VERIFYING');
-    await saveCheckpoint(this.jobId, 'file', destParentId!, item.sourceId, 'completed');
+    await saveCheckpoint(this.jobId, 'file', destParentId!, item.sourceId, 'completed', {
+      fileName: item.name,
+      mimeType: targetMimeType,
+      size: item.size
+    });
     await this.stateManager.commitSuccess(item);
     this.rateLimiter.reportSuccess();
 
     console.log(
       `[Worker ${this.id}] FILE_SUCCESS | File: ${item.name} | FileId: ${item.sourceId} | ` +
-      `DestFileId: ${uploadedFileId} | Size: ${item.size} | UploadedBytes: ${this.uploadBytesTracked}`
+      `DestFileId: ${uploadedFileId} | Size: ${item.size}`
     );
   }
 }

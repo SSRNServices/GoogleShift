@@ -81,7 +81,7 @@ export class FileScheduler implements ISchedulerHandle {
     folderCache: Map<string, string>
   ) {
     this.jobId = jobId;
-    this.manifestId = manifestId;
+    this.manifestId = manifestId || jobId;
     this.sourceDrive = sourceDrive;
     this.destDrive = destDrive;
     this.options = options;
@@ -143,12 +143,10 @@ export class FileScheduler implements ISchedulerHandle {
         worker.isDead = true;
         worker.abort('watchdog stall recovery');
 
-        // Reset manifest to QUEUED so it re-enters the queue
         if (worker.currentItem) {
           await this.stateManager.resetToQueued(worker.currentItem.id).catch(e => {
             console.error(`[FileScheduler] WATCHDOG_RESET_FAILED | ${worker.currentItem?.id}: ${e.message}`);
           });
-          // Remove from enqueued set so it can be re-categorized when it re-appears in DB
           this.enqueuedFiles.delete(worker.currentItem.id);
         }
         abortedCount++;
@@ -164,16 +162,7 @@ export class FileScheduler implements ISchedulerHandle {
 
   // ── Internal helpers ──────────────────────────────────────────────────────────
 
-  /**
-   * Retry a file: increment retry count, reset manifest to QUEUED, re-enqueue.
-   *
-   * CRITICAL FIX: We call resetToQueued() BEFORE categorizeAndPush().
-   * The previous version skipped this, leaving the item in UPLOADING state,
-   * which meant ManifestStorage.getPendingFiles() (query: status='QUEUED') would
-   * never find it. The item silently vanished from the queue.
-   */
   private retryJob = async (item: ManifestItem): Promise<void> => {
-    // Guard: don't re-queue items already in terminal state
     if (item.status === 'SUCCESS' || item.status === 'FAILED') return;
 
     try {
@@ -185,25 +174,33 @@ export class FileScheduler implements ISchedulerHandle {
           `JobId: ${this.jobId} | Retries: ${count} | Marking FAILED.`
         );
         await this.stateManager.updateState(item.id, 'FAILED');
-        // Remove from enqueued set so it's not counted as in-flight
+        const { saveCheckpoint } = await import('../utils/database');
+        const destParentId = item.destParentId || this.folderCache.get(item.sourceParentId) || 'root';
+        await saveCheckpoint(this.jobId, 'file', destParentId, item.sourceId, 'failed', {
+          fileName: item.name,
+          mimeType: item.mimeType,
+          size: item.size,
+          error: `Retry count exhausted after ${count} attempts`
+        }).catch(() => {});
         this.enqueuedFiles.delete(item.id);
         return;
       }
 
-      const delay = Math.min(30_000, Math.pow(2, count - 1) * 1000); // cap at 30s
+      const delay = Math.min(30_000, Math.pow(2, count - 1) * 1000);
       console.log(
         `[FileScheduler] RETRY | File: ${item.name} | FileId: ${item.sourceId} | ` +
         `Attempt: ${count} | DelayMs: ${delay} | JobId: ${this.jobId}`
       );
 
-      // KEY FIX: Reset to QUEUED in the DB BEFORE re-enqueueing in memory.
-      // This ensures getPendingFiles() can see it on the next replenish cycle.
-      await this.stateManager.resetToQueued(item.id);
+      const { updateJobProgress } = await import('../utils/database');
+      await updateJobProgress(this.jobId, {
+        currentAction: `Retrying ${item.name} (Attempt ${count})`,
+        currentFile: item.name
+      }).catch(() => {});
 
-      // Remove from in-memory enqueued set so categorizeAndPush accepts it
+      await this.stateManager.resetToQueued(item.id);
       this.enqueuedFiles.delete(item.id);
 
-      // Re-enqueue after backoff delay
       setTimeout(() => {
         this.categorizeAndPush(item);
       }, delay);
@@ -211,7 +208,6 @@ export class FileScheduler implements ISchedulerHandle {
       console.error(
         `[FileScheduler] RETRY_ERROR | File: ${item.name} | Error: ${e.message}`
       );
-      // On retry bookkeeping failure, mark as failed to avoid infinite retry
       await this.stateManager.updateState(item.id, 'FAILED').catch(() => {});
       this.enqueuedFiles.delete(item.id);
     }

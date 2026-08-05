@@ -46,7 +46,7 @@ export class MigrationStateManager {
 
   // ── Speed / ETA tracking ──────────────────────────────────────────────────────
   private speedSamples: number[] = [];
-  private lastEmitTime: number = Date.now();
+  private lastEmitTime: number = 0;
   private lastTransferredBytes: bigint = BigInt(0);
   private zeroSpeedCount: number = 0;
 
@@ -56,9 +56,9 @@ export class MigrationStateManager {
   // ── Pending write counter (used by FileScheduler to detect idle) ──────────────
   private pendingWrites: number = 0;
 
-  constructor(jobId: string, manifestId: string) {
+  constructor(jobId: string, manifestId?: string) {
     this.jobId = jobId;
-    this.manifestId = manifestId;
+    this.manifestId = manifestId || jobId;
 
     // Progress emission runs independently — never blocks worker commits
     this.progressIntervalId = setInterval(async () => {
@@ -257,7 +257,7 @@ export class MigrationStateManager {
       let speed = 0;
       let eta: number | null = null;
 
-      if (elapsedSec >= 1.0) {
+      if (elapsedSec >= 1.0 || this.lastEmitTime === 0) {
         const bytesDiff = Number(transferredBytes - this.lastTransferredBytes);
 
         if (bytesDiff > 0) {
@@ -293,7 +293,7 @@ export class MigrationStateManager {
       }
 
       // ── Current active file / folder ──────────────────────────────────────────
-      const activeFile = await prisma.migrationManifest.findFirst({
+      const activeFile = await prisma.migrationManifest?.findFirst?.({
         where: {
           jobId: this.manifestId,
           isFolder: false,
@@ -301,7 +301,7 @@ export class MigrationStateManager {
         },
         select: { name: true }
       });
-      const activeFolder = await prisma.migrationManifest.findFirst({
+      const activeFolder = await prisma.migrationManifest?.findFirst?.({
         where: {
           jobId: this.manifestId,
           isFolder: true,

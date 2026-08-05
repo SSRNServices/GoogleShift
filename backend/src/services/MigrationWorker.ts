@@ -165,15 +165,23 @@ export class MigrationWorker {
       );
 
       // ── Completion ────────────────────────────────────────────────────────────
-      const finalStatus = 'completed';
+      const summaryStats = await stateManager.getSummaryStats(targetManifestId);
+      const finalStatus = summaryStats.failedFiles > 0 ? 'completed_with_errors' : 'completed';
+
       console.log(
         `\n[MigrationWorker] JOB_COMPLETE | JobId: ${job.jobId} | ` +
         `Duration: ${Date.now() - startTime}ms | Status: ${finalStatus} | ` +
+        `FailedFiles: ${summaryStats.failedFiles} | ` +
         `Timestamp: ${new Date().toISOString()}`
       );
-      await logJobEvent(job.jobId, `[STATE] COMPLETED`);
+      await logJobEvent(job.jobId, `[STATE] ${finalStatus.toUpperCase()}`);
       await updateJobStatus(job.jobId, 'COMPLETED');
-      await updateJobProgress(job.jobId, { status: finalStatus, networkStatus: 'online' });
+      await updateJobProgress(job.jobId, {
+        status: finalStatus,
+        percentage: 100,
+        networkStatus: 'online',
+        currentAction: finalStatus === 'completed_with_errors' ? 'Completed with Errors' : 'Completed'
+      });
 
       // Isolated post-completion telemetry (non-critical)
       try {

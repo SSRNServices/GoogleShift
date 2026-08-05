@@ -89,6 +89,57 @@ router.get('/history', requireUserAuth, async (req, res) => {
   }
 });
 
+async function getDetailedFailedItems(jobId: string, manifestId?: string) {
+  try {
+    const targetId = manifestId || jobId;
+    const failedManifestItems = await prisma.migrationManifest.findMany({
+      where: { jobId: targetId, status: 'FAILED', isFolder: false },
+      select: { id: true, name: true, mimeType: true, size: true, retryCount: true }
+    });
+
+    const failedItems = await prisma.migrationItem.findMany({
+      where: { jobId, status: 'FAILED' }
+    });
+    const errMap = new Map<string, string>();
+    for (const item of failedItems) {
+      if (item.error) errMap.set(item.fileId, item.error);
+    }
+
+    return failedManifestItems.map(item => {
+      const rawError = errMap.get(item.id) || 'Transfer retries exhausted';
+      let errorMsg = rawError;
+      let classification = 'Stream Lifecycle Error';
+
+      if (rawError.includes('Classification:')) {
+        const parts = rawError.split('Classification:');
+        errorMsg = parts[0].trim().replace(/\|$/, '').trim();
+        classification = parts[1].trim();
+      } else if (rawError.toLowerCase().includes('timeout')) {
+        classification = 'Timeout Error';
+      } else if (rawError.toLowerCase().includes('stall')) {
+        classification = 'Network Stall Error';
+      } else if (rawError.toLowerCase().includes('rate')) {
+        classification = 'Rate Limit Error';
+      } else if (rawError.toLowerCase().includes('google api')) {
+        classification = 'Google API Error';
+      }
+
+      return {
+        id: item.id,
+        name: item.name || 'Unknown File',
+        mimeType: item.mimeType || 'application/octet-stream',
+        size: Number(item.size || 0),
+        retryCount: item.retryCount || 5,
+        error: errorMsg,
+        classification,
+        retryExhausted: true
+      };
+    });
+  } catch (e) {
+    return [];
+  }
+}
+
 // Fetch full migration details by jobId
 router.get('/:jobId', requireUserAuth, async (req, res) => {
   try {
@@ -111,18 +162,38 @@ router.get('/:jobId', requireUserAuth, async (req, res) => {
     }
 
     const logs = job.logs.map(l => l.message);
+    const isTerminal = ['COMPLETED', 'FAILED', 'CANCELLED'].includes(job.state);
+    let computedStatus = job.state.toLowerCase();
+    if (job.state === 'COMPLETED') {
+      computedStatus = job.failedFiles > 0 ? 'completed_with_errors' : 'completed';
+    }
+
+    const processed = job.completedFiles + job.failedFiles;
+    let filePercentage = job.totalFiles > 0 ? Math.min(100, Math.floor((processed / job.totalFiles) * 100)) : 0;
+    let bytePercentage = job.totalBytes > BigInt(0) ? Math.min(100, Math.floor((Number(job.transferredBytes) / Number(job.totalBytes)) * 100)) : 0;
+
+    if (isTerminal) {
+      filePercentage = 100;
+      bytePercentage = 100;
+    }
+    const percentage = isTerminal ? 100 : (job.totalBytes > BigInt(0) ? bytePercentage : filePercentage);
+
+    const failedItems = await getDetailedFailedItems(jobId, job.manifestId || undefined);
 
     res.json(serializeBigInt({
       jobId: job.id,
-      status: job.state.toLowerCase(),
+      status: computedStatus,
       sessionId: job.sessionId,
       startedAt: job.startedAt,
       completedAt: job.completedAt,
       sourceEmail: job.session?.sourceEmail,
       destinationEmail: job.session?.destinationEmail,
+      failedItems,
       progress: {
-        status: job.state.toLowerCase(),
-        percentage: job.totalBytes > BigInt(0) ? Math.min(100, Math.floor((Number(job.transferredBytes) / Number(job.totalBytes)) * 100)) : (job.totalFiles > 0 ? Math.min(100, Math.floor(((job.completedFiles + job.failedFiles) / job.totalFiles) * 100)) : 0),
+        status: computedStatus,
+        percentage,
+        bytePercentage,
+        filePercentage,
         totalFiles: job.totalFiles,
         completedFiles: job.completedFiles,
         failedFiles: job.failedFiles,
@@ -131,10 +202,10 @@ router.get('/:jobId', requireUserAuth, async (req, res) => {
         totalBytes: job.totalBytes,
         transferredBytes: job.transferredBytes,
         speedBytesPerSecond: job.speed,
-        remainingSeconds: job.eta,
-        currentAction: job.currentAction,
-        currentFile: (job as any).currentFile || '',
-        currentFolder: (job as any).currentFolder || ''
+        remainingSeconds: isTerminal ? null : job.eta,
+        currentAction: isTerminal ? (computedStatus === 'completed_with_errors' ? 'Completed with Errors' : 'Completed') : job.currentAction,
+        currentFile: isTerminal ? 'Completed' : ((job as any).currentFile || ''),
+        currentFolder: isTerminal ? 'Completed' : ((job as any).currentFolder || '')
       },
       logs,
       errors: logs.filter(l => l.includes('FAILED') || l.includes('Error'))
@@ -170,15 +241,28 @@ router.get('/:jobId/live', requireUserAuth, async (req, res) => {
     const completed = job.completedFiles;
     const totalFiles = job.totalFiles;
     const failed = job.failedFiles;
+    const processed = completed + failed;
+
+    const isTerminal = ['COMPLETED', 'FAILED', 'CANCELLED'].includes(job.state);
+    let computedStatus = job.state.toLowerCase();
+    if (job.state === 'COMPLETED') {
+      computedStatus = failed > 0 ? 'completed_with_errors' : 'completed';
+    }
 
     let percentage = 0;
-    if (totalBytes > 0) percentage = Math.floor((transferred / totalBytes) * 100);
-    else if (totalFiles > 0) percentage = Math.floor(((completed + failed) / totalFiles) * 100);
+    if (isTerminal) {
+      percentage = 100;
+    } else if (totalBytes > 0) {
+      percentage = Math.floor((transferred / totalBytes) * 100);
+    } else if (totalFiles > 0) {
+      percentage = Math.floor((processed / totalFiles) * 100);
+    }
 
     const elapsed = job.startedAt ? Date.now() - job.startedAt.getTime() : 0;
+    const failedItems = await getDetailedFailedItems(jobId, job.manifestId || undefined);
 
     res.json(serializeBigInt({
-      status: job.state.toLowerCase(),
+      status: computedStatus,
       percentage: Math.min(percentage, 100),
       totalFolders: job.totalFolders,
       completedFolders: (job as any).completedFolders || 0,
@@ -188,11 +272,12 @@ router.get('/:jobId/live', requireUserAuth, async (req, res) => {
       totalBytes,
       transferredBytes: transferred,
       speedBytesPerSecond: job.speed,
-      remainingSeconds: job.eta,
+      remainingSeconds: isTerminal ? null : job.eta,
       elapsed,
-      currentAction: job.currentAction,
-      currentFile: (job as any).currentFile || '',
-      currentFolder: (job as any).currentFolder || '',
+      currentAction: isTerminal ? (computedStatus === 'completed_with_errors' ? 'Completed with Errors' : 'Completed') : job.currentAction,
+      currentFile: isTerminal ? 'Completed' : ((job as any).currentFile || ''),
+      currentFolder: isTerminal ? 'Completed' : ((job as any).currentFolder || ''),
+      failedItems,
       logs: job.logs.map(l => l.message).reverse()
     }));
   } catch (error: any) {
@@ -459,15 +544,22 @@ router.get('/:jobId/status', async (req, res) => {
       const completed = job.completedFiles;
       const totalFiles = job.totalFiles;
       const failed = job.failedFiles;
+      const processed = completed + failed;
 
-      // ── Separate byte-based and file-based progress — never mix ──────────────
-      let bytePercentage = 0;
-      let filePercentage = 0;
-      if (totalBytes > 0) bytePercentage = Math.min(100, Math.floor((transferred / totalBytes) * 100));
-      if (totalFiles > 0) filePercentage = Math.min(100, Math.floor(((completed + failed) / totalFiles) * 100));
+      const isTerminal = ['COMPLETED', 'FAILED', 'CANCELLED'].includes(job.state);
+      let computedStatus = job.state.toLowerCase();
+      if (job.state === 'COMPLETED') {
+        computedStatus = failed > 0 ? 'completed_with_errors' : 'completed';
+      }
 
-      // Use byte percentage as primary if available; fall back to file percentage
-      const percentage = totalBytes > 0 ? bytePercentage : filePercentage;
+      let bytePercentage = totalBytes > 0 ? Math.min(100, Math.floor((transferred / totalBytes) * 100)) : 0;
+      let filePercentage = totalFiles > 0 ? Math.min(100, Math.floor((processed / totalFiles) * 100)) : 0;
+
+      if (isTerminal) {
+        bytePercentage = 100;
+        filePercentage = 100;
+      }
+      const percentage = isTerminal ? 100 : (totalBytes > 0 ? bytePercentage : filePercentage);
 
       // ── Stall detection ───────────────────────────────────────────────────────
       const isActive = ['COPYING', 'PREPARING'].includes(job.state);
@@ -483,20 +575,18 @@ router.get('/:jobId/status', async (req, res) => {
           prevCompleted = completed;
         }
         stalled = stallTickCount >= STALL_TICK_THRESHOLD;
-        // Check if the watchdog is actively recovering this job
         const handle = jobRegistry.get(jobId);
         recovering = stalled && !!handle;
       }
 
-      // ── ETA: null (speed=0) maps to 0 in DB; send null to frontend ────────────
       const speed = job.speed || 0;
-      const remainingSeconds = (job.eta && job.eta > 0 && speed > 0) ? job.eta : null;
-
+      const remainingSeconds = (isTerminal || !isActive) ? null : ((job.eta && job.eta > 0 && speed > 0) ? job.eta : null);
       const elapsed = job.startedAt ? Date.now() - job.startedAt.getTime() : 0;
+      const failedItems = await getDetailedFailedItems(jobId, job.manifestId || undefined);
 
       res.write(`id: ${lastCheckedDate.getTime()}\n`);
       res.write(`data: ${JSON.stringify({
-        status: job.state.toLowerCase(),
+        status: computedStatus,
         percentage: Math.min(percentage, 100),
         bytePercentage,
         filePercentage,
@@ -511,13 +601,14 @@ router.get('/:jobId/status', async (req, res) => {
         stalled,
         recovering,
         elapsed,
-        currentAction: job.currentAction,
-        currentFile: (job as any).currentFile,
-        currentFolder: (job as any).currentFolder,
+        currentAction: isTerminal ? (computedStatus === 'completed_with_errors' ? 'Completed with Errors' : 'Completed') : job.currentAction,
+        currentFile: isTerminal ? 'Completed' : ((job as any).currentFile || ''),
+        currentFolder: isTerminal ? 'Completed' : ((job as any).currentFolder || ''),
+        failedItems,
         logs: logs.map((l: any) => l.message)
       })}\n\n`);
 
-      if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(job.state)) {
+      if (isTerminal) {
         clearInterval(interval);
         res.end();
       }

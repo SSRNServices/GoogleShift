@@ -8,7 +8,8 @@ vi.mock('../src/utils/database', () => ({
     migrationManifest: {
       groupBy: vi.fn(),
       updateMany: vi.fn(),
-      update: vi.fn()
+      update: vi.fn(),
+      findFirst: vi.fn()
     },
     migrationJob: {
       update: vi.fn()
@@ -45,6 +46,7 @@ describe('MigrationStateManager', () => {
       { isFolder: false, status: 'PENDING', _count: { id: 8 }, _sum: { size: BigInt(3500) } }
     ] as any);
 
+    (stateManager as any).lastEmitTime = 0;
     await (stateManager as any).emitProgress();
 
     expect(updateJobProgress).toHaveBeenCalledWith('test-job', expect.objectContaining({

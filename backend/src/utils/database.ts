@@ -262,7 +262,14 @@ export async function updateJobProgress(jobId: string, updates: any) {
   }
 }
 
-export async function saveCheckpoint(jobId: string, type: 'folder' | 'file', folderId: string, fileId: string, status: string) {
+export async function saveCheckpoint(
+  jobId: string,
+  type: 'folder' | 'file',
+  folderId: string,
+  fileId: string,
+  status: string,
+  metadata?: { fileName?: string; mimeType?: string; size?: number; error?: string }
+) {
   const itemStatusMap: Record<string, ItemStatus> = {
     'pending': ItemStatus.PENDING,
     'queued': ItemStatus.QUEUED,
@@ -272,13 +279,25 @@ export async function saveCheckpoint(jobId: string, type: 'folder' | 'file', fol
     'failed': ItemStatus.FAILED
   };
 
+  const itemStatus = itemStatusMap[status.toLowerCase()] || ItemStatus.PENDING;
+
   await prisma.migrationItem.upsert({
     where: { jobId_fileId: { jobId, fileId: fileId || folderId } },
-    update: { status: itemStatusMap[status.toLowerCase()] || ItemStatus.PENDING },
+    update: {
+      status: itemStatus,
+      ...(metadata?.fileName ? { fileName: metadata.fileName } : {}),
+      ...(metadata?.mimeType ? { mimeType: metadata.mimeType } : {}),
+      ...(metadata?.size !== undefined ? { size: BigInt(metadata.size) } : {}),
+      ...(metadata?.error ? { error: metadata.error } : {})
+    },
     create: {
       jobId,
       fileId: fileId || folderId,
-      status: itemStatusMap[status.toLowerCase()] || ItemStatus.PENDING
+      status: itemStatus,
+      fileName: metadata?.fileName,
+      mimeType: metadata?.mimeType,
+      size: metadata?.size !== undefined ? BigInt(metadata.size) : BigInt(0),
+      error: metadata?.error
     }
   });
 }

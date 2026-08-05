@@ -1,8 +1,19 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { migrationApi } from '../api/migrationApi';
-import { Play, Pause, XCircle, ArrowLeft, Loader2, CheckCircle, AlertCircle, AlertTriangle, RefreshCw, Zap } from 'lucide-react';
+import { XCircle, ArrowLeft, Loader2, CheckCircle, AlertCircle, AlertTriangle, RefreshCw, Zap } from 'lucide-react';
 import { API_URL } from '../config/api';
+
+interface FailedItemReport {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  retryCount: number;
+  error: string;
+  classification: string;
+  retryExhausted: boolean;
+}
 
 interface MigrationStatus {
   status: string;
@@ -24,6 +35,7 @@ interface MigrationStatus {
   recovering?: boolean;
   retryCount?: number;
   logs: string[];
+  failedItems?: FailedItemReport[];
 }
 
 export default function MigrationProgress() {
@@ -53,13 +65,13 @@ export default function MigrationProgress() {
     stalled: false,
     recovering: false,
     retryCount: 0,
-    logs: []
+    logs: [],
+    failedItems: []
   });
 
   const [loading, setLoading] = useState(true);
   const [connectionError, setConnectionError] = useState<string | null>(null);
 
-  // Speed moving average (last 10 samples)
   const speedSamplesRef = useRef<number[]>([]);
   const [averageSpeed, setAverageSpeed] = useState(0);
 
@@ -88,7 +100,6 @@ export default function MigrationProgress() {
     }
   }, [queryJobId]);
 
-  // Initial hydration
   useEffect(() => {
     if (!jobId) return;
     const hydrateFromBackend = async () => {
@@ -116,7 +127,8 @@ export default function MigrationProgress() {
             stalled: false,
             recovering: false,
             retryCount: 0,
-            logs: details.logs || []
+            logs: details.logs || [],
+            failedItems: details.failedItems || []
           });
         }
         setLoading(false);
@@ -128,7 +140,6 @@ export default function MigrationProgress() {
     hydrateFromBackend();
   }, [jobId]);
 
-  // SSE live updates
   useEffect(() => {
     if (!jobId) return;
 
@@ -158,7 +169,6 @@ export default function MigrationProgress() {
           return;
         }
 
-        // Update moving average speed
         if (data.speedBytesPerSecond > 0) {
           speedSamplesRef.current.push(data.speedBytesPerSecond);
           if (speedSamplesRef.current.length > 10) speedSamplesRef.current.shift();
@@ -181,9 +191,9 @@ export default function MigrationProgress() {
           return {
             ...prev,
             ...data,
-            // Ensure remainingSeconds is properly handled (null = calculating)
             remainingSeconds: data.remainingSeconds ?? null,
-            logs: combinedLogs.slice(-100)
+            logs: combinedLogs.slice(-100),
+            failedItems: data.failedItems || prev.failedItems || []
           };
         });
 
@@ -305,6 +315,8 @@ export default function MigrationProgress() {
   const lastErrorLog = status.logs?.slice().reverse().find(l => l.includes('FAILED') || l.includes('Error') || l.includes('not authenticated')) || 'Migration encountered an unrecoverable error.';
 
   const etaDisplay = (() => {
+    if (status.status === 'completed' || status.status === 'completed_with_errors') return 'Completed';
+    if (status.status === 'failed' || status.status === 'cancelled') return 'N/A';
     if (!isActive) return null;
     if (status.stalled && !status.recovering) return '⚠ Stalled';
     if (status.recovering) return '↺ Recovering...';
@@ -312,8 +324,11 @@ export default function MigrationProgress() {
     return formatted ?? 'Calculating...';
   })();
 
-  const byteProgressPct = Math.min(100, status.bytePercentage ?? status.percentage ?? 0);
-  const fileProgressPct = Math.min(100, status.filePercentage ?? 0);
+  const byteProgressPct = isCompleted ? 100 : Math.min(100, status.bytePercentage ?? status.percentage ?? 0);
+  const fileProgressPct = isCompleted ? 100 : Math.min(100, status.filePercentage ?? 0);
+
+  const displayFolder = isCompleted ? (status.status === 'completed_with_errors' ? 'Completed with Errors' : 'Completed') : (status.currentFolder || status.currentAction || 'Active Migration');
+  const displayFile = isCompleted ? (status.status === 'completed_with_errors' ? 'Completed with Errors' : 'Completed') : (status.currentFile || status.currentAction || 'Transferring...');
 
   return (
     <div className="max-w-5xl mx-auto py-8 space-y-6">
@@ -331,7 +346,7 @@ export default function MigrationProgress() {
             ) : (
               <Loader2 className="w-6 h-6 text-indigo-500 animate-spin" />
             )}
-            {isFailed ? 'Migration Failed' : isCompleted ? 'Migration Finished' : status.stalled ? 'Migration Stalled' : 'Migration in Progress'}
+            {isFailed ? 'Migration Failed' : isCompleted ? (status.status === 'completed_with_errors' ? 'Completed with Errors' : 'Migration Completed') : status.stalled ? 'Migration Stalled' : 'Migration in Progress'}
           </h1>
           <p className="text-gray-500 capitalize mt-1">{status.status.replace(/_/g, ' ')}</p>
         </div>
@@ -496,18 +511,18 @@ export default function MigrationProgress() {
         <div className="space-y-3">
           <div>
             <div className="text-xs text-gray-400 mb-1">Folder</div>
-            <div className="text-sm truncate bg-gray-50 dark:bg-gray-900 p-2 rounded font-mono">
-              {status.currentFolder || 'N/A'}
+            <div className="text-sm truncate bg-gray-50 dark:bg-gray-900 p-2 rounded font-mono text-gray-800 dark:text-gray-200">
+              {displayFolder}
             </div>
           </div>
           <div>
             <div className="text-xs text-gray-400 mb-1">File</div>
-            <div className={`text-sm truncate bg-gray-50 dark:bg-gray-900 p-2 rounded font-mono ${status.stalled ? 'text-yellow-600 dark:text-yellow-400' : ''}`}>
-              {status.currentFile || 'N/A'}
+            <div className={`text-sm truncate bg-gray-50 dark:bg-gray-900 p-2 rounded font-mono text-gray-800 dark:text-gray-200 ${status.stalled ? 'text-yellow-600 dark:text-yellow-400' : ''}`}>
+              {displayFile}
               {status.stalled && status.currentFile && <span className="ml-2 text-xs opacity-70">(stalled)</span>}
             </div>
           </div>
-          {status.currentAction && (
+          {status.currentAction && !isCompleted && (
             <div>
               <div className="text-xs text-gray-400 mb-1">Action</div>
               <div className="text-sm truncate bg-gray-50 dark:bg-gray-900 p-2 rounded text-gray-600 dark:text-gray-400">
@@ -517,6 +532,50 @@ export default function MigrationProgress() {
           )}
         </div>
       </div>
+
+      {/* Detailed Error Report Card (Issue 8) */}
+      {(status.failedFiles > 0 || (status.failedItems && status.failedItems.length > 0)) && (
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-red-200 dark:border-red-900 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-semibold text-red-900 dark:text-red-300 flex items-center gap-2">
+              <AlertCircle className="w-5 h-5 text-red-500" />
+              Failed Items Report ({status.failedFiles} file{status.failedFiles > 1 ? 's' : ''})
+            </h3>
+            <span className="text-xs px-2.5 py-1 rounded-full bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300 font-medium">
+              Retry Exhausted
+            </span>
+          </div>
+
+          <div className="space-y-3 max-h-80 overflow-y-auto">
+            {status.failedItems && status.failedItems.length > 0 ? (
+              status.failedItems.map((item, idx) => (
+                <div key={item.id || idx} className="bg-red-50 dark:bg-red-950/40 border border-red-100 dark:border-red-900/60 rounded-lg p-4 font-mono text-xs text-red-900 dark:text-red-200">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                    <span className="font-bold text-sm text-red-800 dark:text-red-300 truncate max-w-md">{item.name}</span>
+                    <span className="bg-red-200 dark:bg-red-900 text-red-800 dark:text-red-200 px-2 py-0.5 rounded text-2xs font-sans font-semibold">
+                      Classification: {item.classification}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-gray-600 dark:text-gray-400 mb-2 font-sans">
+                    <div><span className="text-gray-400">Type:</span> {item.mimeType}</div>
+                    <div><span className="text-gray-400">Size:</span> {formatBytes(item.size)}</div>
+                    <div><span className="text-gray-400">Attempts:</span> {item.retryCount} retries</div>
+                    <div><span className="text-gray-400">Status:</span> Retry Exhausted</div>
+                  </div>
+                  <div className="bg-white dark:bg-gray-900 p-2.5 rounded border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 break-words">
+                    <span className="font-semibold text-gray-500 dark:text-gray-400">Actual Error:</span> {item.error}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="bg-red-50 dark:bg-red-950/40 border border-red-100 dark:border-red-900/60 rounded-lg p-4 font-mono text-xs text-red-900 dark:text-red-200">
+                <p className="font-semibold">Failed files were detected during transfer verification.</p>
+                <p className="text-gray-600 dark:text-gray-400 mt-1 font-sans">Check live logs below for details on retry exhaustion and error traces.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Live Logs */}
       <div className="bg-gray-900 rounded-xl shadow-sm border border-gray-800 p-6 h-64 flex flex-col">
