@@ -3,7 +3,18 @@
 import "dotenv/config";
 import { defineConfig } from "prisma/config";
 
-const migrationUrl = (process.env["DIRECT_URL"] || process.env["DATABASE_URL"] || '').replace(/\?sslmode=require|&sslmode=require/, '');
+let rawUrl = (
+  process.env["DIRECT_URL"] || 
+  process.env["SUPABASE_DIRECT_URL"] || 
+  process.env["POSTGRES_URL_NON_POOLING"] || 
+  process.env["DATABASE_URL"] || 
+  ''
+).replace(/\?sslmode=require|&sslmode=require/, '');
+
+if (rawUrl.includes(':6543')) {
+  console.log('[PrismaConfig] Converting Supabase pooler port 6543 (Transaction mode) -> 5432 (Session mode for migrations)');
+  rawUrl = rawUrl.replace(':6543', ':5432');
+}
 
 export default defineConfig({
   schema: "prisma/schema.prisma",
@@ -11,6 +22,6 @@ export default defineConfig({
     path: "prisma/migrations",
   },
   datasource: {
-    url: migrationUrl,
+    url: rawUrl,
   },
 });

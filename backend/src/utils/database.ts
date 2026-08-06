@@ -13,6 +13,7 @@ const globalForPrisma = globalThis as unknown as {
 
 const envVarNames = [
   'DIRECT_URL',
+  'SUPABASE_DIRECT_URL',
   'POSTGRES_URL_NON_POOLING',
   'POSTGRES_URL',
   'SUPABASE_DB_URL',
@@ -29,6 +30,11 @@ for (const name of envVarNames) {
     connectionStringRaw = process.env[name] || '';
     break;
   }
+}
+
+if (connectionStringRaw.includes(':6543')) {
+  console.log('[DB] Converting Supabase pooler port 6543 (Transaction mode) -> 5432 (Session mode for write/DDL support)');
+  connectionStringRaw = connectionStringRaw.replace(':6543', ':5432');
 }
 
 const parseHost = (rawUrl: string) => {
@@ -244,9 +250,19 @@ export async function validateDatabaseSchema(): Promise<void> {
       SELECT typname FROM pg_type WHERE typname = 'DiscoveryState'
     `;
     if (enumRaw.length === 0) {
-      console.error(`❌ Missing enum type in database: DiscoveryState`);
-      console.error(`   Migration required: Run 'npx prisma migrate deploy'`);
-      mismatchCount++;
+      console.warn(`⚠️ Missing enum type DiscoveryState. Attempting self-healing DDL query...`);
+      try {
+        await pool.query(`
+          CREATE TYPE "DiscoveryState" AS ENUM ('CREATED', 'QUEUED', 'CONNECTING', 'DISCOVERING', 'SCANNING', 'FINALIZING', 'COMPLETED', 'FAILED', 'CANCELLED');
+          ALTER TABLE "DiscoveryJob" ALTER COLUMN "state" DROP DEFAULT;
+          ALTER TABLE "DiscoveryJob" ALTER COLUMN "state" TYPE "DiscoveryState" USING ("state"::text::"DiscoveryState");
+          ALTER TABLE "DiscoveryJob" ALTER COLUMN "state" SET DEFAULT 'QUEUED';
+        `);
+        console.log(`✓ Self-healing DDL query created DiscoveryState enum successfully.`);
+      } catch (ddlErr: any) {
+        console.error(`❌ Could not auto-create DiscoveryState enum: ${ddlErr.message}`);
+        mismatchCount++;
+      }
     } else {
       console.log(`  - Enum Check: DiscoveryState exists in PostgreSQL schema.`);
     }
