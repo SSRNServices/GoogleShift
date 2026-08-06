@@ -30,6 +30,18 @@ enum MigrationState {
   CANCELLED
 }
 
+enum DiscoveryState {
+  CREATED
+  QUEUED
+  CONNECTING
+  DISCOVERING
+  SCANNING
+  FINALIZING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
 enum ItemStatus {
   PENDING
   QUEUED
@@ -93,7 +105,7 @@ model DiscoveryJob {
   ownerId             String
   sessionId           String?  @unique
   manifestId          String   @unique
-  state               MigrationState @default(QUEUED)
+  state               DiscoveryState @default(QUEUED)
   sourceEmail         String?
   itemsParam          String?
   foldersFound        Int      @default(0)

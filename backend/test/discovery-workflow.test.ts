@@ -108,7 +108,7 @@ describe('Discovery Workflow Test Suite (Phases 1-13)', () => {
       id: 'active-job-1',
       ownerId: 'test-user-id',
       sessionId: 'session-1',
-      state: 'PREPARING',
+      state: 'CONNECTING',
       lastHeartbeat: new Date()
     } as any);
 
@@ -116,7 +116,7 @@ describe('Discovery Workflow Test Suite (Phases 1-13)', () => {
     await handler(req, res);
 
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'active-job-1', status: 'PREPARING' }));
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'active-job-1', status: 'CONNECTING' }));
     expect(prisma.discoveryJob.upsert).not.toHaveBeenCalled();
   });
 
@@ -126,7 +126,7 @@ describe('Discovery Workflow Test Suite (Phases 1-13)', () => {
     vi.mocked(prisma.discoveryJob.findUnique).mockResolvedValue({
       id: 'disc-job-1',
       sessionId: 'session-1',
-      state: 'PREPARING',
+      state: 'CONNECTING',
       foldersFound: 5,
       filesFound: 25,
       bytesFound: BigInt(1024),
@@ -137,7 +137,7 @@ describe('Discovery Workflow Test Suite (Phases 1-13)', () => {
     await handler(req, res);
 
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'disc-job-1', status: 'PREPARING', foldersFound: 5, filesFound: 25 }));
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'disc-job-1', status: 'CONNECTING', foldersFound: 5, filesFound: 25 }));
   });
 
   it('4. REST details status endpoint falls back to sessionId lookup if jobId not found directly', async () => {

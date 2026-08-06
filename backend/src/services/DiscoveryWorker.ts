@@ -15,10 +15,11 @@ export class DiscoveryWorker {
     formatAuditLog('WORKER_STARTED', { jobId: job.id, sessionId: job.sessionId, userId: job.ownerId, manifestId: job.manifestId });
     
     try {
-      console.log(`[DISCOVERY] Transitioning jobId=${job.id} state to PREPARING...`);
+      console.log(`[DISCOVERY] Transitioning jobId=${job.id} state to CONNECTING...`);
+      console.log("DISCOVERY STATUS CONNECTING");
       await prisma.discoveryJob.update({
         where: { id: job.id },
-        data: { state: 'PREPARING', startedAt: new Date() }
+        data: { state: 'CONNECTING', startedAt: new Date() }
       });
 
       if (job.sessionId) {
@@ -51,6 +52,15 @@ export class DiscoveryWorker {
       }, 5000);
 
       const onProgress = async (event: string, data: any) => {
+        if (event === 'MANIFEST_UPDATED') {
+          console.log("DISCOVERY STATUS FINALIZING");
+          await prisma.discoveryJob.update({
+            where: { id: job.id },
+            data: { state: 'FINALIZING' }
+          }).catch(() => {});
+          return;
+        }
+
         if (event === 'SCAN_FOLDER' || event === 'SCAN_PROGRESS' || event === 'SCAN_STARTED') {
            const now = Date.now();
            // Throttle DB updates to at most once per 1 second (1000ms) unless it's initial scan start
@@ -59,8 +69,7 @@ export class DiscoveryWorker {
            }
            lastDbUpdateMs = now;
 
-           const currentProgressState = (data.totalFolders > 0 || data.totalFiles > 0) ? 'SCANNING' : 'PREPARING';
-           console.log("DISCOVERY STATUS", currentProgressState);
+           console.log("DISCOVERY STATUS SCANNING");
 
            formatAuditLog('DISCOVERY_PROGRESS', {
              jobId: job.id,
@@ -79,7 +88,7 @@ export class DiscoveryWorker {
                () => prisma.discoveryJob.update({
                  where: { id: job.id },
                  data: {
-                   state: currentProgressState as any,
+                   state: 'SCANNING',
                    foldersFound: data.totalFolders || 0,
                    filesFound: data.totalFiles || 0,
                    bytesFound: data.totalBytes ? BigInt(data.totalBytes) : BigInt(0),
@@ -114,7 +123,7 @@ export class DiscoveryWorker {
       const totalFiles = summary?.totalFiles || 0;
       const totalBytes = summary?.totalBytes || 0;
 
-      console.log("DISCOVERY STATUS", "COMPLETED");
+      console.log("DISCOVERY STATUS COMPLETE");
       console.log("DISCOVERY COMPLETE");
       console.log(`[DISCOVERY] Discovery Finished for jobId=${job.id}. Totals -> Folders: ${totalFolders}, Files: ${totalFiles}, Bytes: ${totalBytes}`);
       formatAuditLog('DISCOVERY_COMPLETED', {
@@ -183,7 +192,7 @@ export class DiscoveryWorker {
   public async resumePendingJobs() {
     const pendingJobs = await prisma.discoveryJob.findMany({
       where: {
-        state: { in: ['QUEUED', 'COPYING', 'PREPARING'] }
+        state: { in: ['QUEUED', 'CONNECTING', 'DISCOVERING', 'SCANNING', 'FINALIZING'] }
       }
     });
     

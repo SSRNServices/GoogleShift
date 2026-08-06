@@ -97,7 +97,7 @@ router.post('/start', requireUserAuth, async (req: Request, res: Response) => {
       where: { sessionId }
     });
     
-    if (active && ['QUEUED', 'PREPARING', 'SCANNING'].includes(active.state)) {
+    if (active && ['QUEUED', 'CONNECTING', 'DISCOVERING', 'SCANNING', 'FINALIZING'].includes(active.state)) {
       const lastHeartbeatMs = active.lastHeartbeat ? active.lastHeartbeat.getTime() : (active.startedAt ? active.startedAt.getTime() : Date.now());
       const heartbeatAgeMs = Date.now() - lastHeartbeatMs;
 
@@ -269,7 +269,7 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
       const heartbeatAgeMs = Date.now() - lastHeartbeatMs;
       const TIMEOUT_THRESHOLD = Number(process.env.DISCOVERY_TIMEOUT_MS) || 300000;
 
-      if (['QUEUED', 'PREPARING', 'SCANNING'].includes(job.state) && heartbeatAgeMs > TIMEOUT_THRESHOLD) {
+      if (['QUEUED', 'CONNECTING', 'DISCOVERING', 'SCANNING', 'FINALIZING'].includes(job.state) && heartbeatAgeMs > TIMEOUT_THRESHOLD) {
          console.warn(`[DISCOVERY] Job ${job.id} heartbeat stale for ${heartbeatAgeMs}ms (> ${TIMEOUT_THRESHOLD}ms). Failing job.`);
          await prisma.discoveryJob.update({
            where: { id: job.id },
