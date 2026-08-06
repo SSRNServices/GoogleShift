@@ -153,16 +153,34 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
                 break;
               }
 
-              if (data.event === 'SCAN_COMPLETED') {
+              const rawStatus = (data.status || 'QUEUED').toUpperCase();
+              const isCompletedState = rawStatus === 'COMPLETED' || data.event === 'SCAN_COMPLETED' || data.status === 'completed';
+
+              if (isCompletedState) {
+                const summaryObj = data.data || {
+                  totalFolders: data.foldersFound || 0,
+                  totalFiles: data.filesFound || 0,
+                  totalBytes: data.bytesFound || 0,
+                  manifestId: data.manifestId
+                };
+
+                console.log('[Frontend DiscoveryScanner] Discovery Completed event received!', summaryObj);
                 setCompleted(true);
-                setFinalSummary(data.data);
+                setFinalSummary(summaryObj);
+                setStats(prev => ({
+                  ...prev,
+                  status: 'COMPLETED',
+                  folders: summaryObj.totalFolders || summaryObj.foldersFound || prev.folders,
+                  files: summaryObj.totalFiles || summaryObj.filesFound || prev.files,
+                  bytes: summaryObj.totalBytes || summaryObj.bytesFound || prev.bytes,
+                  message: 'Discovery complete!'
+                }));
                 isActive = false;
-                onComplete(data.data);
+                onComplete(summaryObj);
                 break;
               }
 
-              const isScanning = (data.foldersFound > 0 || data.filesFound > 0);
-              const currentStatus = isScanning ? 'SCANNING' : ((data.status || 'QUEUED').toUpperCase());
+              const currentStatus = data.foldersFound > 0 || data.filesFound > 0 ? 'SCANNING' : rawStatus;
               
               setStats({
                 status: currentStatus,
@@ -180,19 +198,6 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
                   : (data.currentFile ? `Scanning file: ${data.currentFile}` : `Scanning Google Drive...`)
               });
 
-              if (data.status === 'completed' && !completed) {
-                 setCompleted(true);
-                 setFinalSummary({
-                   totalFolders: data.foldersFound || 0,
-                   totalFiles: data.filesFound || 0,
-                   totalBytes: data.bytesFound || 0,
-                   manifestId: data.manifestId
-                 });
-                 isActive = false;
-                 onComplete(data);
-                 break;
-              }
-
             } catch (e) {
               console.warn('[Frontend] Non-fatal SSE parse update:', e);
             }
@@ -207,9 +212,12 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
               const details = await migrationApi.getJobDetails(jobId);
               if (details) {
                 lastProgressTimeRef.current = Date.now();
-                const isScanning = (details.foldersFound > 0 || details.filesFound > 0);
+                const rawStatus = (details.status || 'QUEUED').toUpperCase();
+                const isComplete = rawStatus === 'COMPLETED';
+
+                const currentStatus = isComplete ? 'COMPLETED' : ((details.foldersFound > 0 || details.filesFound > 0) ? 'SCANNING' : rawStatus);
                 setStats({
-                  status: isScanning ? 'SCANNING' : (details.status || 'QUEUED').toUpperCase(),
+                  status: currentStatus,
                   folders: details.foldersFound || 0,
                   files: details.filesFound || 0,
                   bytes: details.bytesFound || 0,
@@ -222,11 +230,18 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
                   message: details.currentFolder ? `Scanning folder: ${details.currentFolder}` : 'Scanning Google Drive...'
                 });
 
-                if (details.status === 'completed') {
+                if (isComplete) {
+                  const summaryObj = {
+                    totalFolders: details.foldersFound || 0,
+                    totalFiles: details.filesFound || 0,
+                    totalBytes: details.bytesFound || 0,
+                    manifestId: details.manifestId
+                  };
+                  console.log('[Frontend DiscoveryScanner] Polling fallback detected COMPLETED status!', summaryObj);
                   setCompleted(true);
-                  setFinalSummary(details);
+                  setFinalSummary(summaryObj);
                   isActive = false;
-                  onComplete(details);
+                  onComplete(summaryObj);
                   return;
                 } else if (details.status === 'failed') {
                   setInitError('Discovery job failed during background execution.');

@@ -134,6 +134,7 @@ export class DiscoveryWorker {
       });
       
       if (job.sessionId) {
+        console.log(`[DISCOVERY] Updating MigrationSession ${job.sessionId} with discoveryStatus=COMPLETED and manifestId=${job.manifestId}...`);
         await prisma.migrationSession.update({
           where: { id: job.sessionId },
           data: { discoveryStatus: 'COMPLETED', manifestId: job.manifestId }

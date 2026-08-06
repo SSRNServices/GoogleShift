@@ -241,6 +241,7 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
         id: job.id,
         jobId: job.id,
         sessionId: job.sessionId,
+        manifestId: job.manifestId,
         status: (job.state || 'QUEUED').toLowerCase(),
         foldersFound: job.foldersFound || 0,
         filesFound: job.filesFound || 0,
@@ -267,6 +268,7 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
   const interval = setInterval(async () => {
     try {
       heartbeatCount++;
+      // Send SSE ping comment every 10 seconds to prevent proxy dropouts
       if (heartbeatCount % 10 === 0) {
         res.write(':\n\n');
       }
@@ -321,6 +323,7 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
         bytesFound: job.bytesFound || BigInt(0),
         foldersPerSec,
         filesPerSec,
+        manifestId: job.manifestId,
         currentFolder: job.currentFolder || null,
         currentFile: job.currentFile || null,
         elapsed,

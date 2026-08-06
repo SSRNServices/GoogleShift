@@ -370,9 +370,9 @@ export default function Migration() {
         ) : (
           <button
             onClick={startMigration}
-            disabled={starting || !destSelected || sessionData?.discoveryStatus !== 'COMPLETED' || !sessionData?.manifestId}
+            disabled={starting || !destSelected || !isDiscoveryFinished}
             className="flex items-center px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50"
-            title={sessionData?.discoveryStatus !== 'COMPLETED' ? 'Run Discovery first.' : ''}
+            title={!isDiscoveryFinished ? 'Run Discovery first.' : ''}
           >
             {starting ? <Loader2 className="w-5 h-5 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
             Start Migration
