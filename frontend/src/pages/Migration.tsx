@@ -220,6 +220,8 @@ export default function Migration() {
     return true;
   };
 
+  const isDiscoveryFinished = sessionData?.discoveryStatus === 'COMPLETED' || !!manifestId || !!sessionData?.manifestId;
+
   return (
     <div className="max-w-4xl mx-auto py-8">
       <Toaster position="top-right" />
