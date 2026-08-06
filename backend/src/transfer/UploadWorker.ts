@@ -4,7 +4,7 @@ import { ManifestItem } from '../utils/ManifestStorage';
 import { AdaptiveRateLimiter } from './AdaptiveRateLimiter';
 import { MigrationStateManager } from '../services/MigrationStateManager';
 import { getCheckpoint, saveCheckpoint } from '../utils/database';
-import { PassThrough } from 'stream';
+import { Transform, TransformCallback } from 'stream';
 import {
   DownloadError,
   DownloadTimeoutError,
@@ -12,65 +12,27 @@ import {
   UploadTimeoutError,
   UploadStallError,
   GoogleApiError,
+  StreamLifecycleError,
   classifyError
 } from '../utils/errors';
 import { MigrationConfig } from './types';
 import { prisma } from '../utils/database';
 
-// TASK 3: MONKEY-PATCH PASSTHROUGH TO CAPTURE STACK TRACE ON PUSH AFTER EOF
-let monkeyPatchInstalled = false;
-function installPassThroughMonkeyPatch() {
-  if (monkeyPatchInstalled) return;
-  monkeyPatchInstalled = true;
+export class ProgressTransform extends Transform {
+  private onChunk: (chunkLength: number) => void;
 
-  const originalPush = PassThrough.prototype.push;
-  PassThrough.prototype.push = function (chunk: any, encoding?: any) {
-    if (this.readableEnded || (this as any)._readableState?.ended) {
-      console.error(
-        `\n${'='.repeat(80)}\n` +
-        `[CRITICAL_STREAM_DEBUG] PUSH_AFTER_EOF DETECTED!\n` +
-        `Chunk: ${chunk ? (chunk.length ? `${chunk.length} bytes` : typeof chunk) : 'null/EOF'}\n` +
-        `ReadableEnded: ${this.readableEnded} | Destroyed: ${this.destroyed} | Closed: ${(this as any).closed}\n` +
-        `STACK TRACE:\n${new Error().stack}\n` +
-        `${'='.repeat(80)}\n`
-      );
-    }
-    return originalPush.call(this, chunk, encoding);
-  };
+  constructor(onChunk: (chunkLength: number) => void, highWaterMark?: number) {
+    super({ highWaterMark });
+    this.onChunk = onChunk;
+  }
 
-  const originalWrite = PassThrough.prototype.write;
-  PassThrough.prototype.write = function (chunk: any, encoding?: any, cb?: any) {
-    if (this.writableEnded || (this as any)._writableState?.ended) {
-      console.error(
-        `\n${'='.repeat(80)}\n` +
-        `[CRITICAL_STREAM_DEBUG] WRITE_AFTER_END DETECTED!\n` +
-        `WritableEnded: ${this.writableEnded} | Destroyed: ${this.destroyed}\n` +
-        `STACK TRACE:\n${new Error().stack}\n` +
-        `${'='.repeat(80)}\n`
-      );
+  _transform(chunk: any, encoding: BufferEncoding, callback: TransformCallback): void {
+    if (chunk && chunk.length) {
+      this.onChunk(chunk.length);
     }
-    return originalWrite.call(this, chunk, encoding, cb);
-  };
-
-  const originalEnd = PassThrough.prototype.end;
-  PassThrough.prototype.end = function (chunk?: any, encoding?: any, cb?: any) {
-    if (this.writableEnded || (this as any)._writableState?.ended) {
-      // Ignore duplicate end if harmless, but log if chunk provided
-      if (chunk) {
-        console.error(
-          `\n${'='.repeat(80)}\n` +
-          `[CRITICAL_STREAM_DEBUG] END_WITH_CHUNK_AFTER_ENDED DETECTED!\n` +
-          `WritableEnded: ${this.writableEnded}\n` +
-          `STACK TRACE:\n${new Error().stack}\n` +
-          `${'='.repeat(80)}\n`
-        );
-      }
-    }
-    return originalEnd.call(this, chunk, encoding, cb);
-  };
+    callback(null, chunk);
+  }
 }
-
-installPassThroughMonkeyPatch();
 
 const MIN_EXPECTED_SPEED_BYTES_PER_SEC = 512 * 1024; // 512 KB/s
 const MIN_FILE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
@@ -85,7 +47,7 @@ function computeTransferTimeout(fileSizeBytes: number): number {
 
 function classifyErrorDetails(e: any): string {
   const msg = e?.message || '';
-  if (msg.includes('push() after EOF') || msg.includes('ERR_STREAM_PUSH_AFTER_EOF') || e?.name === 'StreamLifecycleError') {
+  if (msg.includes('push() after EOF') || msg.includes('ERR_STREAM_PUSH_AFTER_EOF') || e?.name === 'StreamLifecycleError' || e instanceof StreamLifecycleError) {
     return 'Stream Lifecycle Error';
   }
   if (e?.name === 'DownloadTimeoutError' || e?.name === 'UploadTimeoutError' || msg.includes('timeout')) {
@@ -131,7 +93,7 @@ export class UploadWorker {
 
   private controller: AbortController | null = null;
   private activeSourceStream: NodeJS.ReadableStream | null = null;
-  private activePassThrough: PassThrough | null = null;
+  private activePassThrough: ProgressTransform | null = null;
 
   constructor(
     id: number,
@@ -167,22 +129,25 @@ export class UploadWorker {
       this.controller.abort();
     }
 
-    this.cleanupActiveStreams();
+    this.cleanupActiveStreams(true);
   }
 
-  private cleanupActiveStreams(): void {
+  private cleanupActiveStreams(isErrorOrAbort: boolean = false): void {
     if (this.activeSourceStream) {
       try {
-        if (this.activePassThrough) this.activeSourceStream.unpipe(this.activePassThrough);
         this.activeSourceStream.removeAllListeners();
-        (this.activeSourceStream as any).destroy?.();
+        if (isErrorOrAbort && typeof (this.activeSourceStream as any).destroy === 'function' && !(this.activeSourceStream as any).destroyed) {
+          (this.activeSourceStream as any).destroy();
+        }
       } catch (_) {}
       this.activeSourceStream = null;
     }
     if (this.activePassThrough) {
       try {
         this.activePassThrough.removeAllListeners();
-        this.activePassThrough.destroy?.();
+        if (isErrorOrAbort && typeof this.activePassThrough.destroy === 'function' && !this.activePassThrough.destroyed) {
+          this.activePassThrough.destroy();
+        }
       } catch (_) {}
       this.activePassThrough = null;
     }
@@ -270,6 +235,7 @@ export class UploadWorker {
         e.message?.includes('Aborted');
 
       const classification = classifyErrorDetails(e);
+      const generalClass = classifyError(e);
       const formattedErrorMsg = `${e.message || 'Transfer failed'} | Classification: ${classification}`;
 
       if (isAbort) {
@@ -296,11 +262,18 @@ export class UploadWorker {
         });
       } catch (_) {}
 
-      // Atomic retry delegation without pre-emptive resetToQueued
-      await retryJob(item);
+      if (generalClass === 'permanent') {
+        console.warn(
+          `[Worker ${this.id}] NON_RETRIABLE_ERROR | File: ${item.name} | FileId: ${item.sourceId} | ` +
+          `Error: ${e.message} | Classification: ${classification}`
+        );
+        await this.stateManager.updateState(item.id, 'FAILED').catch(() => {});
+      } else {
+        await retryJob(item);
+      }
     } finally {
       clearTimeout(globalTimeoutHandle);
-      this.cleanupActiveStreams();
+      this.cleanupActiveStreams(false);
       this.controller = null;
       this.currentFile = null;
       this.currentItem = null;
@@ -403,31 +376,30 @@ export class UploadWorker {
     const srcStream = downloadRes.data;
     this.activeSourceStream = srcStream;
 
-    const progressPT = new PassThrough({
-      highWaterMark: this.config.streamBufferSize || 4 * 1024 * 1024
-    });
-    this.activePassThrough = progressPT;
-
     let bytesSinceLast = 0;
     let lastSpeedTime = Date.now();
     let lastStallBytes = 0;
     let lastStallCheckTime = Date.now();
 
-    progressPT.on('data', (chunk: Buffer) => {
-      this.lastActivity = Date.now();
-      this.lastProgressAt = Date.now();
-      this.uploadBytesTracked += chunk.length;
-      bytesSinceLast += chunk.length;
-      this.stateManager.reportProgressBytes(chunk.length);
+    const progressPT = new ProgressTransform(
+      (chunkLength: number) => {
+        this.lastActivity = Date.now();
+        this.lastProgressAt = Date.now();
+        this.uploadBytesTracked += chunkLength;
+        bytesSinceLast += chunkLength;
+        this.stateManager.reportProgressBytes(chunkLength);
 
-      const now = Date.now();
-      if (now - lastSpeedTime > 1000) {
-        const speed = (bytesSinceLast / (now - lastSpeedTime)) * 1000;
-        this.rateLimiter.reportBandwidth(speed);
-        lastSpeedTime = now;
-        bytesSinceLast = 0;
-      }
-    });
+        const now = Date.now();
+        if (now - lastSpeedTime > 1000) {
+          const speed = (bytesSinceLast / (now - lastSpeedTime)) * 1000;
+          this.rateLimiter.reportBandwidth(speed);
+          lastSpeedTime = now;
+          bytesSinceLast = 0;
+        }
+      },
+      this.config.streamBufferSize || 4 * 1024 * 1024
+    );
+    this.activePassThrough = progressPT;
 
     progressPT.on('error', (err: Error) => {
       console.error(
@@ -439,34 +411,19 @@ export class UploadWorker {
       console.error(
         `[Worker ${this.id}] DOWNLOAD_STREAM_ERROR | File: ${item.name} | Error: ${err.message}`
       );
-      try { srcStream.unpipe(progressPT); } catch (_) {}
       if (!progressPT.destroyed) try { progressPT.destroy(err); } catch (_) {}
     });
 
     const abortHandler = () => {
       console.warn(`[Worker ${this.id}] ABORT_SIGNAL | File: ${item.name} | Cleaning streams.`);
-      this.cleanupActiveStreams();
+      this.cleanupActiveStreams(true);
     };
     controller.signal.addEventListener('abort', abortHandler, { once: true });
 
-    // CRITICAL STREAM LIFECYCLE FIX (TASK 4 & 6):
-    // Pass { end: false } to pipe() and explicitly unpipe on srcStream 'end'/'close'
-    // BEFORE calling progressPT.end(). This prevents trailing socket close events on srcStream
-    // from attempting push()/write() on progressPT after progressPT is ended!
-    srcStream.pipe(progressPT, { end: false });
+    // Stream lifecycle managed automatically by Node.js streams via pipe
+    srcStream.pipe(progressPT);
 
-    srcStream.once('end', () => {
-      try { srcStream.unpipe(progressPT); } catch (_) {}
-      if (!progressPT.writableEnded && !(progressPT as any)._writableState?.ended) {
-        try { progressPT.end(); } catch (_) {}
-      }
-    });
-
-    srcStream.once('close', () => {
-      try { srcStream.unpipe(progressPT); } catch (_) {}
-    });
-
-    // PRE-UPLOAD STREAM STATE VALIDATION (ISSUE 2)
+    // PRE-UPLOAD STREAM STATE VALIDATION
     if (
       srcStream.readableEnded ||
       srcStream.destroyed ||
@@ -475,7 +432,7 @@ export class UploadWorker {
       progressPT.destroyed ||
       progressPT.closed
     ) {
-      this.cleanupActiveStreams();
+      this.cleanupActiveStreams(true);
       throw new DownloadError(
         `Download stream for file "${item.name}" reached EOF or was destroyed before upload creation.`,
         { isRetryable: true }
@@ -547,7 +504,7 @@ export class UploadWorker {
               `[Worker ${this.id}] UPLOAD_PHASE_TIMEOUT | File: ${item.name} | ` +
               `BytesMoved: ${this.uploadBytesTracked}`
             );
-            this.cleanupActiveStreams();
+            this.cleanupActiveStreams(true);
           }
           reject(new UploadTimeoutError(
             `Upload phase timeout for file "${item.name}" (${item.sourceId})`,
@@ -567,10 +524,12 @@ export class UploadWorker {
 
       uploadedFileId = createRes.data.id;
       this.logStreamDiagnostics('POST_UPLOAD', item, progressPT);
+    } catch (err) {
+      this.cleanupActiveStreams(true);
+      throw err;
     } finally {
       clearInterval(uploadStallTimer);
       controller.signal.removeEventListener('abort', abortHandler);
-      this.cleanupActiveStreams();
     }
 
     await this.stateManager.updateState(item.id, 'VERIFYING');
@@ -588,3 +547,4 @@ export class UploadWorker {
     );
   }
 }
+

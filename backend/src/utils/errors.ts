@@ -167,6 +167,13 @@ export class StreamDeadlockError extends MigrationError {
   }
 }
 
+export class StreamLifecycleError extends MigrationError {
+  constructor(message: string) {
+    super(message, { isPermanent: true, isRetryable: false });
+    this.name = 'StreamLifecycleError';
+  }
+}
+
 export class JobCancelledError extends MigrationError {
   public readonly jobId: string;
   constructor(jobId: string) {
@@ -220,8 +227,19 @@ export function classifyError(e: any): 'retryable' | 'permanent' | 'unknown' {
     return 'unknown';
   }
 
-  const status = e?.response?.status ?? e?.status;
+  const msg = e?.message ?? '';
   const code = e?.code ?? e?.cause?.code;
+
+  if (
+    msg.includes('push() after EOF') ||
+    msg.includes('ERR_STREAM_PUSH_AFTER_EOF') ||
+    code === 'ERR_STREAM_PUSH_AFTER_EOF' ||
+    e?.name === 'StreamLifecycleError'
+  ) {
+    return 'permanent';
+  }
+
+  const status = e?.response?.status ?? e?.status;
   const reason = e?.response?.data?.error?.errors?.[0]?.reason ?? '';
 
   // Permanent HTTP status codes
@@ -240,8 +258,10 @@ export function classifyError(e: any): 'retryable' | 'permanent' | 'unknown' {
 
   // Abort / timeout signals
   if (e?.name === 'AbortError' || e?.type === 'aborted') return 'retryable';
-  if (e?.message?.includes('socket hang up')) return 'retryable';
-  if (e?.message?.includes('ECONNRESET')) return 'retryable';
+  if (msg.includes('socket hang up')) return 'retryable';
+  if (msg.includes('ECONNRESET')) return 'retryable';
+  if (msg.includes('ETIMEDOUT')) return 'retryable';
+  if (msg.includes('EAI_AGAIN')) return 'retryable';
 
   return 'unknown';
 }
