@@ -1,12 +1,8 @@
 import session from 'express-session';
 import pgSession from 'connect-pg-simple';
-import { Pool } from 'pg';
+import { pool } from '../utils/database';
 
 const PgStore = pgSession(session);
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL
-});
 
 const sessionConfig = {
   store: new PgStore({

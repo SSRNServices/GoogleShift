@@ -11,9 +11,15 @@ const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
 };
 
+const connectionStringRaw = process.env.DIRECT_URL || process.env.DATABASE_URL || '';
+const connectionString = connectionStringRaw.replace(/\?sslmode=require|&sslmode=require/, '');
+const isDirectUrlUsed = !!process.env.DIRECT_URL;
+
+console.log(`[DB] Initializing PostgreSQL Pool (Using ${isDirectUrlUsed ? 'DIRECT_URL' : 'DATABASE_URL'})...`);
+
 // Cap pg.Pool max connections at 10 to stay safely below Supabase/PG Session Pooler limit of 15 (EMAXCONNSESSION)
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL?.replace(/\?sslmode=require|&sslmode=require/, ''),
+export const pool = new Pool({
+  connectionString,
   max: 10,
   min: 2,
   idleTimeoutMillis: 30000,
