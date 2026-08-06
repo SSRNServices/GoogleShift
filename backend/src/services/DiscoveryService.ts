@@ -134,9 +134,10 @@ export class DiscoveryService {
     
     await ManifestStorage.saveManifest(manifestItems);
     
-    // Persist new Summary tables
-    await prisma.scanSummary.create({
-      data: {
+    // Persist new Summary tables idempotently
+    await prisma.scanSummary.upsert({
+      where: { manifestId },
+      create: {
         manifestId,
         totalFolders,
         totalFiles,
@@ -151,6 +152,15 @@ export class DiscoveryService {
         warnings: {
           create: warnings
         }
+      },
+      update: {
+        totalFolders,
+        totalFiles,
+        totalBytes,
+        destinationStorageLimit: storageAnalysis.limit,
+        destinationStorageUsed: storageAnalysis.used,
+        estimatedTimeSeconds: storageAnalysis.estimatedTimeSeconds,
+        largestFile
       }
     });
 
