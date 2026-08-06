@@ -87,10 +87,13 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
     try {
       console.log(`[Frontend] Requesting discovery start for sourceId=${sourceId}, sessionId=${sessionId}`);
       const job = await migrationApi.startDiscovery(sourceId, sessionId);
+      console.log("API RESPONSE", job);
       const activeJobId = job.jobId || job.id;
-      console.log(`[Frontend] Discovery job created/resumed with jobId=${activeJobId}, status=${job.status}`);
+      const normalizedStatus = (job.status || job.phase || job.state || 'QUEUED').toUpperCase();
+      console.log("DISCOVERY STATUS", normalizedStatus);
+      console.log(`[Frontend] Discovery job created/resumed: jobId=${activeJobId}, status=${job.status || 'N/A'}, state=${job.state || 'N/A'}, normalizedStatus=${normalizedStatus}`);
 
-      if (job.status === 'completed' || job.state === 'COMPLETED') {
+      if (normalizedStatus === 'COMPLETED' || job.completed) {
         const summaryObj = {
           totalFolders: job.foldersFound || 0,
           totalFiles: job.filesFound || 0,
@@ -100,7 +103,7 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
         console.log('[Frontend] Discovery already completed on start response:', summaryObj);
         setCompleted(true);
         setFinalSummary(summaryObj);
-        setStats({
+        const completeStats = {
           status: 'COMPLETED',
           folders: job.foldersFound || 0,
           files: job.filesFound || 0,
@@ -112,7 +115,9 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
           activeWorkers: 0,
           message: 'Discovery complete!',
           elapsed: job.elapsed || 0
-        });
+        };
+        setStats(completeStats);
+        console.log("STATE UPDATED", completeStats.status);
         onCompleteRef.current(summaryObj);
         return;
       }
@@ -180,6 +185,7 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
 
             try {
               const data = JSON.parse(dataStr);
+              console.log("API RESPONSE", data);
               lastProgressTimeRef.current = Date.now();
 
               if (data.error) {
@@ -189,8 +195,9 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
                 break;
               }
 
-              const rawStatus = (data.status || 'QUEUED').toUpperCase();
-              const isCompletedState = rawStatus === 'COMPLETED' || data.event === 'SCAN_COMPLETED' || data.status === 'completed';
+              const rawStatus = (data.status || data.phase || data.state || 'QUEUED').toUpperCase();
+              console.log("DISCOVERY STATUS", rawStatus);
+              const isCompletedState = rawStatus === 'COMPLETED' || data.completed === true || data.event === 'SCAN_COMPLETED';
 
               if (isCompletedState) {
                 const summaryObj = data.data || {
@@ -203,23 +210,28 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
                 console.log('[Frontend DiscoveryScanner] Discovery Completed event received!', summaryObj);
                 setCompleted(true);
                 setFinalSummary(summaryObj);
-                setStats(prev => ({
-                  ...prev,
+                const completeStats = {
                   status: 'COMPLETED',
-                  folders: summaryObj.totalFolders || summaryObj.foldersFound || prev.folders,
-                  files: summaryObj.totalFiles || summaryObj.filesFound || prev.files,
-                  bytes: summaryObj.totalBytes || summaryObj.bytesFound || prev.bytes,
+                  folders: summaryObj.totalFolders || summaryObj.foldersFound || 0,
+                  files: summaryObj.totalFiles || summaryObj.filesFound || 0,
+                  bytes: summaryObj.totalBytes || summaryObj.bytesFound || 0,
+                  googleRequests: data.googleRequests || 1,
+                  foldersPerSec: 0,
+                  filesPerSec: 0,
+                  queueDepth: 0,
+                  activeWorkers: 0,
+                  elapsed: data.elapsed || 0,
                   message: 'Discovery complete!'
-                }));
+                };
+                setStats(completeStats);
+                console.log("STATE UPDATED", completeStats.status);
                 isActive = false;
                 onCompleteRef.current(summaryObj);
                 break;
               }
 
-              const currentStatus = data.foldersFound > 0 || data.filesFound > 0 ? 'SCANNING' : rawStatus;
-              
-              setStats({
-                status: currentStatus,
+              const newStats = {
+                status: rawStatus,
                 folders: data.foldersFound || 0,
                 files: data.filesFound || 0,
                 bytes: data.bytesFound || 0,
@@ -232,7 +244,9 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
                 message: data.currentFolder 
                   ? `Scanning folder: ${data.currentFolder}` 
                   : (data.currentFile ? `Scanning file: ${data.currentFile}` : `Scanning Google Drive...`)
-              });
+              };
+              setStats(newStats);
+              console.log("STATE UPDATED", newStats.status);
 
             } catch (e) {
               console.warn('[Frontend] Non-fatal SSE parse update:', e);
@@ -246,25 +260,12 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
          if (isActive) {
             try {
               const details = await migrationApi.getDiscoveryStatus(jobId);
+              console.log("API RESPONSE", details);
               if (details) {
                 lastProgressTimeRef.current = Date.now();
-                const rawStatus = (details.status || 'QUEUED').toUpperCase();
-                const isComplete = rawStatus === 'COMPLETED' || details.status === 'completed';
-
-                const currentStatus = isComplete ? 'COMPLETED' : ((details.foldersFound > 0 || details.filesFound > 0) ? 'SCANNING' : rawStatus);
-                setStats({
-                  status: currentStatus,
-                  folders: details.foldersFound || 0,
-                  files: details.filesFound || 0,
-                  bytes: details.bytesFound || 0,
-                  googleRequests: details.foldersFound || 1,
-                  foldersPerSec: details.foldersPerSec || 0,
-                  filesPerSec: details.filesPerSec || 0,
-                  queueDepth: details.queueDepth || 0,
-                  activeWorkers: details.activeWorkers || 0,
-                  elapsed: details.elapsed || 0,
-                  message: details.currentFolder ? `Scanning folder: ${details.currentFolder}` : 'Scanning Google Drive...'
-                });
+                const rawStatus = (details.status || details.phase || details.state || 'QUEUED').toUpperCase();
+                console.log("DISCOVERY STATUS", rawStatus);
+                const isComplete = rawStatus === 'COMPLETED' || details.completed === true;
 
                 if (isComplete) {
                   const summaryObj = {
@@ -276,14 +277,45 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
                   console.log('[Frontend DiscoveryScanner] Polling fallback detected COMPLETED status!', summaryObj);
                   setCompleted(true);
                   setFinalSummary(summaryObj);
+                  const completeStats = {
+                    status: 'COMPLETED',
+                    folders: details.foldersFound || 0,
+                    files: details.filesFound || 0,
+                    bytes: details.bytesFound || 0,
+                    googleRequests: details.foldersFound || 1,
+                    foldersPerSec: 0,
+                    filesPerSec: 0,
+                    queueDepth: 0,
+                    activeWorkers: 0,
+                    elapsed: details.elapsed || 0,
+                    message: 'Discovery complete!'
+                  };
+                  setStats(completeStats);
+                  console.log("STATE UPDATED", completeStats.status);
                   isActive = false;
                   onCompleteRef.current(summaryObj);
                   return;
-                } else if (details.status === 'failed') {
+                } else if (rawStatus === 'FAILED' || details.status === 'failed') {
                   setInitError('Discovery job failed during background execution.');
                   onErrorRef.current('Discovery job failed during background execution.');
                   isActive = false;
                   return;
+                } else {
+                  const newStats = {
+                    status: rawStatus,
+                    folders: details.foldersFound || 0,
+                    files: details.filesFound || 0,
+                    bytes: details.bytesFound || 0,
+                    googleRequests: details.foldersFound || 1,
+                    foldersPerSec: details.foldersPerSec || 0,
+                    filesPerSec: details.filesPerSec || 0,
+                    queueDepth: details.queueDepth || 0,
+                    activeWorkers: details.activeWorkers || 0,
+                    elapsed: details.elapsed || 0,
+                    message: details.currentFolder ? `Scanning folder: ${details.currentFolder}` : 'Scanning Google Drive...'
+                  };
+                  setStats(newStats);
+                  console.log("STATE UPDATED", newStats.status);
                 }
               }
             } catch (pollErr: any) {

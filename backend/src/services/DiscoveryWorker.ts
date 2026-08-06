@@ -59,6 +59,9 @@ export class DiscoveryWorker {
            }
            lastDbUpdateMs = now;
 
+           const currentProgressState = (data.totalFolders > 0 || data.totalFiles > 0) ? 'SCANNING' : 'PREPARING';
+           console.log("DISCOVERY STATUS", currentProgressState);
+
            formatAuditLog('DISCOVERY_PROGRESS', {
              jobId: job.id,
              sessionId: job.sessionId,
@@ -76,7 +79,7 @@ export class DiscoveryWorker {
                () => prisma.discoveryJob.update({
                  where: { id: job.id },
                  data: {
-                   state: 'PREPARING',
+                   state: currentProgressState as any,
                    foldersFound: data.totalFolders || 0,
                    filesFound: data.totalFiles || 0,
                    bytesFound: data.totalBytes ? BigInt(data.totalBytes) : BigInt(0),
@@ -111,6 +114,8 @@ export class DiscoveryWorker {
       const totalFiles = summary?.totalFiles || 0;
       const totalBytes = summary?.totalBytes || 0;
 
+      console.log("DISCOVERY STATUS", "COMPLETED");
+      console.log("DISCOVERY COMPLETE");
       console.log(`[DISCOVERY] Discovery Finished for jobId=${job.id}. Totals -> Folders: ${totalFolders}, Files: ${totalFiles}, Bytes: ${totalBytes}`);
       formatAuditLog('DISCOVERY_COMPLETED', {
         jobId: job.id,

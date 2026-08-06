@@ -3,6 +3,7 @@ import { prisma } from '../utils/database';
 import { requireUserAuth } from '../auth/auth.middleware';
 import { discoveryWorker } from '../services/DiscoveryWorker';
 import { v4 as uuidv4 } from 'uuid';
+import { DiscoveryStatus } from '../types/discoveryStatus';
 
 const router = Router();
 
@@ -17,6 +18,32 @@ const serializeBigInt = (obj: any) => {
 const formatAuditLog = (tag: string, details: Record<string, any>) => {
   const ts = new Date().toISOString();
   console.log(`[DiscoveryAudit] ${tag} | timestamp: ${ts} | ${Object.entries(details).map(([k, v]) => `${k}: ${v ?? 'N/A'}`).join(' | ')}`);
+};
+
+const formatDiscoveryResponse = (job: any, extraMessage?: string) => {
+  const rawState = (job.state || job.status || 'QUEUED').toUpperCase();
+  const isCompleted = rawState === 'COMPLETED' || job.discoveryStatus === 'COMPLETED';
+  const statusEnum = isCompleted ? DiscoveryStatus.COMPLETED : (rawState as DiscoveryStatus);
+  const progress = isCompleted ? 100 : (statusEnum === DiscoveryStatus.SCANNING ? 50 : (statusEnum === DiscoveryStatus.FINALIZING ? 90 : 0));
+
+  return serializeBigInt({
+    id: job.id || job.jobId,
+    jobId: job.id || job.jobId,
+    sessionId: job.sessionId,
+    manifestId: job.manifestId,
+    status: statusEnum,
+    phase: statusEnum,
+    state: statusEnum,
+    progress,
+    completed: isCompleted,
+    foldersFound: job.foldersFound || 0,
+    filesFound: job.filesFound || 0,
+    bytesFound: job.bytesFound || BigInt(0),
+    currentFolder: job.currentFolder || null,
+    currentFile: job.currentFile || null,
+    elapsed: job.elapsed || (job.startedAt ? Date.now() - new Date(job.startedAt).getTime() : 0),
+    ...(extraMessage ? { message: extraMessage } : {})
+  });
 };
 
 router.post('/start', requireUserAuth, async (req: Request, res: Response) => {
@@ -58,13 +85,10 @@ router.post('/start', requireUserAuth, async (req: Request, res: Response) => {
       const active = await prisma.discoveryJob.findFirst({ where: { sessionId } });
       if (active && active.itemsParam === itemsParam) {
         formatAuditLog('JOB_FOUND', { jobId: active.id, sessionId, userId, state: 'COMPLETED' });
-        return res.status(200).json(serializeBigInt({
-          id: active.id,
-          jobId: active.id,
-          sessionId,
-          status: 'completed',
-          message: 'Discovery already completed for this session.'
-        }));
+        return res.status(200).json(formatDiscoveryResponse(
+          { ...active, state: 'COMPLETED' },
+          'Discovery already completed for this session.'
+        ));
       }
     }
 
@@ -82,12 +106,10 @@ router.post('/start', requireUserAuth, async (req: Request, res: Response) => {
       if (heartbeatAgeMs < TIMEOUT_THRESHOLD) {
         formatAuditLog('JOB_FOUND', { jobId: active.id, sessionId, userId, state: active.state, heartbeatAgeMs });
         console.log(`[DISCOVERY] Reconnecting/resuming active job ${active.id} (state: ${active.state}, heartbeatAge: ${heartbeatAgeMs}ms)`);
-        return res.status(200).json(serializeBigInt({
-          ...active,
-          jobId: active.id,
-          status: active.state.toLowerCase(),
-          message: 'Existing discovery job active. Reconnecting...'
-        }));
+        return res.status(200).json(formatDiscoveryResponse(
+          active,
+          'Existing discovery job active. Reconnecting...'
+        ));
       } else {
         console.warn(`[DISCOVERY] Stale heartbeat on job ${active.id} (age ${heartbeatAgeMs}ms > ${TIMEOUT_THRESHOLD}ms). Resetting state...`);
       }
@@ -138,10 +160,7 @@ router.post('/start', requireUserAuth, async (req: Request, res: Response) => {
     const elapsed = Date.now() - startTime;
     formatAuditLog('STATUS_RETURNED', { jobId: job.id, sessionId, userId, elapsed });
 
-    return res.status(200).json(serializeBigInt({
-      ...job,
-      jobId: job.id
-    }));
+    return res.status(200).json(formatDiscoveryResponse(job));
   } catch (error: any) {
     const elapsed = Date.now() - startTime;
     console.error(`[DISCOVERY] Job creation failed:`, error.message, error.stack);
@@ -179,27 +198,7 @@ router.get('/:jobId/details', requireUserAuth, async (req: Request, res: Respons
     }
 
     formatAuditLog('JOB_FOUND', { jobId: job.id, sessionId: job.sessionId, userId, state: job.state });
-    const elapsed = job.startedAt ? Date.now() - job.startedAt.getTime() : 0;
-    const elapsedSec = Math.max(0.1, elapsed / 1000);
-    const foldersPerSec = Math.round(((job.foldersFound || 0) / elapsedSec) * 10) / 10;
-    const filesPerSec = Math.round(((job.filesFound || 0) / elapsedSec) * 10) / 10;
-
-    return res.status(200).json(serializeBigInt({
-      id: job.id,
-      jobId: job.id,
-      sessionId: job.sessionId,
-      status: (job.state || 'QUEUED').toLowerCase(),
-      foldersFound: job.foldersFound || 0,
-      filesFound: job.filesFound || 0,
-      bytesFound: job.bytesFound || BigInt(0),
-      foldersPerSec,
-      filesPerSec,
-      queueDepth: 0,
-      activeWorkers: 0,
-      currentFolder: job.currentFolder || null,
-      currentFile: job.currentFile || null,
-      elapsed
-    }));
+    return res.status(200).json(formatDiscoveryResponse(job));
   } catch (error: any) {
     const elapsed = Date.now() - startTime;
     formatAuditLog('ERROR', { code: 'DATABASE_ERROR', message: error.message, stack: error.stack, jobId, userId, elapsed });
@@ -232,28 +231,7 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
       }
 
       formatAuditLog('JOB_FOUND', { jobId: job.id, sessionId: job.sessionId, userId, state: job.state });
-      const elapsed = job.startedAt ? Date.now() - job.startedAt.getTime() : 0;
-      const elapsedSec = Math.max(0.1, elapsed / 1000);
-      const foldersPerSec = Math.round(((job.foldersFound || 0) / elapsedSec) * 10) / 10;
-      const filesPerSec = Math.round(((job.filesFound || 0) / elapsedSec) * 10) / 10;
-
-      return res.status(200).json(serializeBigInt({
-        id: job.id,
-        jobId: job.id,
-        sessionId: job.sessionId,
-        manifestId: job.manifestId,
-        status: (job.state || 'QUEUED').toLowerCase(),
-        foldersFound: job.foldersFound || 0,
-        filesFound: job.filesFound || 0,
-        bytesFound: job.bytesFound || BigInt(0),
-        foldersPerSec,
-        filesPerSec,
-        queueDepth: 0,
-        activeWorkers: 0,
-        currentFolder: job.currentFolder || null,
-        currentFile: job.currentFile || null,
-        elapsed
-      }));
+      return res.status(200).json(formatDiscoveryResponse(job));
     } catch (error: any) {
       return res.status(500).json({ code: 'DATABASE_ERROR', message: error.message });
     }
@@ -286,11 +264,6 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
         return;
       }
 
-      const elapsed = job.startedAt ? Date.now() - job.startedAt.getTime() : 0;
-      const elapsedSec = Math.max(0.1, elapsed / 1000);
-      const foldersPerSec = Math.round(((job.foldersFound || 0) / elapsedSec) * 10) / 10;
-      const filesPerSec = Math.round(((job.filesFound || 0) / elapsedSec) * 10) / 10;
-
       // Watchdog Staleness Detection: Fail job ONLY if lastHeartbeat is older than 5 minutes (300,000ms)
       const lastHeartbeatMs = job.lastHeartbeat ? job.lastHeartbeat.getTime() : (job.startedAt ? job.startedAt.getTime() : Date.now());
       const heartbeatAgeMs = Date.now() - lastHeartbeatMs;
@@ -316,18 +289,7 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
          return;
       }
 
-      res.write(`data: ${JSON.stringify(serializeBigInt({
-        status: (job.state || 'QUEUED').toLowerCase(),
-        foldersFound: job.foldersFound || 0,
-        filesFound: job.filesFound || 0,
-        bytesFound: job.bytesFound || BigInt(0),
-        foldersPerSec,
-        filesPerSec,
-        manifestId: job.manifestId,
-        currentFolder: job.currentFolder || null,
-        currentFile: job.currentFile || null,
-        elapsed,
-      }))}\n\n`);
+      res.write(`data: ${JSON.stringify(formatDiscoveryResponse(job))}\n\n`);
 
       if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(job.state)) {
         if (job.state === 'COMPLETED') {
@@ -336,6 +298,10 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
              : null;
            res.write(`data: ${JSON.stringify(serializeBigInt({
               event: 'SCAN_COMPLETED',
+              status: DiscoveryStatus.COMPLETED,
+              phase: DiscoveryStatus.COMPLETED,
+              state: DiscoveryStatus.COMPLETED,
+              completed: true,
               data: finalSummary || {
                 totalFolders: job.foldersFound || 0,
                 totalFiles: job.filesFound || 0,
@@ -364,4 +330,5 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
 });
 
 export default router;
+
 

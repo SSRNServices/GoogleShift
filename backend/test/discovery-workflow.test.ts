@@ -116,7 +116,7 @@ describe('Discovery Workflow Test Suite (Phases 1-13)', () => {
     await handler(req, res);
 
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'active-job-1', status: 'preparing' }));
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'active-job-1', status: 'PREPARING' }));
     expect(prisma.discoveryJob.upsert).not.toHaveBeenCalled();
   });
 
@@ -137,7 +137,7 @@ describe('Discovery Workflow Test Suite (Phases 1-13)', () => {
     await handler(req, res);
 
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'disc-job-1', status: 'preparing', foldersFound: 5, filesFound: 25 }));
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'disc-job-1', status: 'PREPARING', foldersFound: 5, filesFound: 25 }));
   });
 
   it('4. REST details status endpoint falls back to sessionId lookup if jobId not found directly', async () => {
@@ -158,7 +158,7 @@ describe('Discovery Workflow Test Suite (Phases 1-13)', () => {
     await handler(req, res);
 
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'disc-job-from-session', status: 'completed' }));
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'disc-job-from-session', status: 'COMPLETED' }));
   });
 
   it('5. Status endpoint returns HTTP 404 with JOB_NOT_FOUND code for non-existent jobs', async () => {
