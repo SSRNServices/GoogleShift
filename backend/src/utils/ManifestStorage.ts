@@ -24,42 +24,43 @@ export class ManifestStorage {
     // Handled by Prisma
   }
 
+  public static async saveManifestChunk(chunk: ManifestItem[]) {
+    if (chunk.length === 0) return;
+    const { RetryHelper } = await import('./retry');
+    
+    await RetryHelper.withRetry(
+      `ManifestStorage.saveManifestChunk [${chunk.length} items]`,
+      () => prisma.migrationManifest.createMany({
+        data: chunk.map(item => ({
+          jobId: item.jobId,
+          id: item.id,
+          sourceId: item.sourceId,
+          sourceParentId: item.sourceParentId,
+          destParentId: item.destParentId,
+          createdDestId: item.createdDestId,
+          name: item.name,
+          mimeType: item.mimeType,
+          size: BigInt(item.size),
+          originalId: item.originalId,
+          originalMimeType: item.originalMimeType,
+          status: item.status,
+          isFolder: item.isFolder,
+          depth: item.depth || 0,
+          retryCount: item.retryCount || 0
+        }))
+      }),
+      (msg) => console.log(`[DB] ${msg}`)
+    );
+  }
+
   public static async saveManifest(items: ManifestItem[]) {
     const chunkSize = 1000;
-    const { RetryHelper } = await import('./retry');
     
     console.log(`[DB] Starting batch insert for ${items.length} manifest items in chunks of ${chunkSize}...`);
 
     for (let i = 0; i < items.length; i += chunkSize) {
       const chunk = items.slice(i, i + chunkSize);
-      
-      const insertChunk = async () => {
-        await prisma.migrationManifest.createMany({
-          data: chunk.map(item => ({
-            jobId: item.jobId,
-            id: item.id,
-            sourceId: item.sourceId,
-            sourceParentId: item.sourceParentId,
-            destParentId: item.destParentId,
-            createdDestId: item.createdDestId,
-            name: item.name,
-            mimeType: item.mimeType,
-            size: BigInt(item.size),
-            originalId: item.originalId,
-            originalMimeType: item.originalMimeType,
-            status: item.status,
-            isFolder: item.isFolder,
-            depth: item.depth || 0,
-            retryCount: item.retryCount || 0
-          }))
-        });
-      };
-
-      await RetryHelper.withRetry(
-        `ManifestStorage.saveManifest [Chunk ${Math.floor(i / chunkSize) + 1}/${Math.ceil(items.length / chunkSize)}]`,
-        insertChunk,
-        (msg) => console.log(`[DB] ${msg}`)
-      );
+      await ManifestStorage.saveManifestChunk(chunk);
       console.log(`[DB] Batch Insert: ${chunk.length} items saved (Chunk ${Math.floor(i / chunkSize) + 1}/${Math.ceil(items.length / chunkSize)})`);
     }
   }

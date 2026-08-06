@@ -28,10 +28,12 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
     files: 0,
     bytes: 0,
     googleRequests: 0,
+    foldersPerSec: 0,
+    filesPerSec: 0,
     message: 'Initializing background discovery job...',
     elapsed: 0
   });
-  
+
   const [completed, setCompleted] = useState(false);
   const [finalSummary, setFinalSummary] = useState<any>(null);
   
@@ -49,6 +51,8 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
       files: 0,
       bytes: 0,
       googleRequests: 0,
+      foldersPerSec: 0,
+      filesPerSec: 0,
       message: 'Initializing background discovery job...',
       elapsed: 0
     });
@@ -162,6 +166,8 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
                 files: data.filesFound || 0,
                 bytes: data.bytesFound || 0,
                 googleRequests: data.googleRequests || (data.foldersFound ? data.foldersFound + 1 : 1),
+                foldersPerSec: data.foldersPerSec || 0,
+                filesPerSec: data.filesPerSec || 0,
                 elapsed: data.elapsed || 0,
                 message: data.currentFolder 
                   ? `Scanning folder: ${data.currentFolder}` 
@@ -169,7 +175,6 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
               });
 
               if (data.status === 'completed' && !completed) {
-                 // Fetch summary if event was not emitted
                  setCompleted(true);
                  setFinalSummary({
                    totalFolders: data.foldersFound || 0,
@@ -191,7 +196,6 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
          if (error.name === 'AbortError') return;
          console.warn('[Frontend] Stream disconnected, attempting polling fallback...', error.message);
          
-         // Dual-Mode: Polling fallback
          if (isActive) {
             try {
               const details = await migrationApi.getJobDetails(jobId);
@@ -204,6 +208,8 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
                   files: details.filesFound || 0,
                   bytes: details.bytesFound || 0,
                   googleRequests: details.foldersFound || 1,
+                  foldersPerSec: details.foldersPerSec || 0,
+                  filesPerSec: details.filesPerSec || 0,
                   elapsed: details.elapsed || 0,
                   message: details.currentFolder ? `Scanning folder: ${details.currentFolder}` : 'Scanning Google Drive...'
                 });
@@ -335,22 +341,27 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mt-6">
         <div className="bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
           <div className="text-2xl font-bold text-gray-900 dark:text-white">{stats.folders}</div>
+          <div className="text-xs text-indigo-500 font-medium mt-0.5">+{stats.foldersPerSec}/s</div>
           <div className="text-xs text-gray-500 mt-1">Folders Found</div>
         </div>
         <div className="bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
           <div className="text-2xl font-bold text-gray-900 dark:text-white">{stats.files}</div>
+          <div className="text-xs text-blue-500 font-medium mt-0.5">+{stats.filesPerSec}/s</div>
           <div className="text-xs text-gray-500 mt-1">Files Found</div>
         </div>
         <div className="bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
           <div className="text-2xl font-bold text-gray-900 dark:text-white">{formatBytes(stats.bytes)}</div>
+          <div className="text-xs text-gray-400 font-medium mt-0.5">Total Payload</div>
           <div className="text-xs text-gray-500 mt-1">Total Size</div>
         </div>
         <div className="bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
           <div className="text-2xl font-bold text-indigo-600 dark:text-indigo-400">{stats.googleRequests}</div>
+          <div className="text-xs text-indigo-500 font-medium mt-0.5">Google API</div>
           <div className="text-xs text-gray-500 mt-1">API Requests</div>
         </div>
         <div className="bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
           <div className="text-2xl font-bold text-gray-900 dark:text-white">{formattedElapsed}</div>
+          <div className="text-xs text-gray-400 font-medium mt-0.5">Live Stopwatch</div>
           <div className="text-xs text-gray-500 mt-1">Elapsed Time</div>
         </div>
       </div>

@@ -260,6 +260,9 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
       }
 
       const elapsed = job.startedAt ? Date.now() - job.startedAt.getTime() : 0;
+      const elapsedSec = Math.max(0.1, elapsed / 1000);
+      const foldersPerSec = Math.round(((job.foldersFound || 0) / elapsedSec) * 10) / 10;
+      const filesPerSec = Math.round(((job.filesFound || 0) / elapsedSec) * 10) / 10;
 
       // Stall detection: If job is active for > 30s without finishing or making progress
       if (['QUEUED', 'PREPARING'].includes(job.state) && elapsed > 30000 && (job.filesFound === 0 && job.foldersFound === 0)) {
@@ -287,6 +290,8 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
         foldersFound: job.foldersFound || 0,
         filesFound: job.filesFound || 0,
         bytesFound: job.bytesFound || BigInt(0),
+        foldersPerSec,
+        filesPerSec,
         currentFolder: job.currentFolder || null,
         currentFile: job.currentFile || null,
         elapsed,
