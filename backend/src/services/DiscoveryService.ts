@@ -18,12 +18,15 @@ export interface DiscoveryOptions {
 export class DiscoveryService {
   public static async executeDiscovery(options: DiscoveryOptions) {
     const { userId, type, items, manifestId, onProgress } = options;
+    console.log(`[DISCOVERY] Loading OAuth and creating Google Drive client for userId=${userId}, type=${type}...`);
     const drive = await driveService.getDriveClient(userId, type);
+    console.log(`[DISCOVERY] Google Drive client created successfully.`);
     
     let totalFolders = 0;
     let totalFiles = 0;
     let totalBytes = 0;
     let largestFile = 0;
+    let googleRequests = 0;
     
     const mimeStats: MimeStatsPayload = {
       googleDocs: 0, googleSheets: 0, googleSlides: 0,
@@ -34,7 +37,8 @@ export class DiscoveryService {
     const warnings: { type: string; message: string; fileId?: string; fileName?: string }[] = [];
     const fileHashes = new Set<string>();
 
-    await onProgress('SCAN_STARTED', { message: 'Initializing Discovery Phase...' });
+    console.log(`[DISCOVERY] Starting discovery traversal for ${items.length} top-level item(s). Manifest ID: ${manifestId}`);
+    await onProgress('SCAN_STARTED', { message: 'Initializing Discovery Phase...', googleRequests });
     
     const manifestItems: any[] = [];
     let lastEventTime = Date.now();
@@ -42,6 +46,7 @@ export class DiscoveryService {
     const engine = new DriveTraversalEngine<{ parentId: string, depth: number }>(drive, {
       onFolderEnter: async (folder, context) => {
         totalFolders++;
+        console.log(`[DISCOVERY] Entering Folder: "${folder.name}" (${folder.id}) | Total Folders: ${totalFolders}, Files: ${totalFiles}, Size: ${totalBytes} B`);
         manifestItems.push({
            jobId: manifestId,
            id: folder.id,
@@ -60,7 +65,13 @@ export class DiscoveryService {
            retryCount: 0
         });
         
-        await onProgress('SCAN_FOLDER', { folderName: folder.name, totalFolders, totalFiles, totalBytes });
+        await onProgress('SCAN_FOLDER', { 
+          folderName: folder.name, 
+          totalFolders, 
+          totalFiles, 
+          totalBytes,
+          googleRequests 
+        });
         return { parentId: folder.id, depth: context.depth + 1 };
       },
       onFile: async (file, context) => {
@@ -107,21 +118,26 @@ export class DiscoveryService {
         });
         
         const now = Date.now();
-        if (now - lastEventTime > 500) {
+        if (now - lastEventTime > 100) {
           lastEventTime = now;
           await onProgress('SCAN_PROGRESS', {
              currentFile: file.name,
-             totalFolders, totalFiles, totalBytes
+             totalFolders, totalFiles, totalBytes, googleRequests
           });
         }
       }
-    }, async (name, op) => RetryHelper.withRetry(name, op, (msg) => console.log(msg)));
+    }, async (name, op) => {
+      googleRequests++;
+      return RetryHelper.withRetry(name, op, (msg) => console.log(`[DISCOVERY] ${msg}`));
+    });
 
     for (const item of items) {
+       console.log(`[DISCOVERY] Scanning root item ID: ${item.id}, isFolder: ${item.isFolder}`);
        await engine.traverseItem(item, { parentId: 'root', depth: 0 });
     }
 
-    await onProgress('MANIFEST_UPDATED', { message: 'Analyzing destination storage...' });
+    console.log(`[DISCOVERY] Drive traversal complete. Discovered ${totalFolders} folders, ${totalFiles} files (${totalBytes} B) across ${googleRequests} API requests.`);
+    await onProgress('MANIFEST_UPDATED', { message: 'Analyzing destination storage...', googleRequests });
     
     // Analyze Storage Requirements
     const storageAnalysis = await StorageAnalyzer.analyzeStorage(userId, totalBytes);
@@ -130,7 +146,8 @@ export class DiscoveryService {
        warnings.push(...storageAnalysis.warnings.map(w => ({ type: 'STORAGE_EXHAUSTION', message: w })));
     }
 
-    await onProgress('MANIFEST_UPDATED', { message: 'Persisting manifest to database...' });
+    console.log(`[DISCOVERY] Persisting ${manifestItems.length} manifest items to database...`);
+    await onProgress('MANIFEST_UPDATED', { message: 'Persisting manifest to database...', googleRequests });
     
     await ManifestStorage.saveManifest(manifestItems);
     
@@ -171,12 +188,14 @@ export class DiscoveryService {
        totalFolders,
        totalFiles,
        totalBytes,
+       googleRequests,
        storageAnalysis,
        mimeStats,
        warnings,
        largestFile
     };
 
+    console.log(`[DISCOVERY] Discovery Finished successfully for manifestId=${manifestId}`);
     await onProgress('SCAN_COMPLETED', finalSummary);
     return finalSummary;
   }

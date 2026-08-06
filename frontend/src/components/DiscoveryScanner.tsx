@@ -23,9 +23,11 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
   const [jobId, setJobId] = useState<string | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
   const [stats, setStats] = useState({
+    status: 'QUEUED',
     folders: 0,
     files: 0,
     bytes: 0,
+    googleRequests: 0,
     message: 'Initializing background discovery job...',
     elapsed: 0
   });
@@ -35,22 +37,39 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
   
   const abortControllerRef = useRef<AbortController | null>(null);
   const hasStartedRef = useRef(false);
+  const lastProgressTimeRef = useRef<number>(Date.now());
 
   const startDiscoveryProcess = async () => {
     setInitError(null);
+    setCompleted(false);
+    setFinalSummary(null);
+    setStats({
+      status: 'QUEUED',
+      folders: 0,
+      files: 0,
+      bytes: 0,
+      googleRequests: 0,
+      message: 'Initializing background discovery job...',
+      elapsed: 0
+    });
+    lastProgressTimeRef.current = Date.now();
+
     try {
+      console.log(`[Frontend] Requesting discovery start for sourceId=${sourceId}, sessionId=${sessionId}`);
       const job = await migrationApi.startDiscovery(sourceId, sessionId);
-      setJobId(job.jobId || job.id);
+      const activeJobId = job.jobId || job.id;
+      console.log(`[Frontend] Discovery job created/resumed with jobId=${activeJobId}`);
+      setJobId(activeJobId);
     } catch (err: any) {
       const errMsg = err.message || 'Failed to initialize discovery';
+      console.error(`[Frontend] startDiscovery failed:`, errMsg);
       setInitError(errMsg);
       onError(errMsg);
-      hasStartedRef.current = false; // Allow retry on failure
+      hasStartedRef.current = false;
     }
   };
 
   useEffect(() => {
-    if (hasStartedRef.current) return;
     hasStartedRef.current = true;
     startDiscoveryProcess();
   }, [sourceId, sessionId]);
@@ -61,23 +80,39 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
     let pollTimeout: number;
     let isActive = true;
 
+    // Frontend 30s Stall Detection Check
+    const stallInterval = setInterval(() => {
+      if (completed || initError) return;
+      const timeSinceLastProgress = Date.now() - lastProgressTimeRef.current;
+      if (timeSinceLastProgress > 30000 && stats.folders === 0 && stats.files === 0) {
+        console.warn(`[Frontend] Discovery stalled for > 30 seconds without progress.`);
+        const stallMsg = 'Discovery job timed out after 30 seconds of inactivity.';
+        setInitError(stallMsg);
+        onError(stallMsg);
+        isActive = false;
+        if (abortControllerRef.current) abortControllerRef.current.abort();
+      }
+    }, 5000);
+
     const streamDiscovery = async () => {
       try {
         const { accessToken } = useAuthStore.getState();
-        const headers: Record<string, string> = {};
+        const headers: Record<string, string> = {
+          'Accept': 'text/event-stream'
+        };
         if (accessToken) {
           headers['Authorization'] = `Bearer ${accessToken}`;
         }
 
         abortControllerRef.current = new AbortController();
-        const response = await fetch(`${API_URL}/api/discovery/${jobId}/status`, {
+        const response = await fetch(`${API_URL}/api/discovery/${jobId}/status?stream=true`, {
           headers,
           credentials: 'include',
           signal: abortControllerRef.current.signal
         });
 
         if (!response.ok || !response.body) {
-           throw new Error('Stream rejected');
+           throw new Error(`Stream rejected with HTTP status ${response.status}`);
         }
 
         const reader = response.body.getReader();
@@ -93,53 +128,103 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
           buffer = parts.pop() || '';
 
           for (const part of parts) {
-            if (part.startsWith('data: ')) {
-              const dataStr = part.substring(6);
-              if (!dataStr || dataStr.trim() === '') continue;
-              
-              try {
-                const data = JSON.parse(dataStr);
-                
-                if (data.error) {
-                  onError(data.error);
-                  setInitError(data.error);
-                  isActive = false;
-                  break;
-                }
+            let dataStr = part.trim();
+            if (dataStr.startsWith('data: ')) {
+              dataStr = dataStr.substring(6).trim();
+            }
+            if (!dataStr || dataStr === ':') continue;
 
-                if (data.event === 'SCAN_COMPLETED') {
-                  setCompleted(true);
-                  setFinalSummary(data.data);
-                  isActive = false;
-                  onComplete(data.data);
-                  break;
-                }
-                
-                setStats({
-                  folders: data.foldersFound || 0,
-                  files: data.filesFound || 0,
-                  bytes: data.bytesFound || 0,
-                  elapsed: data.elapsed || 0,
-                  message: data.currentFolder ? `Scanning folder: ${data.currentFolder}` : (data.currentFile ? `Scanning file: ${data.currentFile}` : 'Scanning...')
-                });
+            try {
+              const data = JSON.parse(dataStr);
+              lastProgressTimeRef.current = Date.now();
 
-                if (data.status === 'completed') {
-                   // We just wait for SCAN_COMPLETED event which should follow
-                }
-
-              } catch (e) {
-                console.error('Failed to parse SSE', e);
+              if (data.error) {
+                onError(data.error);
+                setInitError(data.error);
+                isActive = false;
+                break;
               }
+
+              if (data.event === 'SCAN_COMPLETED') {
+                setCompleted(true);
+                setFinalSummary(data.data);
+                isActive = false;
+                onComplete(data.data);
+                break;
+              }
+
+              const isScanning = (data.foldersFound > 0 || data.filesFound > 0);
+              const currentStatus = isScanning ? 'SCANNING' : ((data.status || 'QUEUED').toUpperCase());
+              
+              setStats({
+                status: currentStatus,
+                folders: data.foldersFound || 0,
+                files: data.filesFound || 0,
+                bytes: data.bytesFound || 0,
+                googleRequests: data.googleRequests || (data.foldersFound ? data.foldersFound + 1 : 1),
+                elapsed: data.elapsed || 0,
+                message: data.currentFolder 
+                  ? `Scanning folder: ${data.currentFolder}` 
+                  : (data.currentFile ? `Scanning file: ${data.currentFile}` : `Scanning Google Drive...`)
+              });
+
+              if (data.status === 'completed' && !completed) {
+                 // Fetch summary if event was not emitted
+                 setCompleted(true);
+                 setFinalSummary({
+                   totalFolders: data.foldersFound || 0,
+                   totalFiles: data.filesFound || 0,
+                   totalBytes: data.bytesFound || 0,
+                   manifestId: data.manifestId
+                 });
+                 isActive = false;
+                 onComplete(data);
+                 break;
+              }
+
+            } catch (e) {
+              console.warn('[Frontend] Non-fatal SSE parse update:', e);
             }
           }
         }
       } catch (error: any) {
          if (error.name === 'AbortError') return;
-         console.warn('Stream failed, falling back to polling...', error);
+         console.warn('[Frontend] Stream disconnected, attempting polling fallback...', error.message);
          
-         // Basic polling fallback if stream drops
+         // Dual-Mode: Polling fallback
          if (isActive) {
-            pollTimeout = window.setTimeout(streamDiscovery, 2000);
+            try {
+              const details = await migrationApi.getJobDetails(jobId);
+              if (details) {
+                lastProgressTimeRef.current = Date.now();
+                const isScanning = (details.foldersFound > 0 || details.filesFound > 0);
+                setStats({
+                  status: isScanning ? 'SCANNING' : (details.status || 'QUEUED').toUpperCase(),
+                  folders: details.foldersFound || 0,
+                  files: details.filesFound || 0,
+                  bytes: details.bytesFound || 0,
+                  googleRequests: details.foldersFound || 1,
+                  elapsed: details.elapsed || 0,
+                  message: details.currentFolder ? `Scanning folder: ${details.currentFolder}` : 'Scanning Google Drive...'
+                });
+
+                if (details.status === 'completed') {
+                  setCompleted(true);
+                  setFinalSummary(details);
+                  isActive = false;
+                  onComplete(details);
+                  return;
+                } else if (details.status === 'failed') {
+                  setInitError('Discovery job failed during background execution.');
+                  onError('Discovery job failed during background execution.');
+                  isActive = false;
+                  return;
+                }
+              }
+            } catch (pollErr: any) {
+              console.error('[Frontend] Polling fallback error:', pollErr);
+            }
+            pollTimeout = window.setTimeout(streamDiscovery, 1000);
          }
       }
     };
@@ -148,6 +233,7 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
 
     return () => {
       isActive = false;
+      clearInterval(stallInterval);
       if (abortControllerRef.current) abortControllerRef.current.abort();
       clearTimeout(pollTimeout);
     };
@@ -155,16 +241,16 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
 
   if (initError) {
     return (
-      <div className="bg-red-50 dark:bg-red-900/20 p-6 rounded-lg border border-red-200 dark:border-red-800 text-center">
-        <AlertTriangle className="w-10 h-10 text-red-500 mx-auto mb-3" />
-        <h3 className="text-lg font-semibold text-red-800 dark:text-red-300 mb-2">Discovery Failed to Start</h3>
+      <div className="bg-red-50 dark:bg-red-900/20 p-6 rounded-lg border border-red-200 dark:border-red-800 text-center shadow-sm">
+        <AlertTriangle className="w-10 h-10 text-red-500 mx-auto mb-3 animate-bounce" />
+        <h3 className="text-lg font-semibold text-red-800 dark:text-red-300 mb-2">Discovery Phase Error</h3>
         <p className="text-sm text-red-600 dark:text-red-400 mb-4">{initError}</p>
         <button
           onClick={() => {
             hasStartedRef.current = true;
             startDiscoveryProcess();
           }}
-          className="inline-flex items-center px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-medium text-sm rounded-md transition-colors shadow-sm"
+          className="inline-flex items-center px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-medium text-sm rounded-md transition-colors shadow"
         >
           <RefreshCw className="w-4 h-4 mr-2" /> Retry Discovery
         </button>
@@ -175,9 +261,17 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
   if (completed && finalSummary) {
     return (
       <div className="bg-white dark:bg-gray-800 p-6 rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm">
-        <div className="flex items-center space-x-3 text-green-600 mb-6 border-b border-gray-100 dark:border-gray-700 pb-4">
-           <CheckCircle className="w-8 h-8" />
-           <h3 className="text-xl font-bold">Discovery Complete</h3>
+        <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 pb-4 mb-6">
+           <div className="flex items-center space-x-3 text-green-600">
+             <CheckCircle className="w-8 h-8" />
+             <div>
+               <h3 className="text-xl font-bold">Discovery Complete</h3>
+               <p className="text-xs text-gray-500">Ready to proceed with migration</p>
+             </div>
+           </div>
+           <span className="px-3 py-1 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-xs font-semibold rounded-full border border-green-200 dark:border-green-800">
+             READY_FOR_MIGRATION
+           </span>
         </div>
         
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -206,32 +300,58 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
     );
   }
 
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'SCANNING':
+        return <span className="px-3 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 text-xs font-semibold rounded-full animate-pulse border border-blue-200 dark:border-blue-800">SCANNING</span>;
+      case 'PREPARING':
+      case 'CONNECTING':
+        return <span className="px-3 py-1 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 text-xs font-semibold rounded-full border border-yellow-200 dark:border-yellow-800">CONNECTING</span>;
+      default:
+        return <span className="px-3 py-1 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 text-xs font-semibold rounded-full">QUEUED</span>;
+    }
+  };
+
+  const formattedElapsed = `${Math.floor(stats.elapsed / 60000).toString().padStart(2, '0')}:${Math.floor((stats.elapsed % 60000) / 1000).toString().padStart(2, '0')}`;
+
   return (
-    <div className="bg-gray-50 dark:bg-gray-800 p-8 rounded-lg border border-indigo-100 dark:border-indigo-900/30 text-center relative overflow-hidden">
-      <div className="absolute top-0 left-0 right-0 h-1 bg-indigo-100 overflow-hidden">
-         <div className="h-full bg-indigo-500 w-1/2 animate-[progress_1s_ease-in-out_infinite]" />
+    <div className="bg-gray-50 dark:bg-gray-800 p-8 rounded-lg border border-indigo-100 dark:border-indigo-900/30 text-center relative overflow-hidden shadow-sm">
+      <div className="absolute top-0 left-0 right-0 h-1.5 bg-indigo-100 overflow-hidden">
+         <div className="h-full bg-indigo-600 w-full animate-pulse" />
+      </div>
+
+      <div className="flex justify-between items-center mb-4">
+        <div className="text-left">
+           <h3 className="text-xl font-bold text-gray-900 dark:text-white">Discovering Drive Contents</h3>
+           <p className="text-xs text-gray-500 dark:text-gray-400 font-mono mt-0.5">{stats.message}</p>
+        </div>
+        {getStatusBadge(stats.status)}
+      </div>
+
+      <div className="my-6">
+        <Loader2 className="w-10 h-10 text-indigo-600 mx-auto mb-2 animate-spin" />
       </div>
       
-      <Loader2 className="w-12 h-12 text-indigo-500 mx-auto mb-4 animate-spin" />
-      <h3 className="text-xl font-semibold mb-2 text-gray-900 dark:text-white">Discovering Files & Folders</h3>
-      <p className="text-gray-500 dark:text-gray-400 mb-6">{stats.message}</p>
-      
-      <div className="flex justify-center items-center space-x-8">
-        <div className="text-center">
-          <div className="text-2xl font-bold text-gray-700 dark:text-gray-300">{stats.folders}</div>
-          <div className="text-sm text-gray-500">Folders Found</div>
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mt-6">
+        <div className="bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
+          <div className="text-2xl font-bold text-gray-900 dark:text-white">{stats.folders}</div>
+          <div className="text-xs text-gray-500 mt-1">Folders Found</div>
         </div>
-        <div className="text-center">
-          <div className="text-2xl font-bold text-gray-700 dark:text-gray-300">{stats.files}</div>
-          <div className="text-sm text-gray-500">Files Found</div>
+        <div className="bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
+          <div className="text-2xl font-bold text-gray-900 dark:text-white">{stats.files}</div>
+          <div className="text-xs text-gray-500 mt-1">Files Found</div>
         </div>
-        <div className="text-center">
-          <div className="text-2xl font-bold text-gray-700 dark:text-gray-300">{formatBytes(stats.bytes)}</div>
-          <div className="text-sm text-gray-500">Total Size</div>
+        <div className="bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
+          <div className="text-2xl font-bold text-gray-900 dark:text-white">{formatBytes(stats.bytes)}</div>
+          <div className="text-xs text-gray-500 mt-1">Total Size</div>
         </div>
-        <div className="text-center">
-          <div className="text-2xl font-bold text-gray-700 dark:text-gray-300">{(stats.elapsed / 1000).toFixed(1)}s</div>
-          <div className="text-sm text-gray-500">Elapsed Time</div>
+        <div className="bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
+          <div className="text-2xl font-bold text-indigo-600 dark:text-indigo-400">{stats.googleRequests}</div>
+          <div className="text-xs text-gray-500 mt-1">API Requests</div>
+        </div>
+        <div className="bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
+          <div className="text-2xl font-bold text-gray-900 dark:text-white">{formattedElapsed}</div>
+          <div className="text-xs text-gray-500 mt-1">Elapsed Time</div>
         </div>
       </div>
     </div>

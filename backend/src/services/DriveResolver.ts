@@ -25,25 +25,29 @@ export class DriveResolver {
     
     // Resolve root first if necessary
     if (actualId === 'root') {
+      console.log(`[DISCOVERY] Resolving root folder ID...`);
       const rootRes = await apiWrapper('Get Root ID', () => drive.files.get({
         fileId: 'root',
         fields: 'id',
         supportsAllDrives: true
-      }));
+      }, { timeout: 20000 }));
       actualId = rootRes.data.id || 'root';
+      console.log(`[DISCOVERY] Root folder resolved to ID: ${actualId}`);
     }
 
+    console.log(`[DISCOVERY] Resolving item metadata for ID: ${actualId}`);
     const meta = await apiWrapper(`Resolve Metadata ${actualId}`, () => drive.files.get({
       fileId: actualId,
       fields: 'id, name, mimeType, size, shortcutDetails',
       supportsAllDrives: true
-    }));
+    }, { timeout: 20000 }));
 
     name = meta.data.name || name;
     mimeType = meta.data.mimeType || '';
     if (meta.data.size) {
       size = parseInt(meta.data.size, 10);
     }
+    console.log(`[DISCOVERY] Resolved item: "${name}" (${actualId}), mimeType: ${mimeType}, size: ${size} B`);
 
     let originalId: string | undefined = undefined;
     let originalMimeType: string | undefined = undefined;
@@ -55,23 +59,20 @@ export class DriveResolver {
       actualId = meta.data.shortcutDetails.targetId || actualId;
       mimeType = meta.data.shortcutDetails.targetMimeType || mimeType;
 
-      console.log(`[RESOLVER] Resolved shortcut ${originalId} -> Target ${actualId} (${mimeType})`);
+      console.log(`[DISCOVERY] Resolved shortcut ${originalId} -> Target ${actualId} (${mimeType})`);
 
-      // Note: we don't recursively get the target's size right now. 
-      // If it's a file, size will be reported as 0 initially.
-      // But we can fetch it if it's a file.
       if (mimeType !== 'application/vnd.google-apps.folder') {
          try {
             const targetMeta = await apiWrapper(`Resolve Target Size ${actualId}`, () => drive.files.get({
               fileId: actualId,
               fields: 'size',
               supportsAllDrives: true
-            }));
+            }, { timeout: 20000 }));
             if (targetMeta.data.size) {
               size = parseInt(targetMeta.data.size, 10);
             }
          } catch (e: any) {
-            console.log(`[DriveResolver] Failed to fetch shortcut target size for ${actualId}:`, e.message);
+            console.warn(`[DISCOVERY] Failed to fetch shortcut target size for ${actualId}:`, e.message);
          }
       }
     }

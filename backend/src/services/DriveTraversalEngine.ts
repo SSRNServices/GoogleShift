@@ -57,6 +57,9 @@ export class DriveTraversalEngine<TContext> {
     let pageToken: string | undefined = undefined;
 
     do {
+      const startTime = Date.now();
+      console.log(`[DISCOVERY] Request started: List Children for folder "${folderName}" (${folderId}), pageToken: ${pageToken || 'first_page'}`);
+      
       const apiPromise = this.limit(() => this.apiWrapper(`List Children ${folderId}`, () => this.drive.files.list({
         q: `'${folderId}' in parents and trashed = false`,
         fields: 'nextPageToken, files(id, name, mimeType, size, shortcutDetails)',
@@ -64,15 +67,13 @@ export class DriveTraversalEngine<TContext> {
         pageToken: pageToken,
         supportsAllDrives: true,
         includeItemsFromAllDrives: true,
-      })));
+      }, { timeout: 20000 })));
 
       const res: any = await apiPromise;
       const files = res.data.files || [];
+      const reqElapsed = Date.now() - startTime;
       
-      if (pageToken === undefined) {
-         console.log(`Entering folder:\nFolder ID: ${folderId}\nFolder Name: ${folderName}\nChild count: ${files.length} (first page)`);
-      }
-      console.log(`Recursion call:\nCurrent depth: ${depth}\nParent: ${folderId}\nChildren returned: ${files.length}`);
+      console.log(`[DISCOVERY] Request completed: List Children for "${folderName}" returned ${files.length} items in ${reqElapsed}ms`);
 
       const subfolderPromises: Promise<void>[] = [];
 
@@ -99,12 +100,12 @@ export class DriveTraversalEngine<TContext> {
                       fileId: fileId as string,
                       fields: 'size',
                       supportsAllDrives: true
-                    }));
+                    }, { timeout: 20000 }));
                     if (targetMeta.data.size) {
                       size = parseInt(targetMeta.data.size, 10);
                     }
                  } catch (e: any) {
-                    console.log(`[DriveTraversal] Failed to fetch shortcut target size for ${fileId}:`, e.message);
+                    console.warn(`[DISCOVERY] Failed to fetch shortcut target size for ${fileId}:`, e.message);
                  }
               }
            }

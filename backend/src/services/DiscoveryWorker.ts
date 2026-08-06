@@ -11,9 +11,11 @@ const formatAuditLog = (tag: string, details: Record<string, any>) => {
 export class DiscoveryWorker {
   public async executeDiscovery(job: DiscoveryJob) {
     const startTime = Date.now();
+    console.log(`[DISCOVERY] Worker started for jobId=${job.id}, sessionId=${job.sessionId}, userId=${job.ownerId}, manifestId=${job.manifestId}`);
     formatAuditLog('WORKER_STARTED', { jobId: job.id, sessionId: job.sessionId, userId: job.ownerId, manifestId: job.manifestId });
     
     try {
+      console.log(`[DISCOVERY] Transitioning jobId=${job.id} state to PREPARING...`);
       await prisma.discoveryJob.update({
         where: { id: job.id },
         data: { state: 'PREPARING', startedAt: new Date() }
@@ -23,7 +25,7 @@ export class DiscoveryWorker {
         await prisma.migrationSession.update({
           where: { id: job.sessionId },
           data: { discoveryStatus: 'RUNNING' }
-        }).catch(err => console.warn(`[DiscoveryWorker] Non-fatal session update error: ${err.message}`));
+        }).catch(err => console.warn(`[DISCOVERY] Non-fatal session update error: ${err.message}`));
       }
 
       formatAuditLog('DISCOVERY_STARTED', { jobId: job.id, sessionId: job.sessionId, userId: job.ownerId });
@@ -33,8 +35,10 @@ export class DiscoveryWorker {
         return { id, isFolder: itemType === 'folder' };
       }) : [];
 
+      console.log(`[DISCOVERY] Parsed ${items.length} item(s) from itemsParam: ${job.itemsParam}`);
+
       const onProgress = async (event: string, data: any) => {
-        if (event === 'SCAN_FOLDER' || event === 'SCAN_PROGRESS') {
+        if (event === 'SCAN_FOLDER' || event === 'SCAN_PROGRESS' || event === 'SCAN_STARTED') {
            formatAuditLog('DISCOVERY_PROGRESS', {
              jobId: job.id,
              sessionId: job.sessionId,
@@ -42,22 +46,29 @@ export class DiscoveryWorker {
              foldersFound: data.totalFolders || 0,
              filesFound: data.totalFiles || 0,
              bytesFound: data.totalBytes || 0,
+             googleRequests: data.googleRequests || 0,
              elapsed: Date.now() - startTime
            });
 
-           await prisma.discoveryJob.update({
-             where: { id: job.id },
-             data: {
-               foldersFound: data.totalFolders || 0,
-               filesFound: data.totalFiles || 0,
-               bytesFound: data.totalBytes ? BigInt(data.totalBytes) : BigInt(0),
-               currentFolder: data.folderName || null,
-               currentFile: data.currentFile || null
-             }
-           }).catch(() => {});
+           try {
+             await prisma.discoveryJob.update({
+               where: { id: job.id },
+               data: {
+                 state: 'PREPARING', // Keep in running active state
+                 foldersFound: data.totalFolders || 0,
+                 filesFound: data.totalFiles || 0,
+                 bytesFound: data.totalBytes ? BigInt(data.totalBytes) : BigInt(0),
+                 currentFolder: data.folderName || data.currentFolder || null,
+                 currentFile: data.currentFile || null
+               }
+             });
+           } catch (dbErr: any) {
+             console.error(`[DISCOVERY] Error updating discovery progress in DB for jobId=${job.id}:`, dbErr.message);
+           }
         }
       };
 
+      console.log(`[DISCOVERY] Executing DiscoveryService for jobId=${job.id}...`);
       const summary = await DiscoveryService.executeDiscovery({
         userId: job.ownerId,
         type: 'source' as AccountType,
@@ -70,6 +81,7 @@ export class DiscoveryWorker {
       const totalFiles = summary?.totalFiles || 0;
       const totalBytes = summary?.totalBytes || 0;
 
+      console.log(`[DISCOVERY] Discovery Finished for jobId=${job.id}. Totals -> Folders: ${totalFolders}, Files: ${totalFiles}, Bytes: ${totalBytes}`);
       formatAuditLog('DISCOVERY_COMPLETED', {
         jobId: job.id,
         sessionId: job.sessionId,
@@ -95,10 +107,11 @@ export class DiscoveryWorker {
         await prisma.migrationSession.update({
           where: { id: job.sessionId },
           data: { discoveryStatus: 'COMPLETED', manifestId: job.manifestId }
-        }).catch(() => {});
+        }).catch(err => console.error(`[DISCOVERY] Failed to update session discoveryStatus to COMPLETED:`, err.message));
       }
       
     } catch (e: any) {
+      console.error(`[DISCOVERY] Fatal error executing discovery for jobId=${job.id}:`, e.message, e.stack);
       formatAuditLog('ERROR', {
         code: 'GOOGLE_API_ERROR',
         message: e.message,
@@ -109,16 +122,24 @@ export class DiscoveryWorker {
         elapsed: Date.now() - startTime
       });
 
-      await prisma.discoveryJob.update({
-         where: { id: job.id },
-         data: { state: 'FAILED' }
-      }).catch(() => {});
+      try {
+        await prisma.discoveryJob.update({
+           where: { id: job.id },
+           data: { state: 'FAILED' }
+        });
+      } catch (dbErr: any) {
+        console.error(`[DISCOVERY] Failed to mark discovery job state as FAILED:`, dbErr.message);
+      }
       
       if (job.sessionId) {
-        await prisma.migrationSession.update({
-          where: { id: job.sessionId },
-          data: { discoveryStatus: 'FAILED' }
-        }).catch(() => {});
+        try {
+          await prisma.migrationSession.update({
+            where: { id: job.sessionId },
+            data: { discoveryStatus: 'FAILED' }
+          });
+        } catch (dbErr: any) {
+          console.error(`[DISCOVERY] Failed to mark migrationSession discoveryStatus as FAILED:`, dbErr.message);
+        }
       }
     }
   }

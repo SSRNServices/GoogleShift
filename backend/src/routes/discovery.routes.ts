@@ -77,19 +77,31 @@ router.post('/start', requireUserAuth, async (req: Request, res: Response) => {
     });
     
     if (active) {
-      formatAuditLog('JOB_FOUND', { jobId: active.id, sessionId, userId, state: active.state });
-      return res.status(200).json(serializeBigInt({
-        ...active,
-        jobId: active.id,
-        status: active.state.toLowerCase(),
-        message: 'Existing discovery found and resumed.'
-      }));
+      const activeAgeMs = active.startedAt ? Date.now() - active.startedAt.getTime() : 0;
+      // If an existing job has been running/preparing for over 45s without completing, mark as failed so a fresh job can run
+      if (activeAgeMs > 45000) {
+        console.warn(`[DISCOVERY] Found stale active job ${active.id} (age ${activeAgeMs}ms). Marking FAILED and starting new job.`);
+        await prisma.discoveryJob.update({
+          where: { id: active.id },
+          data: { state: 'FAILED' }
+        }).catch(() => {});
+      } else {
+        formatAuditLog('JOB_FOUND', { jobId: active.id, sessionId, userId, state: active.state });
+        console.log(`[DISCOVERY] Resuming existing active job ${active.id} (state: ${active.state})`);
+        return res.status(200).json(serializeBigInt({
+          ...active,
+          jobId: active.id,
+          status: active.state.toLowerCase(),
+          message: 'Existing discovery found and resumed.'
+        }));
+      }
     }
 
     formatAuditLog('CREATE_DISCOVERY_JOB', { userId, sessionId });
     const manifestId = 'manifest_scan_' + Date.now();
     const jobId = uuidv4();
     
+    console.log(`[DISCOVERY] Creating new DiscoveryJob ${jobId} for session ${sessionId}...`);
     const job = await prisma.discoveryJob.create({
       data: {
         id: jobId,
@@ -106,7 +118,9 @@ router.post('/start', requireUserAuth, async (req: Request, res: Response) => {
     formatAuditLog('JOB_ID', { jobId: job.id, manifestId, userId, sessionId });
 
     formatAuditLog('QUEUE_DISCOVERY', { jobId: job.id, sessionId, userId });
+    console.log(`[DISCOVERY] Launching background discovery worker for jobId=${job.id}...`);
     discoveryWorker.executeDiscovery(job).catch(err => {
+      console.error(`[DISCOVERY] Background discovery execution thrown:`, err.message, err.stack);
       formatAuditLog('ERROR', { code: 'QUEUE_ERROR', message: err.message, stack: err.stack, jobId: job.id, sessionId, userId });
     });
 
@@ -119,6 +133,7 @@ router.post('/start', requireUserAuth, async (req: Request, res: Response) => {
     }));
   } catch (error: any) {
     const elapsed = Date.now() - startTime;
+    console.error(`[DISCOVERY] Job creation failed:`, error.message, error.stack);
     formatAuditLog('ERROR', {
       code: 'JOB_CREATION_FAILED',
       message: error.message || 'Failed to start discovery',
@@ -182,8 +197,8 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
 
   formatAuditLog('STATUS_REQUEST', { jobId, userId, mode: 'SSE' });
 
-  // If request does not accept SSE, handle as JSON response
-  const acceptsSSE = req.headers.accept?.includes('text/event-stream');
+  // If request does not explicitly request SSE via header or query param, return standard JSON response
+  const acceptsSSE = req.headers.accept?.includes('text/event-stream') || req.query.stream === 'true';
 
   if (!acceptsSSE) {
     try {
@@ -227,11 +242,10 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
   const interval = setInterval(async () => {
     try {
       heartbeatCount++;
-      if (heartbeatCount % 5 === 0) {
+      if (heartbeatCount % 10 === 0) {
         res.write(':\n\n');
       }
 
-      formatAuditLog('JOB_LOOKUP', { jobId, userId });
       let job = await prisma.discoveryJob.findUnique({ where: { id: jobId } });
       if (!job) {
         job = await prisma.discoveryJob.findUnique({ where: { sessionId: jobId } });
@@ -245,8 +259,28 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
         return;
       }
 
-      formatAuditLog('JOB_FOUND', { jobId: job.id, sessionId: job.sessionId, userId, state: job.state });
       const elapsed = job.startedAt ? Date.now() - job.startedAt.getTime() : 0;
+
+      // Stall detection: If job is active for > 30s without finishing or making progress
+      if (['QUEUED', 'PREPARING'].includes(job.state) && elapsed > 30000 && (job.filesFound === 0 && job.foldersFound === 0)) {
+         console.warn(`[DISCOVERY] Job ${job.id} detected as stalled after ${elapsed}ms without progress. Failing job.`);
+         await prisma.discoveryJob.update({
+           where: { id: job.id },
+           data: { state: 'FAILED' }
+         }).catch(() => {});
+
+         if (job.sessionId) {
+           await prisma.migrationSession.update({
+             where: { id: job.sessionId },
+             data: { discoveryStatus: 'FAILED' }
+           }).catch(() => {});
+         }
+
+         res.write(`data: ${JSON.stringify({ error: 'Discovery job timed out after 30 seconds of inactivity.' })}\n\n`);
+         clearInterval(interval);
+         res.end();
+         return;
+      }
 
       res.write(`data: ${JSON.stringify(serializeBigInt({
         status: (job.state || 'QUEUED').toLowerCase(),
@@ -272,6 +306,8 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
                 manifestId: job.manifestId
               }
            }))}\n\n`);
+        } else if (job.state === 'FAILED') {
+           res.write(`data: ${JSON.stringify({ error: 'Discovery job failed during execution.' })}\n\n`);
         }
         clearInterval(interval);
         res.end();
@@ -283,7 +319,7 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
       clearInterval(interval);
       res.end();
     }
-  }, 2000);
+  }, 1000);
 
   req.on('close', () => {
     clearInterval(interval);
