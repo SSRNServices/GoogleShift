@@ -25,6 +25,7 @@ export class DatabaseTokenStore implements TokenStore {
     const provider = this.getProviderString(accountType);
     const expiresAt = tokens.expiry_date ? new Date(tokens.expiry_date) : null;
     
+    console.log(`[OAuthAudit] ACCOUNT_LOOKUP | Provider: ${provider} | UserId: ${userId}`);
     const existing = await prisma.oAuthAccount.findUnique({
       where: {
         provider_providerAccountId: {
@@ -34,13 +35,20 @@ export class DatabaseTokenStore implements TokenStore {
       }
     });
 
-    const refreshTokenToSave = tokens.refresh_token || existing?.refreshToken || null;
-    const accessTokenToSave = tokens.access_token || existing?.accessToken || null;
-    const scopesToSave = tokens.scope || accountInfo?.scopes || existing?.scopes || null;
-    const emailToSave = accountInfo?.email || existing?.email || null;
-    const googleAccountIdToSave = accountInfo?.googleAccountId || existing?.googleAccountId || null;
+    const isUpdate = !!existing;
+    if (isUpdate) {
+      console.log(`[OAuthAudit] ACCOUNT_UPDATE | Provider: ${provider} | UserId: ${userId} | ExistingId: ${existing.id}`);
+    } else {
+      console.log(`[OAuthAudit] ACCOUNT_CREATE | Provider: ${provider} | UserId: ${userId}`);
+    }
 
-    await prisma.oAuthAccount.upsert({
+    const refreshTokenToSave = tokens.refresh_token ?? existing?.refreshToken ?? null;
+    const accessTokenToSave = tokens.access_token ?? existing?.accessToken ?? null;
+    const scopesToSave = tokens.scope ?? accountInfo?.scopes ?? existing?.scopes ?? null;
+    const emailToSave = accountInfo?.email ?? existing?.email ?? null;
+    const googleAccountIdToSave = accountInfo?.googleAccountId ?? existing?.googleAccountId ?? null;
+
+    const saved = await prisma.oAuthAccount.upsert({
       where: {
         provider_providerAccountId: {
           provider,
@@ -69,7 +77,7 @@ export class DatabaseTokenStore implements TokenStore {
       }
     });
 
-    console.log(`[TokenStore] Successfully persisted tokens for user ${userId} (${accountType}). Email: ${emailToSave || 'N/A'}, RefreshToken: ${refreshTokenToSave ? 'EXISTS' : 'MISSING'}`);
+    console.log(`[OAuthAudit] TOKEN_SAVE | Provider: ${provider} | UserId: ${userId} | AccountId: ${saved.id} | Email: ${emailToSave || 'N/A'} | HasRefreshToken: ${!!refreshTokenToSave}`);
   }
 
   async getTokens(userId: string, accountType: AccountType): Promise<Credentials | null> {

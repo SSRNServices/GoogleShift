@@ -44,11 +44,13 @@ export class AuthService {
 
     while (attempt <= maxAttempts) {
       try {
-        console.log(`\n[Auth Retry] Attempt ${attempt} to exchange authorization code for ${type}...`);
+        console.log(`[OAuthAudit] TOKEN_EXCHANGE_START | Mode: ${type} | UserId: ${userId} | Attempt: ${attempt}/${maxAttempts}`);
         
         // Exchange token
         const { tokens } = await client.getToken(code);
         client.setCredentials(tokens);
+
+        console.log(`[OAuthAudit] TOKEN_EXCHANGE_SUCCESS | Mode: ${type} | UserId: ${userId} | HasAccessToken: ${!!tokens.access_token} | HasRefreshToken: ${!!tokens.refresh_token}`);
 
         // Fetch basic google account info
         let email = '';

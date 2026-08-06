@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import passport from 'passport';
 import { googleClientManager } from './google.client';
 import { authService, ConnectionState } from './auth.service';
 import { AccountType } from './token.store';
@@ -188,9 +189,20 @@ export class AuthController {
     const frontendUrl = this.getFrontendUrl();
     const code = req.query.code as string;
     const rawState = req.query.state as string;
+    const errorParam = req.query.error as string;
+
+    console.log(`\n================================================================================`);
+    console.log(`[OAuthAudit] CALLBACK_RECEIVED | CodePresent: ${!!code} | StatePresent: ${!!rawState} | ErrorParam: ${errorParam || 'none'} | URL: ${req.originalUrl || req.url}`);
+    console.log(`================================================================================\n`);
+
+    if (errorParam) {
+      console.error(`[OAuthAudit] ERROR | Google OAuth returned error param: ${errorParam}`);
+      res.redirect(`${frontendUrl}/dashboard?error=auth_failed&reason=${encodeURIComponent(`Google OAuth error: ${errorParam}`)}`);
+      return;
+    }
 
     if (!code) {
-      console.error('OAuth Callback Error: Missing authorization code parameter');
+      console.error(`[OAuthAudit] ERROR | Missing authorization code parameter`);
       res.redirect(`${frontendUrl}/dashboard?error=auth_failed&reason=${encodeURIComponent('Missing authorization code')}`);
       return;
     }
@@ -198,74 +210,139 @@ export class AuthController {
     // Decode state to determine if this is Drive OAuth or Passport User Sign-In
     let type: AccountType | null = null;
     let stateUserId: string | null = null;
+    let decodedStateObj: any = null;
 
     if (rawState) {
       if (rawState === 'source' || rawState === 'destination') {
         type = rawState;
+        console.log(`[OAuthAudit] STATE_DECODE | Plain string state detected: ${type}`);
       } else {
         try {
-          const decoded = JSON.parse(Buffer.from(rawState, 'base64url').toString('utf8'));
-          if (decoded.type === 'source' || decoded.type === 'destination') {
-            type = decoded.type;
-            stateUserId = decoded.userId || null;
+          decodedStateObj = JSON.parse(Buffer.from(rawState, 'base64url').toString('utf8'));
+          console.log(`[OAuthAudit] STATE_DECODE | JSON state decoded:`, JSON.stringify(decodedStateObj));
+          if (decodedStateObj.type === 'source' || decodedStateObj.type === 'destination') {
+            type = decodedStateObj.type;
+            stateUserId = decodedStateObj.userId || null;
           }
-        } catch {
-          // Non-JSON state implies possible Passport Google Sign-In state
+        } catch (e: any) {
+          console.warn(`[OAuthAudit] STATE_DECODE | Non-JSON state payload: ${rawState} | Error: ${e.message}`);
         }
       }
     }
 
-    // If it's a Drive OAuth Connection callback
+    // If state contains a Drive OAuth connection request
     if (type) {
+      console.log(`[OAuthAudit] STATE_VALIDATED | Mode: ${type} | StateUserId: ${stateUserId || 'N/A'}`);
+
       try {
-        const userId = (req as any).user?.id || stateUserId;
+        // Robust userId extraction
+        let userId: string | null = (req as any).user?.id || stateUserId;
+
+        if (!userId && req.cookies?.accessToken) {
+          try {
+            const decodedJwt = jwt.verify(req.cookies.accessToken, JWT_SECRET) as any;
+            if (decodedJwt?.userId) {
+              userId = decodedJwt.userId;
+              console.log(`[OAuthAudit] SESSION_FOUND | Extracted userId ${userId} from accessToken cookie`);
+            }
+          } catch (jwtErr: any) {
+            console.warn(`[OAuthAudit] JWT Cookie verification failed during callback: ${jwtErr.message}`);
+          }
+        }
+
         if (!userId) {
-          console.error(`OAuth Callback Error for ${type}: Missing user ID`);
+          console.error(`[OAuthAudit] ERROR | Missing user ID for Drive connection (${type})`);
           res.redirect(`${frontendUrl}/login?error=auth_required`);
           return;
         }
 
+        // Validate user existence in DB
+        const user = await prisma.user.findUnique({ where: { id: userId } });
+        if (!user || user.status === 'PENDING' || !user.isActive) {
+          console.error(`[OAuthAudit] ERROR | User not found or inactive in DB: ${userId}`);
+          res.redirect(`${frontendUrl}/login?error=user_inactive`);
+          return;
+        }
+
+        console.log(`[OAuthAudit] USER_FOUND | UserId: ${user.id} | Email: ${user.email} | Role: ${user.role}`);
+
+        // Perform token exchange & token store persistence
         await authService.handleCallback(userId, type, code);
-        const profileResponse = await authService.getProfile(userId, type);
 
-        console.log(`\n=== OAuth Success for ${type} ===`);
-        console.log(`Account Name: ${profileResponse.profile?.name}`);
-        console.log(`Account Email: ${profileResponse.profile?.email}`);
-        console.log(`=================================\n`);
+        // Update active migration session if applicable
+        try {
+          const activeSession = await prisma.migrationSession.findFirst({
+            where: { ownerId: userId },
+            orderBy: { createdAt: 'desc' }
+          });
+          if (activeSession) {
+            console.log(`[OAuthAudit] SESSION_UPDATE | Updating migration session ${activeSession.id} for ${type}`);
+          }
+        } catch (sessionErr: any) {
+          console.warn(`[OAuthAudit] Session update warning (non-fatal): ${sessionErr.message}`);
+        }
 
-        res.redirect(`${frontendUrl}/dashboard?connected=${type}`);
+        // Fetch profile optional step
+        let profileEmail = '';
+        try {
+          const profileResponse = await authService.getProfile(userId, type);
+          profileEmail = profileResponse.profile?.email || '';
+          console.log(`[OAuthAudit] Profile fetched for ${type}: Email=${profileEmail}`);
+        } catch (pErr: any) {
+          console.warn(`[OAuthAudit] Post-OAuth getProfile warning (non-fatal): ${pErr.message}`);
+        }
+
+        const redirectUrl = `${frontendUrl}/dashboard?connected=${type}`;
+        console.log(`[OAuthAudit] FRONTEND_REDIRECT | Redirecting to ${redirectUrl}`);
+        console.log(`[OAuthAudit] CALLBACK_COMPLETE | Mode: ${type} | UserId: ${userId} | Success`);
+        
+        res.redirect(redirectUrl);
+        return;
       } catch (error: any) {
-        console.error(`Callback error for ${type}:`, error);
-        let reason = error.message || 'OAuth callback failed due to an internal server error';
+        console.error(`\n[OAuthAudit] ERROR | Callback failure for ${type}:`);
+        console.error(`Stack Trace: ${error.stack || error}`);
+        console.error(`Prisma Code: ${error.code || 'N/A'}`);
+        console.error(`Google API Error: ${JSON.stringify(error.response?.data || error.message || {})}`);
+        console.error(`Request Query:`, JSON.stringify(req.query));
+        console.error(`Decoded State:`, JSON.stringify(decodedStateObj || rawState));
+        console.error(`Mode: ${type}\n`);
+
+        const reason = error.message || 'OAuth callback failed due to an internal error';
         res.redirect(`${frontendUrl}/dashboard?error=auth_failed&reason=${encodeURIComponent(reason)}`);
+        return;
       }
-      return;
     }
 
-    // Otherwise, handle as Passport Google User Login
-    const passport = require('passport');
+    // Fallback: handle as Passport Google User Login
+    console.log(`[OAuthAudit] STATE_DECODE | Bypassing Drive OAuth, delegating to Passport Google User Sign-In`);
     passport.authenticate('google', (err: any, user: any) => {
       if (err || !user) {
-        console.error('Passport Google Authentication error:', err);
+        console.error(`[OAuthAudit] ERROR | Passport Google Authentication error:`, err || 'No user returned');
         return res.redirect(`${frontendUrl}/login?error=google_auth_failed`);
       }
 
-      const payload = { userId: user.id, email: user.email, role: user.role };
-      const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: '1h' });
-      const refreshToken = jwt.sign(payload, REFRESH_SECRET, { expiresIn: '7d' });
-      const domain = process.env.COOKIE_DOMAIN || (process.env.NODE_ENV === 'production' ? '.migration.ssrnservices.in' : undefined);
+      try {
+        const payload = { userId: user.id, email: user.email, role: user.role };
+        const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: '1h' });
+        const refreshToken = jwt.sign(payload, REFRESH_SECRET, { expiresIn: '7d' });
+        const domain = process.env.COOKIE_DOMAIN || (process.env.NODE_ENV === 'production' ? '.migration.ssrnservices.in' : undefined);
 
-      const cookieOptions = {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: (process.env.NODE_ENV === 'production' ? 'none' as const : 'lax' as const),
-        ...(domain ? { domain } : {})
-      };
+        const cookieOptions = {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: (process.env.NODE_ENV === 'production' ? 'none' as const : 'lax' as const),
+          ...(domain ? { domain } : {})
+        };
 
-      res.cookie('accessToken', accessToken, { ...cookieOptions, maxAge: 60 * 60 * 1000 });
-      res.cookie('refreshToken', refreshToken, { ...cookieOptions, maxAge: 7 * 24 * 60 * 60 * 1000 });
+        res.cookie('accessToken', accessToken, { ...cookieOptions, maxAge: 60 * 60 * 1000 });
+        res.cookie('refreshToken', refreshToken, { ...cookieOptions, maxAge: 7 * 24 * 60 * 60 * 1000 });
 
-      res.redirect(`${frontendUrl}/dashboard`);
+        console.log(`[OAuthAudit] FRONTEND_REDIRECT | Passport User Sign-In Success | UserId: ${user.id}`);
+        res.redirect(`${frontendUrl}/dashboard`);
+      } catch (authErr: any) {
+        console.error(`[OAuthAudit] ERROR | Passport cookie sign-in failure:`, authErr);
+        res.redirect(`${frontendUrl}/login?error=google_auth_failed`);
+      }
     })(req, res, next);
   };
 
