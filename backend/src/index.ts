@@ -28,20 +28,21 @@ console.log(`COOKIE_DOMAIN: ${process.env.COOKIE_DOMAIN || 'Not Set'}`);
 console.log(`CORS_ORIGIN: ${process.env.CORS_ORIGIN || 'Not Set'}`);
 console.log('===========================\n');
 
-import { prisma, validateDatabaseSchema } from './utils/database';
+import { prisma, validateDatabaseSchema, performWriteDiagnostics } from './utils/database';
 
 async function verifyDatabase() {
   const start = Date.now();
   try {
     await prisma.$queryRaw`SELECT 1`;
-    const host = new URL(process.env.DATABASE_URL || 'http://localhost').hostname;
+    const host = new URL(process.env.DIRECT_URL || process.env.DATABASE_URL || 'http://localhost').hostname;
     console.log('✓ Database Connected');
     console.log('✓ Prisma Connected');
     console.log(`  - Prisma Version: 7.9.0`);
     console.log(`  - Database Host: ${host}`);
-    console.log(`  - Pool Size: 20`);
+    console.log(`  - Pool Size: 10`);
     console.log(`  - Connection Time: ${Date.now() - start}ms`);
 
+    await performWriteDiagnostics();
     await validateDatabaseSchema();
   } catch (err) {
     console.error('❌ Database Connection / Schema Verification Failed:', err);

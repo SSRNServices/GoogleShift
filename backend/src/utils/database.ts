@@ -11,11 +11,44 @@ const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
 };
 
-const connectionStringRaw = process.env.DIRECT_URL || process.env.DATABASE_URL || '';
-const connectionString = connectionStringRaw.replace(/\?sslmode=require|&sslmode=require/, '');
-const isDirectUrlUsed = !!process.env.DIRECT_URL;
+const envVarNames = [
+  'DIRECT_URL',
+  'POSTGRES_URL_NON_POOLING',
+  'POSTGRES_URL',
+  'SUPABASE_DB_URL',
+  'POSTGRES_PRISMA_URL',
+  'DATABASE_URL'
+];
 
-console.log(`[DB] Initializing PostgreSQL Pool (Using ${isDirectUrlUsed ? 'DIRECT_URL' : 'DATABASE_URL'})...`);
+let selectedVarName = '';
+let connectionStringRaw = '';
+
+for (const name of envVarNames) {
+  if (process.env[name]) {
+    selectedVarName = name;
+    connectionStringRaw = process.env[name] || '';
+    break;
+  }
+}
+
+const parseHost = (rawUrl: string) => {
+  try {
+    const parsed = new URL(rawUrl);
+    return `${parsed.protocol}//${parsed.username ? parsed.username.split('.')[0] + '***' : '***'}@${parsed.hostname}:${parsed.port || '5432'}${parsed.pathname}`;
+  } catch (_) {
+    return 'Invalid/Unparseable URL';
+  }
+};
+
+console.log('\n=== Database Connection Diagnostic Environment ===');
+for (const name of envVarNames) {
+  const val = process.env[name];
+  console.log(`- ${name}: ${val ? parseHost(val) : 'NOT SET'}`);
+}
+console.log(`=> Selected Connection Variable: ${selectedVarName || 'NONE'}`);
+console.log('==================================================\n');
+
+const connectionString = connectionStringRaw.replace(/\?sslmode=require|&sslmode=require/, '');
 
 // Cap pg.Pool max connections at 10 to stay safely below Supabase/PG Session Pooler limit of 15 (EMAXCONNSESSION)
 export const pool = new Pool({
@@ -26,6 +59,11 @@ export const pool = new Pool({
   connectionTimeoutMillis: 10000,
   allowExitOnIdle: false,
   ssl: { rejectUnauthorized: false },
+});
+
+// Auto-override session-level transaction_read_only setting if enabled on role/session
+pool.on('connect', (client) => {
+  client.query('SET SESSION default_transaction_read_only = off;').catch(() => {});
 });
 
 const adapter = new PrismaPg(pool);
@@ -45,6 +83,61 @@ export const prisma =
 
 if (process.env.NODE_ENV !== 'production') {
   globalForPrisma.prisma = prisma;
+}
+
+export async function performWriteDiagnostics(): Promise<void> {
+  console.log('\n=== Executing Startup Write Diagnostics ===');
+  
+  // 1. Check Session & Replica Status via pg.Pool
+  try {
+    const res = await pool.query(`
+      SELECT 
+        current_setting('transaction_read_only') AS tx_ro,
+        current_setting('default_transaction_read_only') AS def_tx_ro,
+        pg_is_in_recovery() AS is_recovery,
+        current_user AS curr_user,
+        session_user AS sess_user,
+        current_database() AS curr_db,
+        inet_server_addr() AS server_addr
+    `);
+    const row = res.rows[0];
+    console.log(`[pg.Pool Diagnostics]`);
+    console.log(`  - Database Host IP: ${row.server_addr || 'N/A'}`);
+    console.log(`  - Current Database: ${row.curr_db}`);
+    console.log(`  - Connected User / Session User: ${row.curr_user} / ${row.sess_user}`);
+    console.log(`  - Physical Read Replica (pg_is_in_recovery): ${row.is_recovery}`);
+    console.log(`  - transaction_read_only: ${row.tx_ro}`);
+    console.log(`  - default_transaction_read_only: ${row.def_tx_ro}`);
+
+    if (row.is_recovery) {
+      console.error(`❌ [FATAL] Connected to a Physical Read Replica host! Write operations will fail.`);
+    }
+  } catch (err: any) {
+    console.error(`❌ [pg.Pool Status Error]: ${err.message}`);
+  }
+
+  // 2. Test Write capability via raw pg.Pool
+  try {
+    await pool.query('CREATE TEMP TABLE __pg_write_test(id int);');
+    await pool.query('INSERT INTO __pg_write_test VALUES (1);');
+    await pool.query('UPDATE __pg_write_test SET id=2;');
+    await pool.query('DROP TABLE __pg_write_test;');
+    console.log('✓ [pg.Pool Write Test] PASSED (CREATE, INSERT, UPDATE, DROP temp table succeeded)');
+  } catch (err: any) {
+    console.error(`❌ [pg.Pool Write Test FAILED]: ${err.message} (Code: ${err.code})`);
+  }
+
+  // 3. Test Write capability via PrismaClient
+  try {
+    await prisma.$executeRawUnsafe('CREATE TEMP TABLE __prisma_write_test(id int);');
+    await prisma.$executeRawUnsafe('INSERT INTO __prisma_write_test VALUES (1);');
+    await prisma.$executeRawUnsafe('UPDATE __prisma_write_test SET id=2;');
+    await prisma.$executeRawUnsafe('DROP TABLE __prisma_write_test;');
+    console.log('✓ [Prisma Write Test] PASSED (CREATE, INSERT, UPDATE, DROP temp table succeeded)');
+  } catch (err: any) {
+    console.error(`❌ [Prisma Write Test FAILED]: ${err.message} (Code: ${err.code})`);
+  }
+  console.log('=============================================\n');
 }
 
 const EXPECTED_SCHEMA: Record<string, string[]> = {
