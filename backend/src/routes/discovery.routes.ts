@@ -180,6 +180,9 @@ router.get('/:jobId/details', requireUserAuth, async (req: Request, res: Respons
 
     formatAuditLog('JOB_FOUND', { jobId: job.id, sessionId: job.sessionId, userId, state: job.state });
     const elapsed = job.startedAt ? Date.now() - job.startedAt.getTime() : 0;
+    const elapsedSec = Math.max(0.1, elapsed / 1000);
+    const foldersPerSec = Math.round(((job.foldersFound || 0) / elapsedSec) * 10) / 10;
+    const filesPerSec = Math.round(((job.filesFound || 0) / elapsedSec) * 10) / 10;
 
     return res.status(200).json(serializeBigInt({
       id: job.id,
@@ -189,6 +192,10 @@ router.get('/:jobId/details', requireUserAuth, async (req: Request, res: Respons
       foldersFound: job.foldersFound || 0,
       filesFound: job.filesFound || 0,
       bytesFound: job.bytesFound || BigInt(0),
+      foldersPerSec,
+      filesPerSec,
+      queueDepth: 0,
+      activeWorkers: 0,
       currentFolder: job.currentFolder || null,
       currentFile: job.currentFile || null,
       elapsed
@@ -226,6 +233,9 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
 
       formatAuditLog('JOB_FOUND', { jobId: job.id, sessionId: job.sessionId, userId, state: job.state });
       const elapsed = job.startedAt ? Date.now() - job.startedAt.getTime() : 0;
+      const elapsedSec = Math.max(0.1, elapsed / 1000);
+      const foldersPerSec = Math.round(((job.foldersFound || 0) / elapsedSec) * 10) / 10;
+      const filesPerSec = Math.round(((job.filesFound || 0) / elapsedSec) * 10) / 10;
 
       return res.status(200).json(serializeBigInt({
         id: job.id,
@@ -235,6 +245,10 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
         foldersFound: job.foldersFound || 0,
         filesFound: job.filesFound || 0,
         bytesFound: job.bytesFound || BigInt(0),
+        foldersPerSec,
+        filesPerSec,
+        queueDepth: 0,
+        activeWorkers: 0,
         currentFolder: job.currentFolder || null,
         currentFile: job.currentFile || null,
         elapsed

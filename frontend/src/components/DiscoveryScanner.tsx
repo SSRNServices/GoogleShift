@@ -19,10 +19,24 @@ const formatBytes = (bytes: number) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
+export interface DiscoveryStats {
+  status: string;
+  folders: number;
+  files: number;
+  bytes: number;
+  googleRequests: number;
+  foldersPerSec: number;
+  filesPerSec: number;
+  queueDepth: number;
+  activeWorkers: number;
+  message: string;
+  elapsed: number;
+}
+
 export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: DiscoveryScannerProps) {
   const [jobId, setJobId] = useState<string | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
-  const [stats, setStats] = useState({
+  const [stats, setStats] = useState<DiscoveryStats>({
     status: 'QUEUED',
     folders: 0,
     files: 0,
@@ -202,6 +216,8 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
                   googleRequests: details.foldersFound || 1,
                   foldersPerSec: details.foldersPerSec || 0,
                   filesPerSec: details.filesPerSec || 0,
+                  queueDepth: details.queueDepth || 0,
+                  activeWorkers: details.activeWorkers || 0,
                   elapsed: details.elapsed || 0,
                   message: details.currentFolder ? `Scanning folder: ${details.currentFolder}` : 'Scanning Google Drive...'
                 });
