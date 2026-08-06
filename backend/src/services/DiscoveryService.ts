@@ -167,8 +167,32 @@ export class DiscoveryService {
              apiRequestsPerSec
           });
         }
+      },
+      onPageScanned: async (stats) => {
+        const now = Date.now();
+        if (now - lastEventTime > 250) {
+          lastEventTime = now;
+          const elapsedSec = Math.max(0.1, (now - startTime) / 1000);
+          const foldersPerSec = Math.round((totalFolders / elapsedSec) * 10) / 10;
+          const filesPerSec = Math.round((totalFiles / elapsedSec) * 10) / 10;
+          const apiRequestsPerSec = Math.round((engine.apiRequests / elapsedSec) * 10) / 10;
+
+          await onProgress('SCAN_PAGE', {
+             folderName: stats.folderName,
+             queueDepth: stats.queueDepth,
+             activeWorkers: stats.activeWorkers,
+             pagesScanned: engine.pagesScanned,
+             totalFolders,
+             totalFiles,
+             totalBytes,
+             googleRequests: engine.apiRequests,
+             foldersPerSec,
+             filesPerSec,
+             apiRequestsPerSec
+          });
+        }
       }
-    }, async (name, op) => {
+    }, async (name: string, op: () => Promise<any>) => {
       return RetryHelper.withRetry(name, op, (msg) => console.log(`[DISCOVERY] ${msg}`));
     });
 

@@ -5,11 +5,7 @@ import { DriveResolver, ResolvedDriveItem, ApiWrapper } from './DriveResolver';
 export interface TraversalStrategy<TContext> {
   onFolderEnter: (folder: ResolvedDriveItem, context: TContext) => Promise<TContext | 'skip'>;
   onFile: (file: ResolvedDriveItem, context: TContext) => Promise<void>;
-}
-
-export interface TraversalStrategy<TContext> {
-  onFolderEnter: (folder: ResolvedDriveItem, context: TContext) => Promise<TContext | 'skip'>;
-  onFile: (file: ResolvedDriveItem, context: TContext) => Promise<void>;
+  onPageScanned?: (stats: { queueDepth: number; activeWorkers: number; apiRequests: number; folderName: string }) => Promise<void> | void;
 }
 
 export interface FolderTask<TContext> {
@@ -21,11 +17,12 @@ export interface FolderTask<TContext> {
 
 export class DriveTraversalEngine<TContext> {
   private visited = new Set<string>();
-  // High-performance concurrency limit for Google Drive API listing tasks (12 concurrent worker calls)
-  private limit = pLimit(12);
+  // High-performance concurrency limit for Google Drive API listing tasks (20 concurrent worker calls)
+  private limit = pLimit(20);
 
   public apiRequests = 0;
   public apiTimeMs = 0;
+  public pagesScanned = 0;
   
   constructor(
     private drive: drive_v3.Drive,
@@ -71,15 +68,19 @@ export class DriveTraversalEngine<TContext> {
        await this.strategy.onFile(resolved, initialContext);
     }
 
-    console.log(`[DISCOVERY] Item traversal complete for ${item.id} in ${Date.now() - startItemTime}ms.`);
+    console.log(`[DISCOVERY] Item traversal complete for ${item.id} in ${Date.now() - startItemTime}ms across ${this.apiRequests} API requests.`);
   }
 
   /**
-   * High-throughput Iterative BFS Queue Engine
-   * Concurrently processes folders up to concurrencyLimit = 12
+   * High-throughput Parent-Batched Iterative BFS Queue Engine
+   * Concurrently processes parent folder batches up to concurrencyLimit = 20
    */
   private async processBfsQueue(initialTasks: FolderTask<TContext>[]): Promise<void> {
     const queue: FolderTask<TContext>[] = [...initialTasks];
+    const taskContextMap = new Map<string, FolderTask<TContext>>();
+    for (const t of initialTasks) {
+      taskContextMap.set(t.id, t);
+    }
     
     let activeWorkers = 0;
     
@@ -89,19 +90,21 @@ export class DriveTraversalEngine<TContext> {
           return resolve();
         }
 
-        while (queue.length > 0 && activeWorkers < 12) {
-          const task = queue.shift()!;
+        while (queue.length > 0 && activeWorkers < 20) {
+          // Batch up to 10 parent folders into a single Google API OR query
+          const batchSize = Math.min(queue.length, 10);
+          const tasks = queue.splice(0, batchSize);
           activeWorkers++;
 
-          this.scanFolderBfs(task)
+          this.scanFolderBatchBfs(tasks, queue.length, activeWorkers)
             .then((newTasks) => {
               for (const nt of newTasks) {
+                taskContextMap.set(nt.id, nt);
                 queue.push(nt);
               }
             })
             .catch((err) => {
-              console.error(`[DISCOVERY] Error scanning folder "${task.name}" (${task.id}):`, err.message);
-              // Reject on fatal errors
+              console.error(`[DISCOVERY] Error scanning folder batch of ${tasks.length} items:`, err.message);
               reject(err);
             })
             .finally(() => {
@@ -115,16 +118,33 @@ export class DriveTraversalEngine<TContext> {
     });
   }
 
-  private async scanFolderBfs(task: FolderTask<TContext>): Promise<FolderTask<TContext>[]> {
+  private async scanFolderBatchBfs(
+    tasks: FolderTask<TContext>[],
+    queueDepth: number,
+    activeWorkers: number
+  ): Promise<FolderTask<TContext>[]> {
     const newTasks: FolderTask<TContext>[] = [];
+    if (tasks.length === 0) return newTasks;
+
+    const taskMap = new Map<string, FolderTask<TContext>>();
+    for (const t of tasks) {
+      taskMap.set(t.id, t);
+    }
+
+    // Build parent OR query
+    const parentQuery = tasks.length === 1
+      ? `'${tasks[0].id}' in parents`
+      : `(${tasks.map(t => `'${t.id}' in parents`).join(' or ')})`;
+
     let pageToken: string | undefined = undefined;
 
     do {
       const startTime = Date.now();
       this.apiRequests++;
+      this.pagesScanned++;
 
-      const res: any = await this.limit(() => this.apiWrapper(`List Children ${task.id}`, () => this.drive.files.list({
-        q: `'${task.id}' in parents and trashed = false`,
+      const res: any = await this.limit(() => this.apiWrapper(`List Children Batch (${tasks.length})`, () => this.drive.files.list({
+        q: `${parentQuery} and trashed = false`,
         fields: 'nextPageToken, files(id, name, mimeType, size, parents, shortcutDetails(targetId, targetMimeType))',
         pageSize: 1000,
         pageToken: pageToken,
@@ -169,28 +189,42 @@ export class DriveTraversalEngine<TContext> {
            originalMimeType
         };
 
+        // Determine parent task context
+        const parentId = file.parents && file.parents.length > 0 ? file.parents[0] : tasks[0].id;
+        const parentTask = taskMap.get(parentId) || tasks[0];
+
         if (mimeType === 'application/vnd.google-apps.folder') {
           if (fileId && !this.visited.has(fileId)) {
             this.visited.add(fileId);
             
-            const newContext = await this.strategy.onFolderEnter(resolvedItem, task.context);
+            const newContext = await this.strategy.onFolderEnter(resolvedItem, parentTask.context);
             if (newContext !== 'skip') {
                newTasks.push({
                  id: fileId,
                  name,
-                 depth: task.depth + 1,
+                 depth: parentTask.depth + 1,
                  context: newContext
                });
             }
           }
         } else {
-           await this.strategy.onFile(resolvedItem, task.context);
+           await this.strategy.onFile(resolvedItem, parentTask.context);
         }
+      }
+
+      // Per-Page Progress Emission
+      if (this.strategy.onPageScanned) {
+        await this.strategy.onPageScanned({
+          queueDepth,
+          activeWorkers,
+          apiRequests: this.apiRequests,
+          folderName: tasks[0].name
+        });
       }
 
       const npt = res.data?.nextPageToken || undefined;
       if (pageToken && npt === pageToken) {
-         console.error(`[DISCOVERY] Aborting page loop for ${task.id} — Identical page token repeated: ${npt}`);
+         console.error(`[DISCOVERY] Aborting page loop for batch — Identical page token repeated: ${npt}`);
          break;
       }
       pageToken = npt;

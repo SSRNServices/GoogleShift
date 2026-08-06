@@ -30,6 +30,8 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
     googleRequests: 0,
     foldersPerSec: 0,
     filesPerSec: 0,
+    queueDepth: 0,
+    activeWorkers: 0,
     message: 'Initializing background discovery job...',
     elapsed: 0
   });
@@ -53,6 +55,8 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
       googleRequests: 0,
       foldersPerSec: 0,
       filesPerSec: 0,
+      queueDepth: 0,
+      activeWorkers: 0,
       message: 'Initializing background discovery job...',
       elapsed: 0
     });
@@ -154,6 +158,8 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
                 googleRequests: data.googleRequests || (data.foldersFound ? data.foldersFound + 1 : 1),
                 foldersPerSec: data.foldersPerSec || 0,
                 filesPerSec: data.filesPerSec || 0,
+                queueDepth: data.queueDepth || 0,
+                activeWorkers: data.activeWorkers || 0,
                 elapsed: data.elapsed || 0,
                 message: data.currentFolder 
                   ? `Scanning folder: ${data.currentFolder}` 
