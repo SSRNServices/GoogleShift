@@ -40,6 +40,16 @@ export class DiscoveryWorker {
       let lastDbUpdateMs = 0;
       const { RetryHelper } = await import('../utils/retry');
 
+      // Active Heartbeat background interval every 5 seconds
+      const heartbeatInterval = setInterval(async () => {
+        try {
+          await prisma.discoveryJob.update({
+            where: { id: job.id },
+            data: { lastHeartbeat: new Date() }
+          }).catch(() => {});
+        } catch (_) {}
+      }, 5000);
+
       const onProgress = async (event: string, data: any) => {
         if (event === 'SCAN_FOLDER' || event === 'SCAN_PROGRESS' || event === 'SCAN_STARTED') {
            const now = Date.now();
@@ -71,26 +81,31 @@ export class DiscoveryWorker {
                    filesFound: data.totalFiles || 0,
                    bytesFound: data.totalBytes ? BigInt(data.totalBytes) : BigInt(0),
                    currentFolder: data.folderName || data.currentFolder || null,
-                   currentFile: data.currentFile || null
+                   currentFile: data.currentFile || null,
+                   lastHeartbeat: new Date()
                  }
                }),
                (msg) => console.log(`[DB] ${msg}`)
              );
-             console.log(`[DB] Discovery Progress Saved for jobId=${job.id} | Folders: ${data.totalFolders || 0}, Files: ${data.totalFiles || 0}`);
            } catch (dbErr: any) {
              console.error(`[DB] Error updating discovery progress in DB for jobId=${job.id}:`, dbErr.message);
            }
         }
       };
 
-      console.log(`[DISCOVERY] Executing DiscoveryService for jobId=${job.id}...`);
-      const summary = await DiscoveryService.executeDiscovery({
-        userId: job.ownerId,
-        type: 'source' as AccountType,
-        items,
-        manifestId: job.manifestId,
-        onProgress
-      });
+      let summary: any = null;
+      try {
+        console.log(`[DISCOVERY] Executing DiscoveryService for jobId=${job.id}...`);
+        summary = await DiscoveryService.executeDiscovery({
+          userId: job.ownerId,
+          type: 'source' as AccountType,
+          items,
+          manifestId: job.manifestId,
+          onProgress
+        });
+      } finally {
+        clearInterval(heartbeatInterval);
+      }
 
       const totalFolders = summary?.totalFolders || 0;
       const totalFiles = summary?.totalFiles || 0;

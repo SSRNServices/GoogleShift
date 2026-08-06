@@ -68,54 +68,65 @@ router.post('/start', requireUserAuth, async (req: Request, res: Response) => {
       }
     }
 
-    const active = await prisma.discoveryJob.findFirst({
-      where: { 
-        ownerId: userId,
-        sessionId,
-        state: { notIn: ['COMPLETED', 'FAILED', 'CANCELLED'] } 
-      }
+    // Check for an active job on this session
+    const active = await prisma.discoveryJob.findUnique({
+      where: { sessionId }
     });
     
-    if (active) {
-      const activeAgeMs = active.startedAt ? Date.now() - active.startedAt.getTime() : 0;
-      // If an existing job has been running/preparing for over 45s without completing, mark as failed so a fresh job can run
-      if (activeAgeMs > 45000) {
-        console.warn(`[DISCOVERY] Found stale active job ${active.id} (age ${activeAgeMs}ms). Marking FAILED and starting new job.`);
-        await prisma.discoveryJob.update({
-          where: { id: active.id },
-          data: { state: 'FAILED' }
-        }).catch(() => {});
-      } else {
-        formatAuditLog('JOB_FOUND', { jobId: active.id, sessionId, userId, state: active.state });
-        console.log(`[DISCOVERY] Resuming existing active job ${active.id} (state: ${active.state})`);
+    if (active && ['QUEUED', 'PREPARING', 'SCANNING'].includes(active.state)) {
+      const lastHeartbeatMs = active.lastHeartbeat ? active.lastHeartbeat.getTime() : (active.startedAt ? active.startedAt.getTime() : Date.now());
+      const heartbeatAgeMs = Date.now() - lastHeartbeatMs;
+
+      // Only mark job as failed if heartbeat is stale for > 5 minutes (300,000ms)
+      const TIMEOUT_THRESHOLD = Number(process.env.DISCOVERY_TIMEOUT_MS) || 300000;
+      if (heartbeatAgeMs < TIMEOUT_THRESHOLD) {
+        formatAuditLog('JOB_FOUND', { jobId: active.id, sessionId, userId, state: active.state, heartbeatAgeMs });
+        console.log(`[DISCOVERY] Reconnecting/resuming active job ${active.id} (state: ${active.state}, heartbeatAge: ${heartbeatAgeMs}ms)`);
         return res.status(200).json(serializeBigInt({
           ...active,
           jobId: active.id,
           status: active.state.toLowerCase(),
-          message: 'Existing discovery found and resumed.'
+          message: 'Existing discovery job active. Reconnecting...'
         }));
+      } else {
+        console.warn(`[DISCOVERY] Stale heartbeat on job ${active.id} (age ${heartbeatAgeMs}ms > ${TIMEOUT_THRESHOLD}ms). Resetting state...`);
       }
     }
 
-    formatAuditLog('CREATE_DISCOVERY_JOB', { userId, sessionId });
-    const manifestId = 'manifest_scan_' + Date.now();
-    const jobId = uuidv4();
+    formatAuditLog('UPSERT_DISCOVERY_JOB', { userId, sessionId });
+    const manifestId = active?.manifestId || ('manifest_scan_' + Date.now());
+    const jobId = active?.id || uuidv4();
     
-    console.log(`[DISCOVERY] Creating new DiscoveryJob ${jobId} for session ${sessionId}...`);
-    const job = await prisma.discoveryJob.create({
-      data: {
+    console.log(`[DISCOVERY] Upserting DiscoveryJob ${jobId} for session ${sessionId}...`);
+    const job = await prisma.discoveryJob.upsert({
+      where: { sessionId },
+      create: {
         id: jobId,
         ownerId: userId,
         sessionId,
         manifestId,
         itemsParam,
-        state: 'QUEUED'
+        state: 'QUEUED',
+        lastHeartbeat: new Date(),
+        startedAt: new Date()
+      },
+      update: {
+        itemsParam,
+        manifestId,
+        state: 'QUEUED',
+        foldersFound: 0,
+        filesFound: 0,
+        bytesFound: BigInt(0),
+        currentFolder: null,
+        currentFile: null,
+        lastHeartbeat: new Date(),
+        startedAt: new Date(),
+        completedAt: null,
+        cancelledAt: null
       }
     });
 
-    formatAuditLog('JOB_CREATED', { jobId: job.id, manifestId, userId, sessionId });
-    formatAuditLog('JOB_SAVED', { jobId: job.id, manifestId, userId, sessionId });
-    formatAuditLog('JOB_ID', { jobId: job.id, manifestId, userId, sessionId });
+    formatAuditLog('JOB_UPSERTED', { jobId: job.id, manifestId, userId, sessionId });
 
     formatAuditLog('QUEUE_DISCOVERY', { jobId: job.id, sessionId, userId });
     console.log(`[DISCOVERY] Launching background discovery worker for jobId=${job.id}...`);
@@ -264,9 +275,13 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
       const foldersPerSec = Math.round(((job.foldersFound || 0) / elapsedSec) * 10) / 10;
       const filesPerSec = Math.round(((job.filesFound || 0) / elapsedSec) * 10) / 10;
 
-      // Stall detection: If job is active for > 30s without finishing or making progress
-      if (['QUEUED', 'PREPARING'].includes(job.state) && elapsed > 30000 && (job.filesFound === 0 && job.foldersFound === 0)) {
-         console.warn(`[DISCOVERY] Job ${job.id} detected as stalled after ${elapsed}ms without progress. Failing job.`);
+      // Watchdog Staleness Detection: Fail job ONLY if lastHeartbeat is older than 5 minutes (300,000ms)
+      const lastHeartbeatMs = job.lastHeartbeat ? job.lastHeartbeat.getTime() : (job.startedAt ? job.startedAt.getTime() : Date.now());
+      const heartbeatAgeMs = Date.now() - lastHeartbeatMs;
+      const TIMEOUT_THRESHOLD = Number(process.env.DISCOVERY_TIMEOUT_MS) || 300000;
+
+      if (['QUEUED', 'PREPARING', 'SCANNING'].includes(job.state) && heartbeatAgeMs > TIMEOUT_THRESHOLD) {
+         console.warn(`[DISCOVERY] Job ${job.id} heartbeat stale for ${heartbeatAgeMs}ms (> ${TIMEOUT_THRESHOLD}ms). Failing job.`);
          await prisma.discoveryJob.update({
            where: { id: job.id },
            data: { state: 'FAILED' }
@@ -279,7 +294,7 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
            }).catch(() => {});
          }
 
-         res.write(`data: ${JSON.stringify({ error: 'Discovery job timed out after 30 seconds of inactivity.' })}\n\n`);
+         res.write(`data: ${JSON.stringify({ error: `Discovery job timed out after ${Math.round(TIMEOUT_THRESHOLD / 60000)} minutes of inactivity.` })}\n\n`);
          clearInterval(interval);
          res.end();
          return;

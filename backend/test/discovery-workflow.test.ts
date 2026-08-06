@@ -14,6 +14,7 @@ vi.mock('../src/utils/database', () => ({
       findFirst: vi.fn(),
       findMany: vi.fn(),
       create: vi.fn(),
+      upsert: vi.fn(),
       update: vi.fn()
     },
     scanSummary: {
@@ -60,11 +61,10 @@ describe('Discovery Workflow Test Suite (Phases 1-13)', () => {
       (layer: any) => layer.route && layer.route.path === path && layer.route.methods[method]
     );
     if (!route) throw new Error(`Route ${method.toUpperCase()} ${path} not found`);
-    // Get the last handler (after auth middleware)
     return route.route.stack[route.route.stack.length - 1].handle;
   };
 
-  it('1. First migration discovery job creation creates job and returns jobId', async () => {
+  it('1. First migration discovery job creation creates job via upsert and returns jobId', async () => {
     const handler = getRouteHandler('post', '/start');
 
     vi.mocked(prisma.migrationSession.findUnique).mockResolvedValue({
@@ -74,8 +74,8 @@ describe('Discovery Workflow Test Suite (Phases 1-13)', () => {
       destinationAccountId: 'dest-acc-1'
     } as any);
 
-    vi.mocked(prisma.discoveryJob.findFirst).mockResolvedValue(null);
-    vi.mocked(prisma.discoveryJob.create).mockResolvedValue({
+    vi.mocked(prisma.discoveryJob.findUnique).mockResolvedValue(null);
+    vi.mocked(prisma.discoveryJob.upsert).mockResolvedValue({
       id: 'disc-job-1',
       ownerId: 'test-user-id',
       sessionId: 'session-1',
@@ -92,7 +92,7 @@ describe('Discovery Workflow Test Suite (Phases 1-13)', () => {
 
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'disc-job-1' }));
-    expect(prisma.discoveryJob.create).toHaveBeenCalled();
+    expect(prisma.discoveryJob.upsert).toHaveBeenCalled();
     expect(discoveryWorker.executeDiscovery).toHaveBeenCalled();
   });
 
@@ -104,11 +104,12 @@ describe('Discovery Workflow Test Suite (Phases 1-13)', () => {
       ownerId: 'test-user-id'
     } as any);
 
-    vi.mocked(prisma.discoveryJob.findFirst).mockResolvedValue({
+    vi.mocked(prisma.discoveryJob.findUnique).mockResolvedValue({
       id: 'active-job-1',
       ownerId: 'test-user-id',
       sessionId: 'session-1',
-      state: 'PREPARING'
+      state: 'PREPARING',
+      lastHeartbeat: new Date()
     } as any);
 
     const { req, res } = createMockReqRes({ itemsParam: 'folder1:folder', sessionId: 'session-1' });
@@ -116,7 +117,7 @@ describe('Discovery Workflow Test Suite (Phases 1-13)', () => {
 
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'active-job-1', status: 'preparing' }));
-    expect(prisma.discoveryJob.create).not.toHaveBeenCalled();
+    expect(prisma.discoveryJob.upsert).not.toHaveBeenCalled();
   });
 
   it('3. REST details status endpoint returns structured job status by jobId', async () => {
@@ -192,10 +193,11 @@ describe('Discovery Workflow Test Suite (Phases 1-13)', () => {
       ownerId: 'test-user-id'
     } as any);
 
-    vi.mocked(prisma.discoveryJob.findFirst).mockResolvedValue({
+    vi.mocked(prisma.discoveryJob.findUnique).mockResolvedValue({
       id: 'disc-retry-1',
       sessionId: 'session-retry',
-      state: 'QUEUED'
+      state: 'QUEUED',
+      lastHeartbeat: new Date()
     } as any);
 
     const { req: req1, res: res1 } = createMockReqRes({ itemsParam: 'f1:folder', sessionId: 'session-retry' });

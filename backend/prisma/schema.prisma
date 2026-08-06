@@ -101,6 +101,8 @@ model DiscoveryJob {
   bytesFound          BigInt   @default(0)
   currentFolder       String?
   currentFile         String?
+  checkpointData      String?
+  lastHeartbeat       DateTime?
   
   startedAt           DateTime?
   completedAt         DateTime?

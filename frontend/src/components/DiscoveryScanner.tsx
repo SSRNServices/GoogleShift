@@ -84,20 +84,6 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
     let pollTimeout: number;
     let isActive = true;
 
-    // Frontend 30s Stall Detection Check
-    const stallInterval = setInterval(() => {
-      if (completed || initError) return;
-      const timeSinceLastProgress = Date.now() - lastProgressTimeRef.current;
-      if (timeSinceLastProgress > 30000 && stats.folders === 0 && stats.files === 0) {
-        console.warn(`[Frontend] Discovery stalled for > 30 seconds without progress.`);
-        const stallMsg = 'Discovery job timed out after 30 seconds of inactivity.';
-        setInitError(stallMsg);
-        onError(stallMsg);
-        isActive = false;
-        if (abortControllerRef.current) abortControllerRef.current.abort();
-      }
-    }, 5000);
-
     const streamDiscovery = async () => {
       try {
         const { accessToken } = useAuthStore.getState();
@@ -239,7 +225,6 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
 
     return () => {
       isActive = false;
-      clearInterval(stallInterval);
       if (abortControllerRef.current) abortControllerRef.current.abort();
       clearTimeout(pollTimeout);
     };
