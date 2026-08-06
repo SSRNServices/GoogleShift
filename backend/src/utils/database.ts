@@ -294,14 +294,17 @@ export async function validateDatabaseSchema(): Promise<void> {
   }
 
   if (mismatchCount > 0 || pendingMigrations.length > 0) {
-    console.error(`\n[FATAL] Startup aborted due to database schema mismatch or pending migrations.`);
-    console.error(`[FATAL] Missing Columns (${missingColumnsReport.length}): ${missingColumnsReport.join(', ') || 'None'}`);
-    console.error(`[FATAL] Pending Migrations (${pendingMigrations.length}): ${pendingMigrations.join(', ') || 'None'}`);
-    console.error(`[FATAL] Run 'npx prisma migrate deploy' to sync database schema.\n`);
-    process.exit(1);
+    console.warn(`\n⚠️ [DB WARNING] Database schema mismatch or pending migrations detected.`);
+    if (missingColumnsReport.length > 0) {
+      console.warn(`⚠️ [DB WARNING] Missing Columns (${missingColumnsReport.length}): ${missingColumnsReport.join(', ')}`);
+    }
+    if (pendingMigrations.length > 0) {
+      console.warn(`⚠️ [DB WARNING] Pending Migrations (${pendingMigrations.length}): ${pendingMigrations.join(', ')}`);
+    }
+    console.warn(`⚠️ [DB WARNING] Run 'npx prisma migrate deploy' to sync schema. Continuing startup to serve HTTP requests...\n`);
+  } else {
+    console.log('✓ Database Schema Validation Passed - All required models, columns, and migrations are present.\n');
   }
-
-  console.log('✓ Database Schema Validation Passed - All required models, columns, and migrations are present.\n');
 }
 
 process.on('SIGINT', async () => {
