@@ -238,6 +238,22 @@ export async function validateDatabaseSchema(): Promise<void> {
   let mismatchCount = 0;
   const missingColumnsReport: string[] = [];
 
+  // 3. Audit Enum Types (DiscoveryState)
+  try {
+    const enumRaw: Array<{ typname: string }> = await prisma.$queryRaw`
+      SELECT typname FROM pg_type WHERE typname = 'DiscoveryState'
+    `;
+    if (enumRaw.length === 0) {
+      console.error(`❌ Missing enum type in database: DiscoveryState`);
+      console.error(`   Migration required: Run 'npx prisma migrate deploy'`);
+      mismatchCount++;
+    } else {
+      console.log(`  - Enum Check: DiscoveryState exists in PostgreSQL schema.`);
+    }
+  } catch (err: any) {
+    console.warn('⚠️ Could not query pg_type for DiscoveryState enum:', err.message);
+  }
+
   for (const [table, expectedColumns] of Object.entries(EXPECTED_SCHEMA)) {
     const existingColumns = dbMap[table];
     if (!existingColumns) {
