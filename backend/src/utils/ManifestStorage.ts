@@ -25,9 +25,11 @@ export class ManifestStorage {
   }
 
   public static async saveManifest(items: ManifestItem[]) {
-    const chunkSize = 5000;
+    const chunkSize = 1000;
     const { RetryHelper } = await import('./retry');
     
+    console.log(`[DB] Starting batch insert for ${items.length} manifest items in chunks of ${chunkSize}...`);
+
     for (let i = 0; i < items.length; i += chunkSize) {
       const chunk = items.slice(i, i + chunkSize);
       
@@ -54,10 +56,11 @@ export class ManifestStorage {
       };
 
       await RetryHelper.withRetry(
-        `ManifestStorage.saveManifest [Chunk ${Math.floor(i / chunkSize) + 1}]`,
+        `ManifestStorage.saveManifest [Chunk ${Math.floor(i / chunkSize) + 1}/${Math.ceil(items.length / chunkSize)}]`,
         insertChunk,
-        (msg) => console.log(`[ManifestStorage] ${msg}`)
+        (msg) => console.log(`[DB] ${msg}`)
       );
+      console.log(`[DB] Batch Insert: ${chunk.length} items saved (Chunk ${Math.floor(i / chunkSize) + 1}/${Math.ceil(items.length / chunkSize)})`);
     }
   }
 

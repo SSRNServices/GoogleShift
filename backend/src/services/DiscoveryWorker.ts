@@ -37,8 +37,18 @@ export class DiscoveryWorker {
 
       console.log(`[DISCOVERY] Parsed ${items.length} item(s) from itemsParam: ${job.itemsParam}`);
 
+      let lastDbUpdateMs = 0;
+      const { RetryHelper } = await import('../utils/retry');
+
       const onProgress = async (event: string, data: any) => {
         if (event === 'SCAN_FOLDER' || event === 'SCAN_PROGRESS' || event === 'SCAN_STARTED') {
+           const now = Date.now();
+           // Throttle DB updates to at most once per 1 second (1000ms) unless it's initial scan start
+           if (event !== 'SCAN_STARTED' && (now - lastDbUpdateMs < 1000)) {
+             return;
+           }
+           lastDbUpdateMs = now;
+
            formatAuditLog('DISCOVERY_PROGRESS', {
              jobId: job.id,
              sessionId: job.sessionId,
@@ -47,23 +57,28 @@ export class DiscoveryWorker {
              filesFound: data.totalFiles || 0,
              bytesFound: data.totalBytes || 0,
              googleRequests: data.googleRequests || 0,
-             elapsed: Date.now() - startTime
+             elapsed: now - startTime
            });
 
            try {
-             await prisma.discoveryJob.update({
-               where: { id: job.id },
-               data: {
-                 state: 'PREPARING', // Keep in running active state
-                 foldersFound: data.totalFolders || 0,
-                 filesFound: data.totalFiles || 0,
-                 bytesFound: data.totalBytes ? BigInt(data.totalBytes) : BigInt(0),
-                 currentFolder: data.folderName || data.currentFolder || null,
-                 currentFile: data.currentFile || null
-               }
-             });
+             await RetryHelper.withRetry(
+               `DiscoveryWorker.updateProgress [jobId=${job.id}]`,
+               () => prisma.discoveryJob.update({
+                 where: { id: job.id },
+                 data: {
+                   state: 'PREPARING',
+                   foldersFound: data.totalFolders || 0,
+                   filesFound: data.totalFiles || 0,
+                   bytesFound: data.totalBytes ? BigInt(data.totalBytes) : BigInt(0),
+                   currentFolder: data.folderName || data.currentFolder || null,
+                   currentFile: data.currentFile || null
+                 }
+               }),
+               (msg) => console.log(`[DB] ${msg}`)
+             );
+             console.log(`[DB] Discovery Progress Saved for jobId=${job.id} | Folders: ${data.totalFolders || 0}, Files: ${data.totalFiles || 0}`);
            } catch (dbErr: any) {
-             console.error(`[DISCOVERY] Error updating discovery progress in DB for jobId=${job.id}:`, dbErr.message);
+             console.error(`[DB] Error updating discovery progress in DB for jobId=${job.id}:`, dbErr.message);
            }
         }
       };

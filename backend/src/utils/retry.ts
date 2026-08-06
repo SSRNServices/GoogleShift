@@ -46,9 +46,9 @@ export class RetryHelper {
     }
 
     const {
-      maxAttempts = 5,
-      baseDelayMs = 1000,
-      maxDelayMs = 30_000,
+      maxAttempts = 3,
+      baseDelayMs = 300,
+      maxDelayMs = 10_000,
       jitter = 0.3,
       onRetry,
       onRateLimit: onRateLimitOpt,

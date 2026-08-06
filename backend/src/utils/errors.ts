@@ -263,5 +263,19 @@ export function classifyError(e: any): 'retryable' | 'permanent' | 'unknown' {
   if (msg.includes('ETIMEDOUT')) return 'retryable';
   if (msg.includes('EAI_AGAIN')) return 'retryable';
 
+  // Retryable Database connection & pool exhaustion codes (EMAXCONNSESSION, Supabase limit, Prisma connection timeout)
+  const dbRetryCodes = ['P1001', 'P1002', 'P1008', 'P1017', '57P01', 'XX000', 'EMAXCONNSESSION'];
+  if (
+    code && dbRetryCodes.includes(code) ||
+    msg.includes('EMAXCONNSESSION') ||
+    msg.includes('max clients reached') ||
+    msg.includes('pool_size') ||
+    msg.includes('Can\'t reach database server') ||
+    msg.includes('Timed out fetching a new connection from the connection pool')
+  ) {
+    console.warn(`[DB] Classified Database Connection Error as RETRYABLE: ${msg || code}`);
+    return 'retryable';
+  }
+
   return 'unknown';
 }

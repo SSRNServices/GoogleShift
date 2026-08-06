@@ -7,26 +7,38 @@ import { Pool } from 'pg';
 import { safeSerialize, safeDeserialize } from './serialization';
 import { MigrationJob, MigrationRequest } from '../transfer/types';
 
-declare global {
-  var prisma: PrismaClient | undefined;
-}
+const globalForPrisma = globalThis as unknown as {
+  prisma: PrismaClient | undefined;
+};
 
+// Cap pg.Pool max connections at 10 to stay safely below Supabase/PG Session Pooler limit of 15 (EMAXCONNSESSION)
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL?.replace(/\?sslmode=require|&sslmode=require/, ''),
-  max: 20,
+  max: 10,
   min: 2,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
+  connectionTimeoutMillis: 10000,
   allowExitOnIdle: false,
   ssl: { rejectUnauthorized: false },
 });
 
 const adapter = new PrismaPg(pool);
 
-export const prisma = global.prisma ?? new PrismaClient({ adapter });
+if (!globalForPrisma.prisma) {
+  console.log('[DB] Opening Prisma Singleton client with pg adapter (max connections: 10)');
+} else {
+  console.log('[DB] Using Existing Prisma Client Singleton instance');
+}
+
+export const prisma =
+  globalForPrisma.prisma ??
+  new PrismaClient({
+    adapter,
+    log: ['error', 'warn']
+  });
 
 if (process.env.NODE_ENV !== 'production') {
-  global.prisma = prisma;
+  globalForPrisma.prisma = prisma;
 }
 
 const EXPECTED_SCHEMA: Record<string, string[]> = {
