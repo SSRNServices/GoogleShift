@@ -16,6 +16,10 @@ export const migrationApi = {
     });
   },
 
+  async getDiscoveryStatus(jobId: string) {
+    return apiClient(`/api/discovery/${jobId}/status`);
+  },
+
   async getCurrent() {
     return apiClient('/api/migrations/current');
   },

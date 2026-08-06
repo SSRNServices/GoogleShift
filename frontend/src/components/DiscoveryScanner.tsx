@@ -57,6 +57,14 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
   const hasStartedRef = useRef(false);
   const lastProgressTimeRef = useRef<number>(Date.now());
 
+  const onCompleteRef = useRef(onComplete);
+  const onErrorRef = useRef(onError);
+
+  useEffect(() => {
+    onCompleteRef.current = onComplete;
+    onErrorRef.current = onError;
+  }, [onComplete, onError]);
+
   const startDiscoveryProcess = async () => {
     setInitError(null);
     setCompleted(false);
@@ -80,13 +88,41 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
       console.log(`[Frontend] Requesting discovery start for sourceId=${sourceId}, sessionId=${sessionId}`);
       const job = await migrationApi.startDiscovery(sourceId, sessionId);
       const activeJobId = job.jobId || job.id;
-      console.log(`[Frontend] Discovery job created/resumed with jobId=${activeJobId}`);
+      console.log(`[Frontend] Discovery job created/resumed with jobId=${activeJobId}, status=${job.status}`);
+
+      if (job.status === 'completed' || job.state === 'COMPLETED') {
+        const summaryObj = {
+          totalFolders: job.foldersFound || 0,
+          totalFiles: job.filesFound || 0,
+          totalBytes: job.bytesFound || 0,
+          manifestId: job.manifestId
+        };
+        console.log('[Frontend] Discovery already completed on start response:', summaryObj);
+        setCompleted(true);
+        setFinalSummary(summaryObj);
+        setStats({
+          status: 'COMPLETED',
+          folders: job.foldersFound || 0,
+          files: job.filesFound || 0,
+          bytes: job.bytesFound || 0,
+          googleRequests: job.foldersFound || 1,
+          foldersPerSec: 0,
+          filesPerSec: 0,
+          queueDepth: 0,
+          activeWorkers: 0,
+          message: 'Discovery complete!',
+          elapsed: job.elapsed || 0
+        });
+        onCompleteRef.current(summaryObj);
+        return;
+      }
+
       setJobId(activeJobId);
     } catch (err: any) {
       const errMsg = err.message || 'Failed to initialize discovery';
       console.error(`[Frontend] startDiscovery failed:`, errMsg);
       setInitError(errMsg);
-      onError(errMsg);
+      onErrorRef.current(errMsg);
       hasStartedRef.current = false;
     }
   };
@@ -147,7 +183,7 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
               lastProgressTimeRef.current = Date.now();
 
               if (data.error) {
-                onError(data.error);
+                onErrorRef.current(data.error);
                 setInitError(data.error);
                 isActive = false;
                 break;
@@ -176,7 +212,7 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
                   message: 'Discovery complete!'
                 }));
                 isActive = false;
-                onComplete(summaryObj);
+                onCompleteRef.current(summaryObj);
                 break;
               }
 
@@ -209,11 +245,11 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
          
          if (isActive) {
             try {
-              const details = await migrationApi.getJobDetails(jobId);
+              const details = await migrationApi.getDiscoveryStatus(jobId);
               if (details) {
                 lastProgressTimeRef.current = Date.now();
                 const rawStatus = (details.status || 'QUEUED').toUpperCase();
-                const isComplete = rawStatus === 'COMPLETED';
+                const isComplete = rawStatus === 'COMPLETED' || details.status === 'completed';
 
                 const currentStatus = isComplete ? 'COMPLETED' : ((details.foldersFound > 0 || details.filesFound > 0) ? 'SCANNING' : rawStatus);
                 setStats({
@@ -241,11 +277,11 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
                   setCompleted(true);
                   setFinalSummary(summaryObj);
                   isActive = false;
-                  onComplete(summaryObj);
+                  onCompleteRef.current(summaryObj);
                   return;
                 } else if (details.status === 'failed') {
                   setInitError('Discovery job failed during background execution.');
-                  onError('Discovery job failed during background execution.');
+                  onErrorRef.current('Discovery job failed during background execution.');
                   isActive = false;
                   return;
                 }
