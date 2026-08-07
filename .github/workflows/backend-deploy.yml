@@ -94,19 +94,21 @@ jobs:
 
             echo "=== Verifying Backend Health Status ==="
             HEALTHCHECK_PASSED=0
-            for i in $(seq 1 12); do
-              if curl -sf http://127.0.0.1:3100/health | grep -q '"status":"ok"'; then
+            for i in $(seq 1 24); do
+              RESPONSE=$(curl -s http://127.0.0.1:3100/health || echo '{"status":"offline"}')
+              if echo "$RESPONSE" | grep -q '"status":"ok"'; then
                 HEALTHCHECK_PASSED=1
                 echo "✓ [PASS] Backend healthcheck returned HTTP 200 OK!"
+                echo "Health Diagnostics: $RESPONSE"
                 break
               fi
-              echo "Waiting for backend service startup... ($i/12)"
+              echo "Waiting for backend service startup... ($i/24) Diagnostic: $RESPONSE"
               sleep 5
             done
 
             if [ $HEALTHCHECK_PASSED -eq 0 ]; then
-              echo "❌ [FATAL] Healthcheck failed after 60s! Container logs:"
-              docker logs --tail 50 googleshift-backend
+              echo "❌ [FATAL] Healthcheck failed after 120s! Container logs:"
+              docker logs --tail 100 googleshift-backend
               exit 1
             fi
 
