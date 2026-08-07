@@ -76,15 +76,23 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
 
     console.log('[DiscoveryScanner] Ingestion Payload:', data);
 
-    if (data.error && typeof data.error === 'string') {
-      console.error('[DiscoveryScanner] Error payload received:', data.error);
-      onErrorRef.current(data.error);
-      setInitError(data.error);
+    const rawStatus = String(data.status || data.phase || data.state || 'QUEUED').toUpperCase();
+    console.log('[DiscoveryScanner] Current Normalized Status:', rawStatus);
+
+    if (rawStatus === 'FAILED' || data.error) {
+      const errMsg = String(data.error || data.message || 'Discovery job failed during execution.');
+      console.error('[DiscoveryScanner] Failure/Error state received:', errMsg);
+      setInitError(errMsg);
+      onErrorRef.current(errMsg);
       return true;
     }
 
-    const rawStatus = String(data.status || data.phase || data.state || 'QUEUED').toUpperCase();
-    console.log('[DiscoveryScanner] Current Normalized Status:', rawStatus);
+    if (rawStatus === 'CANCELLED') {
+      const errMsg = 'Discovery job was cancelled.';
+      setInitError(errMsg);
+      onErrorRef.current(errMsg);
+      return true;
+    }
 
     const isCompletedState = rawStatus === 'COMPLETED' || data.completed === true || data.event === 'SCAN_COMPLETED';
 
@@ -127,9 +135,14 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
       const updatedBytes = Math.max(prev.bytes, newBytes);
       const updatedGoogle = Number(data.googleRequests) || Math.max(prev.googleRequests, updatedFolders ? updatedFolders + 1 : 1);
 
-      const messageStr = data.currentFolder 
-        ? `Scanning folder: ${data.currentFolder}` 
-        : (data.currentFile ? `Scanning file: ${data.currentFile}` : (rawStatus === 'FINALIZING' ? 'Finalizing discovery scan...' : 'Scanning Google Drive...'));
+      let messageStr = 'Scanning Google Drive...';
+      if (rawStatus === 'FINALIZING') {
+        messageStr = typeof data.currentFolder === 'string' && data.currentFolder ? data.currentFolder : 'Finalizing discovery & saving manifest to database...';
+      } else if (data.currentFolder) {
+        messageStr = `Scanning folder: ${data.currentFolder}`;
+      } else if (data.currentFile) {
+        messageStr = `Scanning file: ${data.currentFile}`;
+      }
 
       return {
         status: rawStatus,
@@ -141,7 +154,7 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
         filesPerSec: Number(data.filesPerSec) || prev.filesPerSec,
         queueDepth: Number(data.queueDepth) || prev.queueDepth,
         activeWorkers: Number(data.activeWorkers) || prev.activeWorkers,
-        elapsed: elapsedMs || prev.elapsed,
+        elapsed: elapsedMs > 0 ? Math.max(prev.elapsed, elapsedMs) : prev.elapsed,
         message: messageStr
       };
     });
@@ -277,6 +290,18 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
       }
     };
   }, [jobId, completed, processIncomingData]);
+
+  // Live Stopwatch Ticker
+  useEffect(() => {
+    if (!jobId || completed || initError) return;
+    const timer = window.setInterval(() => {
+      setStats(prev => ({
+        ...prev,
+        elapsed: prev.elapsed + 1000
+      }));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [jobId, completed, initError]);
 
   if (initError) {
     return (

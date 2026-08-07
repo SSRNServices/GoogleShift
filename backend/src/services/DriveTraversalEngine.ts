@@ -104,8 +104,7 @@ export class DriveTraversalEngine<TContext> {
               }
             })
             .catch((err) => {
-              console.error(`[DISCOVERY] Error scanning folder batch of ${tasks.length} items:`, err.message);
-              reject(err);
+              console.warn(`[DISCOVERY] Non-fatal error scanning folder batch of ${tasks.length} item(s): ${err.message}. Skipping batch and continuing traversal.`);
             })
             .finally(() => {
               activeWorkers--;

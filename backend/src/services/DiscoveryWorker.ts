@@ -52,11 +52,18 @@ export class DiscoveryWorker {
       }, 5000);
 
       const onProgress = async (event: string, data: any) => {
-        if (event === 'MANIFEST_UPDATED') {
+        if (event === 'MANIFEST_UPDATED' || event === 'FINALIZING') {
           console.log("DISCOVERY STATUS FINALIZING");
           await prisma.discoveryJob.update({
             where: { id: job.id },
-            data: { state: 'FINALIZING' }
+            data: { 
+              state: 'FINALIZING',
+              currentFolder: data.message || 'Finalizing discovery scan...',
+              foldersFound: data.totalFolders || undefined,
+              filesFound: data.totalFiles || undefined,
+              bytesFound: data.totalBytes ? BigInt(data.totalBytes) : undefined,
+              lastHeartbeat: new Date()
+            }
           }).catch(() => {});
           return;
         }

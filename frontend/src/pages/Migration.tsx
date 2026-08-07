@@ -210,12 +210,14 @@ export default function Migration() {
   };
 
   const handleDiscoveryComplete = useCallback((summary: { manifestId?: string; totalFolders?: number; totalFiles?: number; totalBytes?: number }) => {
+    console.log('[MigrationWizard] handleDiscoveryComplete invoked with summary:', summary);
     if (summary.manifestId) {
       setManifestId(summary.manifestId);
     }
     if (sessionId) {
-      fetchSession(sessionId);
+      fetchSession(sessionId).catch(console.error);
     }
+    toast.success('Discovery scan completed! Ready for migration.');
   }, [sessionId, fetchSession]);
 
   const handleDiscoveryError = useCallback((err: string) => {

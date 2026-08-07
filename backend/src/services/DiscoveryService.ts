@@ -208,7 +208,21 @@ export class DiscoveryService {
     }
 
     console.log(`[DISCOVERY] Awaiting remaining pipelined DB flushes (${flushPromises.length} batches)...`);
-    await Promise.all(flushPromises);
+    await onProgress('FINALIZING', { 
+      message: `Finalizing discovery scan and saving ${flushPromises.length} manifest batches to database...`, 
+      totalFolders, 
+      totalFiles, 
+      totalBytes, 
+      googleRequests: engine.apiRequests 
+    });
+
+    const flushResults = await Promise.allSettled(flushPromises);
+    const failedFlushes = flushResults.filter(r => r.status === 'rejected');
+    if (failedFlushes.length > 0) {
+      console.warn(`[DISCOVERY] ${failedFlushes.length}/${flushPromises.length} DB manifest chunk flushes rejected with errors. Continuing finalization.`);
+    } else {
+      console.log(`[DISCOVERY] All ${flushPromises.length} DB manifest chunk flushes completed successfully.`);
+    }
 
     const totalElapsedSec = Math.max(0.1, (Date.now() - startTime) / 1000);
     const finalFoldersPerSec = Math.round((totalFolders / totalElapsedSec) * 10) / 10;
@@ -226,7 +240,7 @@ export class DiscoveryService {
     console.log(`- Total Bytes: ${(totalBytes / 1e9).toFixed(3)} GB`);
     console.log(`==================================================\n`);
 
-    await onProgress('MANIFEST_UPDATED', { message: 'Analyzing destination storage...', googleRequests: engine.apiRequests });
+    await onProgress('MANIFEST_UPDATED', { message: 'Analyzing destination storage...', googleRequests: engine.apiRequests, totalFolders, totalFiles, totalBytes });
     
     // Analyze Storage Requirements
     const storageAnalysis = await StorageAnalyzer.analyzeStorage(userId, totalBytes);

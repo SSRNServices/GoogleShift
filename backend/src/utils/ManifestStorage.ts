@@ -47,7 +47,8 @@ export class ManifestStorage {
           isFolder: item.isFolder,
           depth: item.depth || 0,
           retryCount: item.retryCount || 0
-        }))
+        })),
+        skipDuplicates: true
       }),
       (msg) => console.log(`[DB] ${msg}`)
     );

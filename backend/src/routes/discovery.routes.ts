@@ -23,12 +23,23 @@ const formatAuditLog = (tag: string, details: Record<string, any>) => {
 const formatDiscoveryResponse = (job: any, extraMessage?: string) => {
   const rawState = (job.state || job.status || 'QUEUED').toUpperCase();
   const isCompleted = rawState === 'COMPLETED' || job.discoveryStatus === 'COMPLETED';
-  const statusEnum = isCompleted ? DiscoveryStatus.COMPLETED : (rawState as DiscoveryStatus);
+  const isFailed = rawState === 'FAILED' || job.discoveryStatus === 'FAILED';
+  const isCancelled = rawState === 'CANCELLED';
+
+  let statusEnum: string = rawState;
+  if (isCompleted) statusEnum = DiscoveryStatus.COMPLETED;
+  else if (isFailed) statusEnum = 'FAILED';
+  else if (isCancelled) statusEnum = 'CANCELLED';
+
   const progress = isCompleted ? 100 : (statusEnum === DiscoveryStatus.SCANNING ? 50 : (statusEnum === DiscoveryStatus.FINALIZING ? 90 : 0));
 
   const foldersCount = job.foldersFound || 0;
   const filesCount = job.filesFound || 0;
   const bytesCount = job.bytesFound || BigInt(0);
+
+  const calcElapsed = job.elapsed 
+    || (job.completedAt && job.startedAt ? new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime() : 0)
+    || (job.startedAt ? Date.now() - new Date(job.startedAt).getTime() : 0);
 
   return serializeBigInt({
     id: job.id || job.jobId,
@@ -40,6 +51,9 @@ const formatDiscoveryResponse = (job: any, extraMessage?: string) => {
     state: statusEnum,
     progress,
     completed: isCompleted,
+    isFinished: isCompleted || isFailed || isCancelled,
+    manifestComplete: isCompleted,
+    error: isFailed ? (extraMessage || job.error || 'Discovery job failed') : undefined,
     foldersFound: foldersCount,
     filesFound: filesCount,
     bytesFound: bytesCount,
@@ -51,7 +65,7 @@ const formatDiscoveryResponse = (job: any, extraMessage?: string) => {
     totalBytes: bytesCount,
     currentFolder: job.currentFolder || null,
     currentFile: job.currentFile || null,
-    elapsed: job.elapsed || (job.startedAt ? Date.now() - new Date(job.startedAt).getTime() : 0),
+    elapsed: calcElapsed,
     ...(extraMessage ? { message: extraMessage } : {})
   });
 };
