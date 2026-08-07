@@ -57,6 +57,17 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Copy Production Docker Compose to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          source: "deploy/docker-compose.yml"
+          target: "/var/www/googleshift"
+          strip_components: 1
+
       - name: Deploy to VPS via SSH
         uses: appleboy/ssh-action@v1.0.3
         env:
@@ -72,7 +83,14 @@ jobs:
             set -e
             echo "=== Starting Production VPS Deployment ==="
             
+            mkdir -p /var/www/googleshift
             cd /var/www/googleshift
+
+            # Verify docker-compose.yml exists
+            if [ ! -f "docker-compose.yml" ]; then
+              echo "❌ [FATAL] docker-compose.yml is missing in /var/www/googleshift!"
+              exit 1
+            fi
 
             # Detect Docker Compose binary (Compose V2 plugin vs Compose V1 standalone)
             if docker compose version &>/dev/null; then
