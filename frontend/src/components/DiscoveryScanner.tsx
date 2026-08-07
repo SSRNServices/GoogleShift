@@ -1,13 +1,22 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { API_URL } from '../config/api';
 import { migrationApi } from '../api/migrationApi';
 import { useAuthStore } from '../store/useAuthStore';
 import { Loader2, FolderOpen, File as FileIcon, AlertTriangle, CheckCircle, RefreshCw } from 'lucide-react';
 
+interface SummaryResult {
+  totalFolders?: number;
+  totalFiles?: number;
+  totalBytes?: number;
+  manifestId?: string;
+  warnings?: string[];
+  [key: string]: unknown;
+}
+
 interface DiscoveryScannerProps {
   sourceId: string;
   sessionId: string;
-  onComplete: (summary: any) => void;
+  onComplete: (summary: SummaryResult) => void;
   onError: (error: string) => void;
 }
 
@@ -51,7 +60,7 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
   });
 
   const [completed, setCompleted] = useState(false);
-  const [finalSummary, setFinalSummary] = useState<any>(null);
+  const [finalSummary, setFinalSummary] = useState<SummaryResult | null>(null);
   
   const abortControllerRef = useRef<AbortController | null>(null);
   const onCompleteRef = useRef(onComplete);
@@ -62,19 +71,19 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
     onErrorRef.current = onError;
   }, [onComplete, onError]);
 
-  const processIncomingData = (data: any): boolean => {
+  const processIncomingData = useCallback((data: Record<string, unknown>): boolean => {
     if (!data) return false;
 
     console.log('[DiscoveryScanner] Ingestion Payload:', data);
 
-    if (data.error) {
+    if (data.error && typeof data.error === 'string') {
       console.error('[DiscoveryScanner] Error payload received:', data.error);
       onErrorRef.current(data.error);
       setInitError(data.error);
       return true;
     }
 
-    const rawStatus = (data.status || data.phase || data.state || 'QUEUED').toUpperCase();
+    const rawStatus = String(data.status || data.phase || data.state || 'QUEUED').toUpperCase();
     console.log('[DiscoveryScanner] Current Normalized Status:', rawStatus);
 
     const isCompletedState = rawStatus === 'COMPLETED' || data.completed === true || data.event === 'SCAN_COMPLETED';
@@ -85,11 +94,11 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
     const elapsedMs = Number(data.elapsed || 0);
 
     if (isCompletedState) {
-      const summaryObj = data.data || {
+      const summaryObj: SummaryResult = (data.data as SummaryResult) || {
         totalFolders: newFolders,
         totalFiles: newFiles,
         totalBytes: newBytes,
-        manifestId: data.manifestId
+        manifestId: String(data.manifestId || '')
       };
 
       console.log('[DiscoveryScanner] Discovery COMPLETED event received!', summaryObj);
@@ -100,7 +109,7 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
         folders: Math.max(prev.folders, summaryObj.totalFolders || 0),
         files: Math.max(prev.files, summaryObj.totalFiles || 0),
         bytes: Math.max(prev.bytes, summaryObj.totalBytes || 0),
-        googleRequests: data.googleRequests || Math.max(prev.googleRequests, newFolders || 1),
+        googleRequests: Number(data.googleRequests) || Math.max(prev.googleRequests, newFolders || 1),
         foldersPerSec: 0,
         filesPerSec: 0,
         queueDepth: 0,
@@ -116,7 +125,7 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
       const updatedFolders = Math.max(prev.folders, newFolders);
       const updatedFiles = Math.max(prev.files, newFiles);
       const updatedBytes = Math.max(prev.bytes, newBytes);
-      const updatedGoogle = data.googleRequests || Math.max(prev.googleRequests, updatedFolders ? updatedFolders + 1 : 1);
+      const updatedGoogle = Number(data.googleRequests) || Math.max(prev.googleRequests, updatedFolders ? updatedFolders + 1 : 1);
 
       const messageStr = data.currentFolder 
         ? `Scanning folder: ${data.currentFolder}` 
@@ -128,19 +137,19 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
         files: updatedFiles,
         bytes: updatedBytes,
         googleRequests: updatedGoogle,
-        foldersPerSec: data.foldersPerSec || prev.foldersPerSec,
-        filesPerSec: data.filesPerSec || prev.filesPerSec,
-        queueDepth: data.queueDepth || prev.queueDepth,
-        activeWorkers: data.activeWorkers || prev.activeWorkers,
+        foldersPerSec: Number(data.foldersPerSec) || prev.foldersPerSec,
+        filesPerSec: Number(data.filesPerSec) || prev.filesPerSec,
+        queueDepth: Number(data.queueDepth) || prev.queueDepth,
+        activeWorkers: Number(data.activeWorkers) || prev.activeWorkers,
         elapsed: elapsedMs || prev.elapsed,
         message: messageStr
       };
     });
 
     return false;
-  };
+  }, []);
 
-  const startDiscoveryProcess = async () => {
+  const startDiscoveryProcess = useCallback(async () => {
     setInitError(null);
 
     try {
@@ -149,28 +158,32 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
       console.log('[DiscoveryScanner] Start Discovery API Response:', job);
 
       const activeJobId = job.jobId || job.id;
-      const initialDone = processIncomingData(job);
+      const initialDone = processIncomingData(job as Record<string, unknown>);
 
       if (!initialDone && activeJobId) {
         setJobId(activeJobId);
       }
-    } catch (err: any) {
-      const errMsg = err.message || 'Failed to initialize discovery';
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : 'Failed to initialize discovery';
       console.error(`[DiscoveryScanner] startDiscovery failed:`, errMsg);
       setInitError(errMsg);
       onErrorRef.current(errMsg);
     }
-  };
+  }, [sourceId, sessionId, processIncomingData]);
 
   useEffect(() => {
-    startDiscoveryProcess();
-  }, [sourceId, sessionId]);
+    const timer = setTimeout(() => {
+      startDiscoveryProcess();
+    }, 0);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [startDiscoveryProcess]);
 
   useEffect(() => {
     if (!jobId || completed) return;
 
     let isSubscribed = true;
-    let pollIntervalId: number;
 
     // Polling Channel (Guaranteed 1-second fallback)
     const pollStatus = async () => {
@@ -178,18 +191,19 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
       try {
         const details = await migrationApi.getDiscoveryStatus(jobId);
         if (isSubscribed && details) {
-          const isDone = processIncomingData(details);
+          const isDone = processIncomingData(details as Record<string, unknown>);
           if (isDone) {
             isSubscribed = false;
-            clearInterval(pollIntervalId);
           }
         }
-      } catch (err: any) {
-        console.warn('[DiscoveryScanner] Polling check warning:', err.message);
+      } catch (err: unknown) {
+        if (err instanceof Error) {
+          console.warn('[DiscoveryScanner] Polling check warning:', err.message);
+        }
       }
     };
 
-    pollIntervalId = window.setInterval(pollStatus, 1000);
+    const pollIntervalId = window.setInterval(pollStatus, 1000);
     pollStatus(); // Initial immediate check
 
     // Streaming SSE Channel
@@ -235,19 +249,19 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
 
             try {
               const data = JSON.parse(dataStr);
-              const isDone = processIncomingData(data);
+              const isDone = processIncomingData(data as Record<string, unknown>);
               if (isDone) {
                 isSubscribed = false;
                 clearInterval(pollIntervalId);
                 break;
               }
-            } catch (e) {
+            } catch {
               // Ignore non-JSON ping lines
             }
           }
         }
-      } catch (error: any) {
-        if (error.name !== 'AbortError') {
+      } catch (error: unknown) {
+        if (error instanceof Error && error.name !== 'AbortError') {
           console.warn('[DiscoveryScanner] Stream closed, continuing via polling channel:', error.message);
         }
       }
@@ -262,7 +276,7 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
         abortControllerRef.current.abort();
       }
     };
-  }, [jobId, completed]);
+  }, [jobId, completed, processIncomingData]);
 
   if (initError) {
     return (

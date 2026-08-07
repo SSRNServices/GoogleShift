@@ -99,7 +99,7 @@ export default function Migration() {
   const [sourceProfile, setSourceProfile] = useState<{state?: string; profile?: {email?: string}} | null>(null);
   const [destProfile, setDestProfile] = useState<{state?: string; profile?: {email?: string}} | null>(null);
   
-  const { sessionId, sessionData, createSession, fetchSession, clearSession } = useMigrationSessionStore();
+  const { sessionId, sessionData, createSession, fetchSession } = useMigrationSessionStore();
 
   const [sourceSelected, setSourceSelected] = useState<DriveItem | null>(null);
   const [destSelected, setDestSelected] = useState<DriveItem | null>(null);
@@ -141,18 +141,18 @@ export default function Migration() {
             setStep(6);
           }
         }
-      } catch (e) {
-        console.error('[MigrationWizard] Initialization error:', e);
+      } catch (err) {
+        console.error('[MigrationWizard] Initialization error:', err);
       }
     };
     initMigrationWizard();
-  }, []);
+  }, [fetchSession]);
 
   useEffect(() => {
     if (sessionId) {
       fetchSession(sessionId).catch(console.error);
     }
-  }, [sessionId]);
+  }, [sessionId, fetchSession]);
 
   const handleNext = async () => {
     // When moving to summary (step 5 to 6), ALWAYS create a brand-new session for current folder selections
@@ -165,7 +165,8 @@ export default function Migration() {
           sourceFolderId: sourceSelected?.id || '',
           destinationFolderId: destSelected?.id || ''
         });
-      } catch (e) {
+      } catch (err) {
+        console.error('[Frontend Wizard] Session creation error:', err);
         toast.error('Failed to create migration session');
         return;
       }
@@ -178,7 +179,7 @@ export default function Migration() {
   const startMigration = async () => {
     setStarting(true);
     try {
-      const currentManifestId = sessionData?.manifestId || manifestId;
+      const currentManifestId = typeof sessionData?.manifestId === 'string' ? sessionData.manifestId : (typeof manifestId === 'string' ? manifestId : null);
       if (!currentManifestId) throw new Error('Manifest ID is missing. Discovery must complete first.');
       if (!sessionId) throw new Error('Session ID is missing.');
       if (sessionData?.discoveryStatus !== 'COMPLETED') throw new Error('Discovery phase is not complete.');
@@ -186,7 +187,8 @@ export default function Migration() {
       // Backend pre-flight validation
       const validation = await migrationApi.validateSession(sessionId);
       if (!validation.ready) {
-        const errorMsg = validation.errors?.[0] || validation.error || 'Session validation failed. Please check account connections.';
+        const rawError = Array.isArray(validation.errors) ? validation.errors[0] : validation.error;
+        const errorMsg = typeof rawError === 'string' ? rawError : 'Session validation failed. Please check account connections.';
         throw new Error(errorMsg);
       }
 
@@ -207,9 +209,13 @@ export default function Migration() {
     }
   };
 
-  const handleDiscoveryComplete = useCallback((summary: any) => {
-    setManifestId(summary.manifestId);
-    fetchSession(sessionId as string); // Refresh session data
+  const handleDiscoveryComplete = useCallback((summary: { manifestId?: string; totalFolders?: number; totalFiles?: number; totalBytes?: number }) => {
+    if (summary.manifestId) {
+      setManifestId(summary.manifestId);
+    }
+    if (sessionId) {
+      fetchSession(sessionId);
+    }
   }, [sessionId, fetchSession]);
 
   const handleDiscoveryError = useCallback((err: string) => {

@@ -35,6 +35,6 @@ export interface DiscoveryResponse {
   elapsed?: number;
   message?: string;
   error?: string;
-  data?: any;
+  data?: unknown;
   event?: string;
 }

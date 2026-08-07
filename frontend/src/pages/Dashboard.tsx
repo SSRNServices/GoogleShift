@@ -180,7 +180,7 @@ export default function Dashboard() {
   const [destinationFolder, setDestinationFolder] = useState<DriveItem | null>(null);
   const [transferOptions, setTransferOptions] = useState<TransferOptionsState>(defaultOptions);
   const [manifestId, setManifestId] = useState<string | null>(null);
-  const [scanStats, setScanStats] = useState<any>(null);
+  const [scanStats, setScanStats] = useState<unknown>(null);
   
   const { sessionId, createSession } = useMigrationSessionStore();
 
@@ -198,7 +198,7 @@ export default function Dashboard() {
   const isReadyToTransfer = sourceSelection.length > 0 && 
                             destinationFolder !== null && 
                             manifestId !== null && 
-                            (!scanStats || (scanStats.storageAnalysis?.sufficient !== false));
+                            (!scanStats || ((scanStats as { storageAnalysis?: { sufficient?: boolean } })?.storageAnalysis?.sufficient !== false));
 
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
 

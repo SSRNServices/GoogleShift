@@ -4,7 +4,7 @@ import { apiClient } from '../api/apiClient';
 
 interface MigrationSessionState {
   sessionId: string | null;
-  sessionData: any | null;
+  sessionData: Record<string, unknown> | null;
   isLoading: boolean;
   error: string | null;
   
@@ -45,8 +45,9 @@ export const useMigrationSessionStore = create<MigrationSessionState>()(
             sessionData: response.session,
             isLoading: false 
           });
-        } catch (err: any) {
-          set({ error: err.message || 'Failed to create session', isLoading: false });
+        } catch (err: unknown) {
+          const errMsg = err instanceof Error ? err.message : 'Failed to create session';
+          set({ error: errMsg, isLoading: false });
           throw err;
         }
       },
@@ -62,8 +63,9 @@ export const useMigrationSessionStore = create<MigrationSessionState>()(
             sessionData: response.session,
             isLoading: false 
           });
-        } catch (err: any) {
-          set({ error: err.message || 'Failed to fetch session', isLoading: false });
+        } catch (err: unknown) {
+          const errMsg = err instanceof Error ? err.message : 'Failed to fetch session';
+          set({ error: errMsg, isLoading: false });
           throw err;
         }
       },

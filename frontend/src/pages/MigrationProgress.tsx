@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { migrationApi } from '../api/migrationApi';
 import { XCircle, ArrowLeft, Loader2, CheckCircle, AlertCircle, AlertTriangle, RefreshCw, Zap } from 'lucide-react';
@@ -75,7 +75,7 @@ export default function MigrationProgress() {
   const speedSamplesRef = useRef<number[]>([]);
   const [averageSpeed, setAverageSpeed] = useState(0);
 
-  const fetchCurrentJob = async () => {
+  const fetchCurrentJob = useCallback(async () => {
     try {
       setLoading(true);
       setConnectionError(null);
@@ -90,15 +90,16 @@ export default function MigrationProgress() {
       setConnectionError(err instanceof Error ? err.message : 'Failed to fetch current migration job');
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    if (queryJobId) {
-      setJobId(queryJobId);
-    } else {
-      fetchCurrentJob();
+    if (!queryJobId) {
+      const timer = setTimeout(() => {
+        fetchCurrentJob();
+      }, 0);
+      return () => clearTimeout(timer);
     }
-  }, [queryJobId]);
+  }, [queryJobId, fetchCurrentJob]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -132,8 +133,10 @@ export default function MigrationProgress() {
           });
         }
         setLoading(false);
-      } catch (err: any) {
-        console.warn('[MigrationProgress] Hydration warning:', err.message);
+      } catch (err: unknown) {
+        if (err instanceof Error) {
+          console.warn('[MigrationProgress] Hydration warning:', err.message);
+        }
         setLoading(false);
       }
     };

@@ -51,8 +51,9 @@ export const apiClient = async (endpoint: string, options: FetchOptions = {}) =>
         console.warn('[apiClient] Refresh endpoint rejected with status:', refreshRes.status);
         logout('Session expired. Please log in again.');
       }
-    } catch (err: any) {
-      console.error('[apiClient] Exception during token refresh attempt:', err.message);
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error('[apiClient] Exception during token refresh attempt:', errMsg);
       logout('Network or auth exception during token refresh.');
     }
   }

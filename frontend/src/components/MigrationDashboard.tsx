@@ -74,7 +74,7 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
   useEffect(() => {
     let active = true;
     let lastEventId = '0';
-    let fallbackTimeout: any = null;
+    let fallbackTimeout: ReturnType<typeof setTimeout> | null = null;
 
     const connectStream = async () => {
       try {
@@ -131,14 +131,17 @@ export function MigrationDashboard({ jobId, onClose }: MigrationDashboardProps) 
                       active = false;
                       break;
                    }
-                } catch (e) {
-                   console.error('JSON parse error', e);
+                } catch (jsonErr) {
+                   console.error('JSON parse error', jsonErr);
                 }
              }
           }
         }
-      } catch (err) {
+      } catch (err: unknown) {
         if (!active) return;
+        if (err instanceof Error) {
+          console.warn('[MigrationDashboard] Stream connection error:', err.message);
+        }
         setStatus(prev => ({ ...prev, networkStatus: 'offline', retryCount: prev.retryCount + 1 }));
         
         // Fallback polling

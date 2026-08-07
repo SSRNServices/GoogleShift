@@ -36,16 +36,34 @@ async function bootstrap() {
   logger.info(`Node version: ${process.version}`);
   logger.info(`Listening address: 0.0.0.0:${config.PORT}`);
 
-  // 1. Database connection check & schema validation
-  try {
-    const start = Date.now();
-    await prisma.$queryRaw`SELECT 1`;
-    logger.info(`✓ Database Connected (Ping: ${Date.now() - start}ms)`);
+  // 1. Database connection check & schema validation (with Exponential Backoff Retry)
+  const MAX_DB_RETRIES = 5;
+  let dbConnected = false;
 
-    await performWriteDiagnostics();
-    await validateDatabaseSchema();
-  } catch (err: any) {
-    logger.error('❌ Database Connection / Schema Verification Failed:', err);
+  for (let attempt = 1; attempt <= MAX_DB_RETRIES; attempt++) {
+    try {
+      const start = Date.now();
+      await prisma.$queryRaw`SELECT 1`;
+      logger.info(`✓ Database Connected (Ping: ${Date.now() - start}ms, Attempt ${attempt}/${MAX_DB_RETRIES})`);
+
+      await performWriteDiagnostics();
+      await validateDatabaseSchema();
+      dbConnected = true;
+      break;
+    } catch (err: any) {
+      const delayMs = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s, 16s, 32s
+      logger.warn(`⚠️ [Database] Connection attempt ${attempt}/${MAX_DB_RETRIES} failed (${err.message}). Retrying in ${delayMs / 1000}s...`);
+
+      if (attempt < MAX_DB_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      } else {
+        logger.error('❌ [FATAL] Database Connection / Schema Verification Failed after 5 retries:', err);
+      }
+    }
+  }
+
+  if (!dbConnected) {
+    logger.error('❌ Exiting process: Database unavailable.');
     process.exit(1);
   }
 
