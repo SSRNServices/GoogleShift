@@ -33,23 +33,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Metadata (Tags & Labels)
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/ssrnservices/googleshift-backend
-          tags: |
-            type=raw,value=latest
-            type=sha,format=long
-
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v5
         with:
           context: ./backend
           file: ./backend/Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/googleshift-backend:latest
+            ghcr.io/${{ github.repository_owner }}/googleshift-backend:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -57,43 +49,28 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER || secrets.VPS_USERNAME }}
+          username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT || 22 }}
           script: |
             set -e
             echo "=== Starting Production VPS Deployment ==="
             
-            # Ensure deployment root and persistent folders exist
-            mkdir -p /var/www/googleshift
             cd /var/www/googleshift
-            mkdir -p logs uploads backups
 
-            # Pull latest repository changes & sync production docker-compose
-            echo "[1/6] Pulling repository changes..."
-            git pull origin main || true
-            if [ -f "deploy/docker-compose.yml" ]; then
-              cp deploy/docker-compose.yml ./docker-compose.yml
-            fi
-
-            # Authenticate GHCR on VPS using GitHub Token
-            echo "[2/6] Logging in to GitHub Container Registry..."
+            echo "[1/4] Logging in to GitHub Container Registry..."
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-            # Pull updated image from GHCR
-            echo "[3/6] Pulling latest production container image..."
+            echo "[2/4] Pulling latest production container image..."
             docker compose pull
 
-            # Recreate containers with latest image
-            echo "[4/6] Starting container services..."
-            docker compose up -d --remove-orphans
+            echo "[3/4] Starting container services..."
+            docker compose up -d
 
-            # Clean up dangling images to save disk space
-            echo "[5/6] Pruning obsolete Docker images..."
+            echo "[4/4] Pruning obsolete Docker images..."
             docker image prune -f
 
-            # Perform health check verification
-            echo "[6/6] Verifying backend health status..."
+            echo "=== Verifying Backend Health Status ==="
             HEALTHCHECK_PASSED=0
             for i in $(seq 1 12); do
               if curl -sf http://127.0.0.1:3100/health | grep -q '"status":"ok"'; then
@@ -106,7 +83,7 @@ jobs:
             done
 
             if [ $HEALTHCHECK_PASSED -eq 0 ]; then
-              echo "❌ [FATAL] Healthcheck failed after 60s! Inspecting container logs:"
+              echo "❌ [FATAL] Healthcheck failed after 60s! Container logs:"
               docker logs --tail 50 googleshift-backend
               exit 1
             fi
