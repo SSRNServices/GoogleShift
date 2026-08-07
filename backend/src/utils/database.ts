@@ -12,13 +12,13 @@ const globalForPrisma = globalThis as unknown as {
 };
 
 const envVarNames = [
-  'DIRECT_URL',
-  'SUPABASE_DIRECT_URL',
-  'POSTGRES_URL_NON_POOLING',
+  'DATABASE_URL',
+  'POSTGRES_PRISMA_URL',
   'POSTGRES_URL',
   'SUPABASE_DB_URL',
-  'POSTGRES_PRISMA_URL',
-  'DATABASE_URL'
+  'POSTGRES_URL_NON_POOLING',
+  'DIRECT_URL',
+  'SUPABASE_DIRECT_URL'
 ];
 
 let selectedVarName = '';
@@ -30,11 +30,6 @@ for (const name of envVarNames) {
     connectionStringRaw = process.env[name] || '';
     break;
   }
-}
-
-if (connectionStringRaw.includes(':6543')) {
-  console.log('[DB] Converting Supabase pooler port 6543 (Transaction mode) -> 5432 (Session mode for write/DDL support)');
-  connectionStringRaw = connectionStringRaw.replace(':6543', ':5432');
 }
 
 const parseHost = (rawUrl: string) => {
@@ -93,15 +88,20 @@ console.log('==================================================\n');
 
 const connectionString = connectionStringRaw.replace(/\?sslmode=require|&sslmode=require/, '');
 
-// Cap pg.Pool max connections at 10 to stay safely below Supabase/PG Session Pooler limit of 15 (EMAXCONNSESSION)
+// Cap pg.Pool max connections at 10 to stay safely below Supabase/PG limits
 export const pool = new Pool({
   connectionString,
   max: 10,
-  min: 2,
+  min: 0,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
   allowExitOnIdle: false,
   ssl: { rejectUnauthorized: false },
+});
+
+// Handle idle or background client connection errors without crashing Node process
+pool.on('error', (err) => {
+  console.error('⚠️ [pg.Pool Idle/Background Client Error]:', err.message);
 });
 
 // Auto-override session-level transaction_read_only setting if enabled on role/session
