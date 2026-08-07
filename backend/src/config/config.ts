@@ -12,8 +12,12 @@ const envSchema = z.object({
   SESSION_SECRET: z.string().min(1, 'SESSION_SECRET is required'),
   
   // Database Configuration
-  DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+  DATABASE_URL: z.string().optional(),
   DIRECT_URL: z.string().optional(),
+  POSTGRES_URL: z.string().optional(),
+  SUPABASE_DB_URL: z.string().optional(),
+  POSTGRES_PRISMA_URL: z.string().optional(),
+  POSTGRES_URL_NON_POOLING: z.string().optional(),
   
   // Google OAuth Credentials
   GOOGLE_CLIENT_ID: z.string().min(1, 'GOOGLE_CLIENT_ID is required'),
@@ -56,6 +60,18 @@ export function validateConfig(): Config {
       }
     }
     console.error('\nPlease verify your .env file or environment settings before starting the server.\n');
+    process.exit(1);
+  }
+
+  const dbUrl = result.data.DATABASE_URL || 
+                result.data.DIRECT_URL || 
+                result.data.POSTGRES_URL || 
+                result.data.SUPABASE_DB_URL || 
+                result.data.POSTGRES_PRISMA_URL || 
+                result.data.POSTGRES_URL_NON_POOLING;
+
+  if (!dbUrl) {
+    console.error('\n❌ [FATAL] No Database URL variable detected! (DATABASE_URL, DIRECT_URL, SUPABASE_DB_URL, or POSTGRES_URL must be provided)\n');
     process.exit(1);
   }
 

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { prisma } from '../utils/database';
+import { prisma, getDatabaseConnectionInfo } from '../utils/database';
 import { isRedisConnected } from '../utils/redis';
 import dns from 'dns';
 import { promisify } from 'util';
@@ -39,6 +39,7 @@ router.get('/', async (req, res) => {
   const statusCode = isHealthy ? 200 : 503;
 
   const mem = process.memoryUsage();
+  const dbInfo = getDatabaseConnectionInfo();
 
   res.status(statusCode).json({
     status,
@@ -53,7 +54,12 @@ router.get('/', async (req, res) => {
     },
     database: {
       connected: dbConnected,
-      latencyMs: dbLatencyMs
+      latencyMs: dbLatencyMs,
+      host: dbInfo.host,
+      port: dbInfo.port,
+      database: dbInfo.database,
+      sslMode: dbInfo.sslMode,
+      connectionType: dbInfo.isPooler ? 'Pooler' : 'Session/Direct'
     },
     redis: redisStatus,
     googleApi: {

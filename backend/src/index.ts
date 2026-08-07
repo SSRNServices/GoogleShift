@@ -28,7 +28,11 @@ import discoveryRoutes from './routes/discovery.routes';
 import sessionRoutes from './routes/session.routes';
 import healthRoutes from './routes/health.routes';
 import { workerWatchdog } from './transfer/WorkerWatchdog';
-import { prisma, pool, validateDatabaseSchema, performWriteDiagnostics } from './utils/database';
+import dns from 'dns';
+import { promisify } from 'util';
+import { prisma, pool, validateDatabaseSchema, performWriteDiagnostics, getDatabaseConnectionInfo } from './utils/database';
+
+const dnsLookup = promisify(dns.lookup);
 
 async function bootstrap() {
   logger.info('=== Starting GoogleShift Backend ===');
@@ -36,7 +40,29 @@ async function bootstrap() {
   logger.info(`Node version: ${process.version}`);
   logger.info(`Listening address: 0.0.0.0:${config.PORT}`);
 
-  // 1. Database connection check & schema validation (with Exponential Backoff Retry)
+  // 1. Environment & Database Diagnostic Check
+  const dbInfo = getDatabaseConnectionInfo();
+  logger.info('--- Database Diagnostic Check ---');
+  logger.info(`✓ Variable Used: ${dbInfo.variableName || 'DATABASE_URL'}`);
+  logger.info(`✓ Connection Mode: ${dbInfo.isPooler ? 'Transaction Pooler (6543)' : 'Session / Direct (5432)'}`);
+  logger.info(`✓ Target Host: ${dbInfo.host}`);
+  logger.info(`✓ Target Port: ${dbInfo.port}`);
+  logger.info(`✓ Target Database: ${dbInfo.database}`);
+  logger.info(`✓ SSL Mode: ${dbInfo.sslMode}`);
+  logger.info(`✓ Masked Connection String: ${dbInfo.maskedUrl}`);
+  logger.info('---------------------------------');
+
+  // 2. Test DNS Resolution
+  if (dbInfo.host && dbInfo.host !== 'unknown' && !dbInfo.host.startsWith('127.') && dbInfo.host !== 'localhost') {
+    try {
+      const dnsResult = await dnsLookup(dbInfo.host);
+      logger.info(`✓ DNS Resolution Passed: ${dbInfo.host} -> ${dnsResult.address}`);
+    } catch (dnsErr: any) {
+      logger.warn(`⚠️ [DNS Check Warning] Could not resolve host '${dbInfo.host}': ${dnsErr.message}`);
+    }
+  }
+
+  // 3. Database connection check & schema validation (with Exponential Backoff Retry)
   const MAX_DB_RETRIES = 5;
   let dbConnected = false;
 
@@ -44,7 +70,8 @@ async function bootstrap() {
     try {
       const start = Date.now();
       await prisma.$queryRaw`SELECT 1`;
-      logger.info(`✓ Database Connected (Ping: ${Date.now() - start}ms, Attempt ${attempt}/${MAX_DB_RETRIES})`);
+      const pingMs = Date.now() - start;
+      logger.info(`✓ Database Connected (Ping: ${pingMs}ms, Attempt ${attempt}/${MAX_DB_RETRIES})`);
 
       await performWriteDiagnostics();
       await validateDatabaseSchema();
@@ -52,12 +79,19 @@ async function bootstrap() {
       break;
     } catch (err: any) {
       const delayMs = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s, 16s, 32s
-      logger.warn(`⚠️ [Database] Connection attempt ${attempt}/${MAX_DB_RETRIES} failed (${err.message}). Retrying in ${delayMs / 1000}s...`);
+      logger.warn(`⚠️ [Database Attempt ${attempt}/${MAX_DB_RETRIES} Failed] Code: ${err.code || 'UNKNOWN'}, Message: ${err.message}`);
+      logger.warn(`   Retrying connection in ${delayMs / 1000} seconds...`);
 
       if (attempt < MAX_DB_RETRIES) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       } else {
-        logger.error('❌ [FATAL] Database Connection / Schema Verification Failed after 5 retries:', err);
+        logger.error('❌ [FATAL] Database Connection Failed after 5 retries. Diagnostic details:', {
+          host: dbInfo.host,
+          port: dbInfo.port,
+          database: dbInfo.database,
+          error: err.message,
+          code: err.code
+        });
       }
     }
   }

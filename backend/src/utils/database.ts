@@ -46,6 +46,43 @@ const parseHost = (rawUrl: string) => {
   }
 };
 
+export interface DatabaseConnectionInfo {
+  variableName: string;
+  host: string;
+  port: string;
+  database: string;
+  sslMode: string;
+  isPooler: boolean;
+  maskedUrl: string;
+}
+
+export function getDatabaseConnectionInfo(): DatabaseConnectionInfo {
+  let host = 'unknown';
+  let port = '5432';
+  let database = 'postgres';
+  let sslMode = 'prefer';
+  let isPooler = false;
+
+  try {
+    const parsed = new URL(connectionStringRaw);
+    host = parsed.hostname || 'unknown';
+    port = parsed.port || '5432';
+    database = parsed.pathname.replace('/', '') || 'postgres';
+    sslMode = parsed.searchParams.get('sslmode') || 'prefer';
+    isPooler = port === '6543' || host.includes('pooler');
+  } catch (_) {}
+
+  return {
+    variableName: selectedVarName,
+    host,
+    port,
+    database,
+    sslMode,
+    isPooler,
+    maskedUrl: parseHost(connectionStringRaw)
+  };
+}
+
 console.log('\n=== Database Connection Diagnostic Environment ===');
 for (const name of envVarNames) {
   const val = process.env[name];
