@@ -70,10 +70,34 @@ const formatDiscoveryResponse = (job: any, extraMessage?: string) => {
   });
 };
 
+const autoHealFinalizingJob = async <T extends { id: string; state: string; manifestId?: string | null; sessionId?: string | null }>(job: T): Promise<T> => {
+  if (!job || job.state !== 'FINALIZING' || !job.manifestId) return job;
+  try {
+    const summary = await prisma.scanSummary.findUnique({ where: { manifestId: job.manifestId } });
+    if (summary) {
+      console.log(`[DISCOVERY AUTO-HEAL] Promoting job ${job.id} from FINALIZING to COMPLETED (scanSummary present).`);
+      const updatedJob = await prisma.discoveryJob.update({
+        where: { id: job.id },
+        data: { state: 'COMPLETED', completedAt: new Date() }
+      });
+      if (job.sessionId) {
+        await prisma.migrationSession.update({
+          where: { id: job.sessionId },
+          data: { discoveryStatus: 'COMPLETED', manifestId: job.manifestId }
+        }).catch(() => {});
+      }
+      return updatedJob as unknown as T;
+    }
+  } catch (err: any) {
+    console.warn('[DISCOVERY AUTO-HEAL] Non-fatal check error:', err.message);
+  }
+  return job;
+};
+
 router.get('/active', requireUserAuth, async (req: Request, res: Response) => {
   const userId = (req as any).user?.id || 'unknown';
   try {
-    const activeJob = await prisma.discoveryJob.findFirst({
+    let activeJob = await prisma.discoveryJob.findFirst({
       where: {
         ownerId: userId,
         state: { in: ['QUEUED', 'CONNECTING', 'DISCOVERING', 'SCANNING', 'FINALIZING'] }
@@ -85,6 +109,8 @@ router.get('/active', requireUserAuth, async (req: Request, res: Response) => {
       return res.status(200).json({ active: false, job: null });
     }
 
+    activeJob = await autoHealFinalizingJob(activeJob);
+
     return res.status(200).json({
       active: true,
       job: formatDiscoveryResponse(activeJob)
@@ -92,6 +118,43 @@ router.get('/active', requireUserAuth, async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error(`[DISCOVERY] Failed to check active discovery job for user ${userId}:`, error.message);
     return res.status(500).json({ error: 'Database lookup error' });
+  }
+});
+
+router.post('/discard', requireUserAuth, async (req: Request, res: Response) => {
+  const userId = (req as any).user?.id || 'unknown';
+  const { sessionId, jobId } = req.body || {};
+  try {
+    console.log(`[DISCOVERY] Discard request received for userId=${userId}, sessionId=${sessionId}, jobId=${jobId}`);
+    
+    if (sessionId) {
+      await prisma.discoveryJob.updateMany({
+        where: { sessionId, ownerId: userId },
+        data: { state: 'CANCELLED', cancelledAt: new Date() }
+      }).catch(() => {});
+
+      await prisma.migrationSession.update({
+        where: { id: sessionId },
+        data: { discoveryStatus: 'CANCELLED', migrationStatus: 'CANCELLED' }
+      }).catch(() => {});
+    }
+
+    if (jobId) {
+      await prisma.discoveryJob.updateMany({
+        where: { id: jobId, ownerId: userId },
+        data: { state: 'CANCELLED', cancelledAt: new Date() }
+      }).catch(() => {});
+    }
+
+    await prisma.discoveryJob.updateMany({
+      where: { ownerId: userId, state: { in: ['QUEUED', 'CONNECTING', 'DISCOVERING', 'SCANNING', 'FINALIZING'] } },
+      data: { state: 'CANCELLED', cancelledAt: new Date() }
+    }).catch(() => {});
+
+    return res.status(200).json({ success: true, message: 'Discovery job and migration session discarded successfully.' });
+  } catch (err: any) {
+    console.error('[DISCOVERY] Failed to discard session:', err.message);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to discard session' });
   }
 });
 
@@ -245,6 +308,8 @@ router.get('/:jobId/details', requireUserAuth, async (req: Request, res: Respons
       formatAuditLog('JOB_NOT_FOUND', { jobId, userId });
       return res.status(404).json({ code: 'JOB_NOT_FOUND', message: 'Discovery job does not exist.' });
     }
+
+    job = await autoHealFinalizingJob(job);
 
     formatAuditLog('JOB_FOUND', { jobId: job.id, sessionId: job.sessionId, userId, state: job.state });
     return res.status(200).json(formatDiscoveryResponse(job));

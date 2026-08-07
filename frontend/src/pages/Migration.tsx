@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiClient } from '../api/apiClient';
 import { API_URL } from '../config/api';
-import { Check, ChevronRight, Folder, Loader2, ArrowLeft, Cloud, HardDrive, Settings, Play } from 'lucide-react';
+import { Check, ChevronRight, Folder, Loader2, ArrowLeft, Cloud, HardDrive, Settings, Play, RefreshCw } from 'lucide-react';
 import { migrationApi } from '../api/migrationApi';
 import { DiscoveryScanner } from '../components/DiscoveryScanner';
 import { useMigrationSessionStore } from '../store/useMigrationSessionStore';
@@ -121,6 +121,8 @@ export default function Migration() {
 
   const [starting, setStarting] = useState(false);
   const [manifestId, setManifestId] = useState<string | null>(null);
+  const [showResumeModal, setShowResumeModal] = useState(false);
+  const [pendingResumeJob, setPendingResumeJob] = useState<any>(null);
 
   useEffect(() => {
     const initMigrationWizard = async () => {
@@ -135,24 +137,40 @@ export default function Migration() {
         setDestProfile(destRes);
 
         if (activeDiscovery && activeDiscovery.active && activeDiscovery.job) {
-          console.log('[MigrationWizard] Active discovery job detected on mount. Restoring step 6:', activeDiscovery.job);
-          if (activeDiscovery.job.sessionId) {
-            fetchSession(activeDiscovery.job.sessionId).catch(console.error);
-            setStep(6);
-          }
+          console.log('[MigrationWizard] Active discovery session detected on mount:', activeDiscovery.job);
+          setPendingResumeJob(activeDiscovery.job);
+          setShowResumeModal(true);
+        } else {
+          // Default to fresh Step 1
+          setStep(1);
         }
       } catch (err) {
         console.error('[MigrationWizard] Initialization error:', err);
       }
     };
     initMigrationWizard();
-  }, [fetchSession]);
+  }, []);
 
-  useEffect(() => {
-    if (sessionId) {
-      fetchSession(sessionId).catch(console.error);
+  const handleResumeMigration = async () => {
+    if (pendingResumeJob?.sessionId) {
+      console.log('[MigrationWizard] User chose to RESUME session:', pendingResumeJob.sessionId);
+      await fetchSession(pendingResumeJob.sessionId).catch(console.error);
+      setStep(6);
     }
-  }, [sessionId, fetchSession]);
+    setShowResumeModal(false);
+  };
+
+  const handleDiscardMigration = async () => {
+    console.log('[MigrationWizard] User chose to DISCARD previous session.');
+    const { discardSession } = useMigrationSessionStore.getState();
+    await discardSession().catch(console.error);
+    setSourceSelected(null);
+    setDestSelected(null);
+    setManifestId(null);
+    setStep(1);
+    setShowResumeModal(false);
+    toast.success('Previous session discarded. Started fresh migration.');
+  };
 
   const handleNext = async () => {
     // When moving to summary (step 5 to 6), ALWAYS create a brand-new session for current folder selections
@@ -396,6 +414,34 @@ export default function Migration() {
           </button>
         )}
       </div>
+
+      {showResumeModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-xl max-w-md w-full p-6 shadow-2xl border border-gray-200 dark:border-gray-700 animate-in fade-in zoom-in duration-200">
+            <div className="flex items-center space-x-3 text-indigo-600 mb-4">
+              <RefreshCw className="w-7 h-7" />
+              <h3 className="text-xl font-bold text-gray-900 dark:text-white">Unfinished Migration Found</h3>
+            </div>
+            <p className="text-sm text-gray-600 dark:text-gray-300 mb-6 leading-relaxed">
+              We detected an unfinished migration session from your previous activity. Would you like to resume where you left off or discard it and start fresh?
+            </p>
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={handleDiscardMigration}
+                className="px-4 py-2 text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors border border-red-200 dark:border-red-800"
+              >
+                Discard & Start Fresh
+              </button>
+              <button
+                onClick={handleResumeMigration}
+                className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-sm transition-colors"
+              >
+                Resume Migration
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

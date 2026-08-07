@@ -17,11 +17,12 @@ interface MigrationSessionState {
   
   fetchSession: (sessionId: string) => Promise<void>;
   clearSession: () => void;
+  discardSession: () => Promise<void>;
 }
 
 export const useMigrationSessionStore = create<MigrationSessionState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       sessionId: null,
       sessionData: null,
       isLoading: false,
@@ -71,7 +72,27 @@ export const useMigrationSessionStore = create<MigrationSessionState>()(
       },
 
       clearSession: () => {
-        set({ sessionId: null, sessionData: null, error: null });
+        set({ sessionId: null, sessionData: null, error: null, isLoading: false });
+        try {
+          localStorage.removeItem('migration-session-storage');
+          sessionStorage.removeItem('migration-session-storage');
+        } catch (_) {}
+      },
+
+      discardSession: async () => {
+        const currentId = get().sessionId;
+        if (currentId) {
+          await apiClient('/api/discovery/discard', {
+            method: 'POST',
+            body: JSON.stringify({ sessionId: currentId })
+          }).catch(() => {});
+        }
+
+        set({ sessionId: null, sessionData: null, error: null, isLoading: false });
+        try {
+          localStorage.removeItem('migration-session-storage');
+          sessionStorage.removeItem('migration-session-storage');
+        } catch (_) {}
       }
     }),
     {
