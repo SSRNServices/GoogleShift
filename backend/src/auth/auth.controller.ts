@@ -93,8 +93,11 @@ export class AuthController {
 
   public refresh = async (req: Request, res: Response): Promise<void> => {
     try {
-      const { refreshToken } = req.body;
+      const { refreshToken: tokenFromBody } = req.body || {};
+      const refreshToken = tokenFromBody || req.cookies?.refreshToken;
+
       if (!refreshToken) {
+        console.warn('[AUTH REFRESH 401] No refresh token provided in body or cookies.');
         res.status(401).json({ error: 'No refresh token provided' });
         return;
       }
@@ -103,13 +106,16 @@ export class AuthController {
       const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
       
       if (!user || user.status !== 'ACTIVE' || !user.isActive) {
+        console.warn(`[AUTH REFRESH 401] Invalid user state for ID ${decoded?.userId}`);
         res.status(401).json({ error: 'Invalid refresh token or inactive account' });
         return;
       }
-      
+
+      console.log(`[AUTH REFRESH 200] Successfully refreshed tokens for user ${user.email} (${user.id})`);
       this.issueTokens(user, res);
-    } catch (error) {
-      res.status(401).json({ error: 'Invalid refresh token' });
+    } catch (error: any) {
+      console.warn(`[AUTH REFRESH 401] Token verification failed: ${error.message}`);
+      res.status(401).json({ error: 'Invalid refresh token', message: error.message });
     }
   };
 

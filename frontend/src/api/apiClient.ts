@@ -26,27 +26,34 @@ export const apiClient = async (endpoint: string, options: FetchOptions = {}) =>
 
   let response = await fetch(url, { ...options, headers });
 
-  if (response.status === 401 && refreshToken) {
-    // Attempt refresh
+  if (response.status === 401 && !endpoint.includes('/auth/login') && !endpoint.includes('/auth/refresh')) {
+    console.warn(`[apiClient 401] Received 401 Unauthorized for ${endpoint}. Attempting automatic token refresh...`);
     try {
+      const refreshPayload = refreshToken ? JSON.stringify({ refreshToken }) : undefined;
       const refreshRes = await fetch(`${API_URL}/auth/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken })
+        credentials: 'include',
+        ...(refreshPayload ? { body: refreshPayload } : {})
       });
       
       if (refreshRes.ok) {
         const data = await refreshRes.json();
+        console.log('[apiClient 200] Token refresh succeeded. Retrying original request to:', endpoint);
         setAuth(data.user, data.accessToken, data.refreshToken);
         
-        // Retry original request
-        headers.set('Authorization', `Bearer ${data.accessToken}`);
+        // Retry original request with refreshed access token
+        if (data.accessToken) {
+          headers.set('Authorization', `Bearer ${data.accessToken}`);
+        }
         response = await fetch(url, { ...options, headers });
       } else {
-        logout();
+        console.warn('[apiClient] Refresh endpoint rejected with status:', refreshRes.status);
+        logout('Session expired. Please log in again.');
       }
-    } catch {
-      logout();
+    } catch (err: any) {
+      console.error('[apiClient] Exception during token refresh attempt:', err.message);
+      logout('Network or auth exception during token refresh.');
     }
   }
 

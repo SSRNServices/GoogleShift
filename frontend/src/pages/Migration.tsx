@@ -123,22 +123,29 @@ export default function Migration() {
   const [manifestId, setManifestId] = useState<string | null>(null);
 
   useEffect(() => {
-    // Always clear old session data on fresh wizard mount
-    clearSession();
-
-    const fetchProfiles = async () => {
+    const initMigrationWizard = async () => {
       try {
-        const [srcRes, destRes] = await Promise.all([
+        const [srcRes, destRes, activeDiscovery] = await Promise.all([
           apiClient('/auth/source/profile').catch(() => ({ state: 'NOT_CONNECTED' })),
-          apiClient('/auth/destination/profile').catch(() => ({ state: 'NOT_CONNECTED' }))
+          apiClient('/auth/destination/profile').catch(() => ({ state: 'NOT_CONNECTED' })),
+          apiClient('/api/discovery/active').catch(() => ({ active: false, job: null }))
         ]);
+
         setSourceProfile(srcRes);
         setDestProfile(destRes);
+
+        if (activeDiscovery && activeDiscovery.active && activeDiscovery.job) {
+          console.log('[MigrationWizard] Active discovery job detected on mount. Restoring step 6:', activeDiscovery.job);
+          if (activeDiscovery.job.sessionId) {
+            fetchSession(activeDiscovery.job.sessionId).catch(console.error);
+            setStep(6);
+          }
+        }
       } catch (e) {
-        console.error(e);
+        console.error('[MigrationWizard] Initialization error:', e);
       }
     };
-    fetchProfiles();
+    initMigrationWizard();
   }, []);
 
   useEffect(() => {

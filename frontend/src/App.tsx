@@ -25,20 +25,31 @@ function AuthInit({ children }: { children: React.ReactNode }) {
   const { setAuth, logout, setInitialized } = useAuthStore();
   
   useEffect(() => {
+    console.log('[AuthInit] Initializing session check...');
     apiClient('/auth/me')
       .then(data => {
         if (data.authenticated && data.user) {
+          console.log('[AuthInit] User session active for:', data.user.email);
           setAuth(data.user);
-        } else {
-          logout();
         }
       })
-      .catch(() => {
-        logout();
+      .catch(err => {
+        console.warn('[AuthInit] Session check warning:', err.message);
       })
       .finally(() => {
         setInitialized(true);
       });
+
+    // Proactive background token refresh every 45 minutes (2,700,000 ms)
+    // Ensures 1-hour access tokens are renewed long before expiration
+    const refreshInterval = setInterval(() => {
+      console.log('[AuthInit] Proactive background token refresh executing...');
+      apiClient('/auth/me').catch(err => {
+        console.warn('[AuthInit] Proactive refresh warning:', err.message);
+      });
+    }, 45 * 60 * 1000);
+
+    return () => clearInterval(refreshInterval);
   }, [setAuth, logout, setInitialized]);
 
   return <>{children}</>;

@@ -56,6 +56,31 @@ const formatDiscoveryResponse = (job: any, extraMessage?: string) => {
   });
 };
 
+router.get('/active', requireUserAuth, async (req: Request, res: Response) => {
+  const userId = (req as any).user?.id || 'unknown';
+  try {
+    const activeJob = await prisma.discoveryJob.findFirst({
+      where: {
+        ownerId: userId,
+        state: { in: ['QUEUED', 'CONNECTING', 'DISCOVERING', 'SCANNING', 'FINALIZING'] }
+      },
+      orderBy: { startedAt: 'desc' }
+    });
+
+    if (!activeJob) {
+      return res.status(200).json({ active: false, job: null });
+    }
+
+    return res.status(200).json({
+      active: true,
+      job: formatDiscoveryResponse(activeJob)
+    });
+  } catch (error: any) {
+    console.error(`[DISCOVERY] Failed to check active discovery job for user ${userId}:`, error.message);
+    return res.status(500).json({ error: 'Database lookup error' });
+  }
+});
+
 router.post('/start', requireUserAuth, async (req: Request, res: Response) => {
   const startTime = Date.now();
   const userId = (req as any).user?.id || 'unknown';

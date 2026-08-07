@@ -17,7 +17,7 @@ interface AuthState {
   isInitialized: boolean;
   setAuth: (user: User, accessToken?: string | null, refreshToken?: string | null) => void;
   setInitialized: (initialized: boolean) => void;
-  logout: () => void;
+  logout: (reason?: string) => void;
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -34,7 +34,14 @@ export const useAuthStore = create<AuthState>()(
         isInitialized: true
       })),
       setInitialized: (isInitialized) => set({ isInitialized }),
-      logout: () => set({ user: null, accessToken: null, refreshToken: null, isInitialized: true }),
+      logout: (reason?: string) => {
+        if (reason) {
+          console.warn(`[useAuthStore] User logged out. Reason: ${reason}`);
+        } else {
+          console.log('[useAuthStore] User logged out.');
+        }
+        set({ user: null, accessToken: null, refreshToken: null, isInitialized: true });
+      },
     }),
     {
       name: 'auth-storage', // unique name
