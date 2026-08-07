@@ -34,7 +34,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract Metadata (Tags & Labels)
@@ -57,40 +57,18 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Copy Production Docker Compose to VPS
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT || 22 }}
-          source: "deploy/docker-compose.yml"
-          target: "/var/www/googleshift"
-          strip_components: 1
-
       - name: Deploy to VPS via SSH
         uses: appleboy/ssh-action@v1.0.3
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_ACTOR: ${{ github.actor }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT || 22 }}
-          envs: GITHUB_TOKEN,GITHUB_ACTOR
           script: |
             set -e
             echo "=== Starting Production VPS Deployment ==="
             
-            mkdir -p /var/www/googleshift
             cd /var/www/googleshift
-
-            # Verify docker-compose.yml exists
-            if [ ! -f "docker-compose.yml" ]; then
-              echo "❌ [FATAL] docker-compose.yml is missing in /var/www/googleshift!"
-              exit 1
-            fi
 
             # Detect Docker Compose binary (Compose V2 plugin vs Compose V1 standalone)
             if docker compose version &>/dev/null; then
@@ -101,10 +79,9 @@ jobs:
               echo "❌ [FATAL] Neither 'docker compose' nor 'docker-compose' is installed on VPS!"
               exit 1
             fi
-            echo "Using Compose binary: $COMPOSE_CMD"
 
             echo "[1/4] Logging in to GitHub Container Registry..."
-            echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin || true
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.repository_owner }}" --password-stdin
 
             echo "[2/4] Pulling latest production container image..."
             $COMPOSE_CMD pull
@@ -116,9 +93,6 @@ jobs:
             docker image prune -f
 
             echo "=== Verifying Backend Health Status ==="
-            echo "Allowing 10s for database connection & Express server boot..."
-            sleep 10
-
             HEALTHCHECK_PASSED=0
             for i in $(seq 1 12); do
               if curl -sf http://127.0.0.1:3100/health | grep -q '"status":"ok"'; then
@@ -131,7 +105,7 @@ jobs:
             done
 
             if [ $HEALTHCHECK_PASSED -eq 0 ]; then
-              echo "❌ [FATAL] Healthcheck failed after 70s! Container logs:"
+              echo "❌ [FATAL] Healthcheck failed after 60s! Container logs:"
               docker logs --tail 50 googleshift-backend
               exit 1
             fi
