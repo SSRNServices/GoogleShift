@@ -1,4 +1,7 @@
-FROM node:22-alpine
+# Multi-stage production Dockerfile for GoogleShift Backend
+
+# Stage 1: Builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
@@ -6,11 +9,34 @@ COPY package*.json ./
 RUN npm ci
 
 COPY prisma ./prisma/
+COPY prisma.config.ts ./
 RUN npx prisma generate
 
 COPY . .
 RUN npm run build
 
-EXPOSE ${PORT:-3000}
+# Stage 2: Runner
+FROM node:22-alpine AS runner
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV PORT=3100
+
+COPY package*.json ./
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+
+COPY prisma ./prisma/
+COPY prisma.config.ts ./
+RUN npx prisma generate
+
+COPY --from=builder /app/dist ./dist
+
+USER node
+
+EXPOSE 3100
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:3100/health || exit 1
 
 CMD ["npm", "run", "start:prod"]

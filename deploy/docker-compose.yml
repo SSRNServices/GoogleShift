@@ -1,0 +1,47 @@
+services:
+  backend:
+    image: ghcr.io/ssrnservices/googleshift-backend:latest
+    container_name: googleshift-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "3100:3100"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3100/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    depends_on:
+      - redis
+    networks:
+      - googleshift-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: googleshift-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    volumes:
+      - redis_data:/data
+    networks:
+      - googleshift-network
+
+networks:
+  googleshift-network:
+    driver: bridge
+
+volumes:
+  redis_data:
+    driver: local

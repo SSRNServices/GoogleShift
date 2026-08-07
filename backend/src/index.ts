@@ -1,12 +1,24 @@
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
-import adminRoutes from './routes/admin.routes';
+import helmet from 'helmet';
+import compression from 'compression';
 import cookieParser from 'cookie-parser';
+import passport from 'passport';
+import rateLimit from 'express-rate-limit';
+
+import { validateConfig } from './config/config';
+import { logger, requestTracingMiddleware } from './utils/logger';
+import { globalErrorHandler } from './utils/errorHandler';
+import { setupSwagger } from './utils/swagger';
+import { initRedis, closeRedis } from './utils/redis';
+
+// Validate Configuration on boot - fail fast if missing
+const config = validateConfig();
+
+import adminRoutes from './routes/admin.routes';
 import authRoutes from './auth/auth.routes';
 import { sessionMiddleware } from './auth/session';
 import { requireUserAuth } from './auth/auth.middleware';
-import passport from 'passport';
 import { configurePassport } from './auth/passport';
 import { configureLocalStrategy } from './auth/local.strategy';
 import driveRoutes from './routes/drive.routes';
@@ -14,195 +26,219 @@ import migrationRoutes from './routes/migration.routes';
 import authAdminRoutes from './routes/auth.admin.routes';
 import discoveryRoutes from './routes/discovery.routes';
 import sessionRoutes from './routes/session.routes';
-import helmet from 'helmet';
+import healthRoutes from './routes/health.routes';
 import { workerWatchdog } from './transfer/WorkerWatchdog';
+import { prisma, pool, validateDatabaseSchema, performWriteDiagnostics } from './utils/database';
 
-dotenv.config();
+async function bootstrap() {
+  logger.info('=== Starting GoogleShift Backend ===');
+  logger.info(`Environment: ${config.NODE_ENV}`);
+  logger.info(`Node version: ${process.version}`);
+  logger.info(`Listening address: 0.0.0.0:${config.PORT}`);
 
-console.log('\n=== Application Startup ===');
-console.log(`GOOGLE_CLIENT_ID: ${process.env.GOOGLE_CLIENT_ID ? 'Loaded (starts with ' + process.env.GOOGLE_CLIENT_ID.substring(0, 15) + '...)' : 'MISSING'}`);
-console.log(`GOOGLE_DRIVE_REDIRECT_URI: ${process.env.GOOGLE_DRIVE_REDIRECT_URI || 'MISSING (Defaults to http://localhost:3000/auth/google/callback)'}`);
-console.log(`GOOGLE_LOGIN_REDIRECT_URI: ${process.env.GOOGLE_LOGIN_REDIRECT_URI || 'MISSING (Defaults to http://localhost:3000/auth/google/callback)'}`);
-console.log(`FRONTEND_URL: ${process.env.FRONTEND_URL || 'MISSING (Defaults to http://localhost:5173 or https://migration.ssrnservices.in)'}`);
-console.log(`COOKIE_DOMAIN: ${process.env.COOKIE_DOMAIN || 'Not Set'}`);
-console.log(`CORS_ORIGIN: ${process.env.CORS_ORIGIN || 'Not Set'}`);
-console.log('===========================\n');
-
-import { prisma, validateDatabaseSchema, performWriteDiagnostics } from './utils/database';
-
-async function verifyDatabase() {
-  const start = Date.now();
+  // 1. Database connection check & schema validation
   try {
+    const start = Date.now();
     await prisma.$queryRaw`SELECT 1`;
-    const host = new URL(process.env.DIRECT_URL || process.env.DATABASE_URL || 'http://localhost').hostname;
-    console.log('✓ Database Connected');
-    console.log('✓ Prisma Connected');
-    console.log(`  - Prisma Version: 7.9.0`);
-    console.log(`  - Database Host: ${host}`);
-    console.log(`  - Pool Size: 10`);
-    console.log(`  - Connection Time: ${Date.now() - start}ms`);
+    logger.info(`✓ Database Connected (Ping: ${Date.now() - start}ms)`);
 
     await performWriteDiagnostics();
     await validateDatabaseSchema();
-  } catch (err) {
-    console.error('❌ Database Connection / Schema Verification Failed:', err);
+  } catch (err: any) {
+    logger.error('❌ Database Connection / Schema Verification Failed:', err);
     process.exit(1);
   }
-}
-verifyDatabase();
 
-process.on('uncaughtException', (err) => {
-  console.error('\n[FATAL] Uncaught Exception intercepted:');
-  console.error(err);
-  console.error('[FATAL] The backend will remain alive to allow other workers to continue.');
-});
+  // 2. Initialize Redis (if configured)
+  initRedis();
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('\n[FATAL] Unhandled Promise Rejection intercepted:');
-  console.error('Reason:', reason);
-  console.error('[FATAL] The backend will remain alive to allow other workers to continue.');
-});
+  // 3. Configure Passport Strategies
+  configurePassport();
+  configureLocalStrategy();
 
-configurePassport();
-configureLocalStrategy();
+  // 4. Initialize Express Application
+  const app = express();
 
-const app = express();
-app.set('trust proxy', true);
-app.use(helmet());
-const PORT = Number(process.env.PORT) || 3000;
+  // Security Headers & Proxy Setup (Trust first proxy hop for Nginx)
+  app.set('trust proxy', 1);
+  app.disable('x-powered-by');
+  app.use(helmet({
+    contentSecurityPolicy: config.NODE_ENV === 'production' ? undefined : false,
+    crossOriginEmbedderPolicy: false
+  }));
 
-const allowedOrigins = [
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-  'https://migration.ssrnservices.in'
-];
+  // Gzip Compression & Payload Limits
+  app.use(compression());
+  app.use(express.json({ limit: '10mb' }));
+  app.use(express.urlencoded({ limit: '10mb', extended: true }));
+  app.use(cookieParser());
 
-if (process.env.FRONTEND_URL && !allowedOrigins.includes(process.env.FRONTEND_URL)) {
-  allowedOrigins.push(process.env.FRONTEND_URL);
-}
-
-app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true
-}));
-app.use(express.json());
-app.use(cookieParser());
-app.use(sessionMiddleware);
-
-configurePassport();
-app.use(passport.initialize());
-app.use(passport.session());
-
-app.use((req, res, next) => {
-  console.log(`\n[Request] ${req.method} ${req.url}`);
-  console.log("Incoming Cookie:", req.headers.cookie);
-  
-  const start = Date.now();
-  
-  const originalEnd = res.end;
-  res.end = function (chunk?: any, encoding?: any, cb?: any) {
-    console.log("Outgoing Set-Cookie:", res.getHeader("Set-Cookie"));
-    const duration = Date.now() - start;
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} ${res.statusCode} - ${duration}ms\n`);
-    // @ts-ignore
-    return originalEnd.apply(this, arguments);
-  };
-  
-  next();
-});
-
-app.get('/', (req, res) => {
-  res.json({
-    service: "GoogleShift Backend",
-    status: "online",
-    version: "1.0.0"
+  // Global Rate Limiting
+  const globalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: config.NODE_ENV === 'production' ? 1000 : 5000,
+    standardHeaders: true,
+    legacyHeaders: false,
+    validate: { trustProxy: false },
+    message: { success: false, error: { code: 'TOO_MANY_REQUESTS', message: 'Too many requests, please try again later.' } }
   });
-});
+  app.use(globalLimiter);
 
-app.use('/auth', authRoutes);
-app.use('/api/admin/auth', authAdminRoutes);
-app.use('/api/admin', adminRoutes);
+  // CORS Configuration
+  const defaultOrigins = [
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://localhost:3000',
+    'https://googleshift.com',
+    'https://www.googleshift.com',
+    'https://app.googleshift.com',
+    'https://migration.ssrnservices.in'
+  ];
 
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    database: 'connected',
-    uptime: process.uptime()
-  });
-});
-
-app.use('/auth', authRoutes);
-
-// Protect all following routes with requireUserAuth
-app.use('/api/drive', requireUserAuth, driveRoutes);
-app.use('/api/migrations', requireUserAuth, migrationRoutes);
-app.use('/api/migration/session', requireUserAuth, sessionRoutes);
-app.use('/api/discovery', requireUserAuth, discoveryRoutes);
-
-// Print all registered routes
-const printRoutes = () => {
-  console.log('\n=== Registered Routes ===');
-  console.log('GET /api/health');
-  console.log('GET /auth/source');
-  console.log('GET /auth/destination');
-  console.log('GET /auth/google/callback');
-  console.log('GET /auth/source/profile');
-  console.log('GET /auth/destination/profile');
-  console.log('POST /auth/source/logout');
-  console.log('POST /auth/destination/logout');
-  console.log('GET /api/drive/:type/folder/:id');
-  console.log('GET /api/drive/:type/search');
-  console.log('POST /api/drive/destination/create-folder');
-  console.log('=========================\n');
-};
-
-const runDiagnostics = async () => {
-  console.log('\n=== Network Diagnostics ===');
-  try {
-    const dns = await import('dns');
-    const { promisify } = await import('util');
-    const lookup = promisify(dns.lookup);
-    
-    console.log('Checking DNS resolution for oauth2.googleapis.com...');
-    const result = await lookup('oauth2.googleapis.com');
-    console.log(`[OK] Resolved oauth2.googleapis.com to ${result.address}`);
-    console.log('[OK] Internet connectivity verified.');
-  } catch (error: any) {
-    console.error(`[FAIL] DNS resolution failed: ${error.message}`);
-    console.error('[FAIL] Network might be unreachable or DNS is failing.');
+  if (config.FRONTEND_URL) {
+    config.FRONTEND_URL.split(',').forEach((url) => {
+      const trimmed = url.trim();
+      if (trimmed && !defaultOrigins.includes(trimmed)) {
+        defaultOrigins.push(trimmed);
+      }
+    });
   }
-  console.log('===========================\n');
-};
 
+  if (config.CORS_ORIGIN) {
+    config.CORS_ORIGIN.split(',').forEach((url) => {
+      const trimmed = url.trim();
+      if (trimmed && !defaultOrigins.includes(trimmed)) {
+        defaultOrigins.push(trimmed);
+      }
+    });
+  }
 
+  app.use(cors({
+    origin: (origin, callback) => {
+      if (!origin || defaultOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        logger.warn(`[CORS] Blocked request from origin: ${origin}`);
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    credentials: true
+  }));
 
-app.listen(PORT, "0.0.0.0", async () => {
-  console.log('\n=========================');
-  console.log('GoogleShift Backend');
-  console.log('=========================');
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`Node version: ${process.version}`);
-  console.log(`PORT received: ${process.env.PORT || 'none (defaulted to 3000)'}`);
-  console.log(`Listening address: 0.0.0.0`);
-  console.log(`Database connected: true`);
-  console.log(`Prisma connected: true`);
-  console.log(`Google credentials loaded: ${!!process.env.GOOGLE_CLIENT_ID}`);
-  console.log(`Server ready: true`);
-  console.log('=========================');
-  console.log('Server listening on:');
-  console.log(`http://0.0.0.0:${PORT}`);
-  console.log('=========================\n');
-  
-  printRoutes();
-  await runDiagnostics();
+  // Request Tracing & Structured Logging
+  app.use(requestTracingMiddleware);
 
-  // Start global job stall watchdog
-  workerWatchdog.start();
-  console.log('[WorkerWatchdog] Started — monitoring COPYING jobs every 60s for stalls.\n');
-});
+  // Session & Auth Middleware
+  app.use(sessionMiddleware);
+  app.use(passport.initialize());
+  app.use(passport.session());
+
+  // Setup Swagger Documentation (Development only)
+  setupSwagger(app);
+
+  // Health Endpoints
+  app.use('/health', healthRoutes);
+  app.use('/api/health', healthRoutes);
+  app.use('/api/v1/health', healthRoutes);
+
+  // Root Status Endpoint
+  app.get('/', (_req, res) => {
+    res.json({
+      service: 'GoogleShift Backend',
+      status: 'online',
+      version: '1.0.0',
+      environment: config.NODE_ENV
+    });
+  });
+
+  // Mount Application Routes (with /api/v1 prefix & backward compatible aliases)
+  const mountRoutes = (prefix: string) => {
+    app.use(`${prefix}/auth`, authRoutes);
+    app.use(`${prefix}/api/admin/auth`, authAdminRoutes);
+    app.use(`${prefix}/api/admin`, adminRoutes);
+    app.use(`${prefix}/api/drive`, requireUserAuth, driveRoutes);
+    app.use(`${prefix}/api/migrations`, requireUserAuth, migrationRoutes);
+    app.use(`${prefix}/api/migration/session`, requireUserAuth, sessionRoutes);
+    app.use(`${prefix}/api/discovery`, requireUserAuth, discoveryRoutes);
+  };
+
+  // Mount API v1 Routes
+  mountRoutes('/api/v1');
+
+  // Legacy root mount for backwards compatibility
+  app.use('/auth', authRoutes);
+  app.use('/api/admin/auth', authAdminRoutes);
+  app.use('/api/admin', adminRoutes);
+  app.use('/api/drive', requireUserAuth, driveRoutes);
+  app.use('/api/migrations', requireUserAuth, migrationRoutes);
+  app.use('/api/migration/session', requireUserAuth, sessionRoutes);
+  app.use('/api/discovery', requireUserAuth, discoveryRoutes);
+
+  // Global Error Handler
+  app.use(globalErrorHandler);
+
+  // Start HTTP Server
+  const server = app.listen(config.PORT, '0.0.0.0', () => {
+    logger.info('====================================');
+    logger.info(`GoogleShift Backend is running!`);
+    logger.info(`Listening on http://0.0.0.0:${config.PORT}`);
+    logger.info(`Health check: http://0.0.0.0:${config.PORT}/health`);
+    if (config.NODE_ENV !== 'production') {
+      logger.info(`Swagger docs: http://0.0.0.0:${config.PORT}/docs`);
+    }
+    logger.info('====================================');
+
+    // Start Worker Watchdog for stalled migration jobs
+    workerWatchdog.start();
+    logger.info('[WorkerWatchdog] Monitoring COPYING jobs every 60s.');
+  });
+
+  // Graceful Shutdown Logic
+  const gracefulShutdown = async (signal: string) => {
+    logger.info(`\n[Shutdown] Received ${signal}. Starting graceful shutdown...`);
+
+    // 1. Stop receiving new HTTP requests
+    server.close(async () => {
+      logger.info('[Shutdown] HTTP server closed.');
+
+      try {
+        // 2. Stop Worker Watchdog
+        workerWatchdog.stop();
+        logger.info('[Shutdown] Worker Watchdog stopped.');
+
+        // 3. Close Redis Connection
+        await closeRedis();
+
+        // 4. Close Database Pool & Disconnect Prisma
+        await prisma.$disconnect();
+        await pool.end();
+        logger.info('[Shutdown] Database connections closed.');
+
+        logger.info('✓ Graceful shutdown completed cleanly.');
+        process.exit(0);
+      } catch (err: any) {
+        logger.error(`❌ Error during shutdown: ${err.message}`);
+        process.exit(1);
+      }
+    });
+
+    // Force exit after 10 seconds timeout
+    setTimeout(() => {
+      logger.error('❌ Shutdown timed out after 10s. Forcing exit.');
+      process.exit(1);
+    }, 10000);
+  };
+
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+  process.on('uncaughtException', (err) => {
+    logger.error('[FATAL] Uncaught Exception:', err);
+  });
+
+  process.on('unhandledRejection', (reason) => {
+    logger.error('[FATAL] Unhandled Promise Rejection:', reason);
+  });
+}
+
+bootstrap();
