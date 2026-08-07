@@ -54,9 +54,6 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
   const [finalSummary, setFinalSummary] = useState<any>(null);
   
   const abortControllerRef = useRef<AbortController | null>(null);
-  const hasStartedRef = useRef(false);
-  const lastProgressTimeRef = useRef<number>(Date.now());
-
   const onCompleteRef = useRef(onComplete);
   const onErrorRef = useRef(onError);
 
@@ -65,84 +62,137 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
     onErrorRef.current = onError;
   }, [onComplete, onError]);
 
+  const processIncomingData = (data: any): boolean => {
+    if (!data) return false;
+
+    console.log('[DiscoveryScanner] Ingestion Payload:', data);
+
+    if (data.error) {
+      console.error('[DiscoveryScanner] Error payload received:', data.error);
+      onErrorRef.current(data.error);
+      setInitError(data.error);
+      return true;
+    }
+
+    const rawStatus = (data.status || data.phase || data.state || 'QUEUED').toUpperCase();
+    console.log('[DiscoveryScanner] Current Normalized Status:', rawStatus);
+
+    const isCompletedState = rawStatus === 'COMPLETED' || data.completed === true || data.event === 'SCAN_COMPLETED';
+
+    const newFolders = Number(data.foldersFound ?? data.totalFolders ?? data.folders ?? 0);
+    const newFiles = Number(data.filesFound ?? data.totalFiles ?? data.files ?? 0);
+    const newBytes = Number(data.bytesFound ?? data.totalBytes ?? data.bytes ?? 0);
+    const elapsedMs = Number(data.elapsed || 0);
+
+    if (isCompletedState) {
+      const summaryObj = data.data || {
+        totalFolders: newFolders,
+        totalFiles: newFiles,
+        totalBytes: newBytes,
+        manifestId: data.manifestId
+      };
+
+      console.log('[DiscoveryScanner] Discovery COMPLETED event received!', summaryObj);
+      setCompleted(true);
+      setFinalSummary(summaryObj);
+      setStats(prev => ({
+        status: 'COMPLETED',
+        folders: Math.max(prev.folders, summaryObj.totalFolders || 0),
+        files: Math.max(prev.files, summaryObj.totalFiles || 0),
+        bytes: Math.max(prev.bytes, summaryObj.totalBytes || 0),
+        googleRequests: data.googleRequests || Math.max(prev.googleRequests, newFolders || 1),
+        foldersPerSec: 0,
+        filesPerSec: 0,
+        queueDepth: 0,
+        activeWorkers: 0,
+        elapsed: elapsedMs || prev.elapsed,
+        message: 'Discovery complete!'
+      }));
+      onCompleteRef.current(summaryObj);
+      return true;
+    }
+
+    setStats(prev => {
+      const updatedFolders = Math.max(prev.folders, newFolders);
+      const updatedFiles = Math.max(prev.files, newFiles);
+      const updatedBytes = Math.max(prev.bytes, newBytes);
+      const updatedGoogle = data.googleRequests || Math.max(prev.googleRequests, updatedFolders ? updatedFolders + 1 : 1);
+
+      const messageStr = data.currentFolder 
+        ? `Scanning folder: ${data.currentFolder}` 
+        : (data.currentFile ? `Scanning file: ${data.currentFile}` : (rawStatus === 'FINALIZING' ? 'Finalizing discovery scan...' : 'Scanning Google Drive...'));
+
+      return {
+        status: rawStatus,
+        folders: updatedFolders,
+        files: updatedFiles,
+        bytes: updatedBytes,
+        googleRequests: updatedGoogle,
+        foldersPerSec: data.foldersPerSec || prev.foldersPerSec,
+        filesPerSec: data.filesPerSec || prev.filesPerSec,
+        queueDepth: data.queueDepth || prev.queueDepth,
+        activeWorkers: data.activeWorkers || prev.activeWorkers,
+        elapsed: elapsedMs || prev.elapsed,
+        message: messageStr
+      };
+    });
+
+    return false;
+  };
+
   const startDiscoveryProcess = async () => {
     setInitError(null);
-    setCompleted(false);
-    setFinalSummary(null);
-    setStats({
-      status: 'QUEUED',
-      folders: 0,
-      files: 0,
-      bytes: 0,
-      googleRequests: 0,
-      foldersPerSec: 0,
-      filesPerSec: 0,
-      queueDepth: 0,
-      activeWorkers: 0,
-      message: 'Initializing background discovery job...',
-      elapsed: 0
-    });
-    lastProgressTimeRef.current = Date.now();
 
     try {
-      console.log(`[Frontend] Requesting discovery start for sourceId=${sourceId}, sessionId=${sessionId}`);
+      console.log(`[DiscoveryScanner] Requesting start for sourceId=${sourceId}, sessionId=${sessionId}`);
       const job = await migrationApi.startDiscovery(sourceId, sessionId);
-      console.log("API RESPONSE", job);
+      console.log('[DiscoveryScanner] Start Discovery API Response:', job);
+
       const activeJobId = job.jobId || job.id;
-      const normalizedStatus = (job.status || job.phase || job.state || 'QUEUED').toUpperCase();
-      console.log("DISCOVERY STATUS", normalizedStatus);
-      console.log(`[Frontend] Discovery job created/resumed: jobId=${activeJobId}, status=${job.status || 'N/A'}, state=${job.state || 'N/A'}, normalizedStatus=${normalizedStatus}`);
+      const initialDone = processIncomingData(job);
 
-      if (normalizedStatus === 'COMPLETED' || job.completed) {
-        const summaryObj = {
-          totalFolders: job.foldersFound || 0,
-          totalFiles: job.filesFound || 0,
-          totalBytes: job.bytesFound || 0,
-          manifestId: job.manifestId
-        };
-        console.log('[Frontend] Discovery already completed on start response:', summaryObj);
-        setCompleted(true);
-        setFinalSummary(summaryObj);
-        const completeStats = {
-          status: 'COMPLETED',
-          folders: job.foldersFound || 0,
-          files: job.filesFound || 0,
-          bytes: job.bytesFound || 0,
-          googleRequests: job.foldersFound || 1,
-          foldersPerSec: 0,
-          filesPerSec: 0,
-          queueDepth: 0,
-          activeWorkers: 0,
-          message: 'Discovery complete!',
-          elapsed: job.elapsed || 0
-        };
-        setStats(completeStats);
-        console.log("STATE UPDATED", completeStats.status);
-        onCompleteRef.current(summaryObj);
-        return;
+      if (!initialDone && activeJobId) {
+        setJobId(activeJobId);
       }
-
-      setJobId(activeJobId);
     } catch (err: any) {
       const errMsg = err.message || 'Failed to initialize discovery';
-      console.error(`[Frontend] startDiscovery failed:`, errMsg);
+      console.error(`[DiscoveryScanner] startDiscovery failed:`, errMsg);
       setInitError(errMsg);
       onErrorRef.current(errMsg);
-      hasStartedRef.current = false;
     }
   };
 
   useEffect(() => {
-    hasStartedRef.current = true;
     startDiscoveryProcess();
   }, [sourceId, sessionId]);
 
   useEffect(() => {
-    if (!jobId) return;
+    if (!jobId || completed) return;
 
-    let pollTimeout: number;
-    let isActive = true;
+    let isSubscribed = true;
+    let pollIntervalId: number;
 
+    // Polling Channel (Guaranteed 1-second fallback)
+    const pollStatus = async () => {
+      if (!isSubscribed) return;
+      try {
+        const details = await migrationApi.getDiscoveryStatus(jobId);
+        if (isSubscribed && details) {
+          const isDone = processIncomingData(details);
+          if (isDone) {
+            isSubscribed = false;
+            clearInterval(pollIntervalId);
+          }
+        }
+      } catch (err: any) {
+        console.warn('[DiscoveryScanner] Polling check warning:', err.message);
+      }
+    };
+
+    pollIntervalId = window.setInterval(pollStatus, 1000);
+    pollStatus(); // Initial immediate check
+
+    // Streaming SSE Channel
     const streamDiscovery = async () => {
       try {
         const { accessToken } = useAuthStore.getState();
@@ -161,14 +211,14 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
         });
 
         if (!response.ok || !response.body) {
-           throw new Error(`Stream rejected with HTTP status ${response.status}`);
+           return;
         }
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
 
-        while (isActive) {
+        while (isSubscribed) {
           const { value, done } = await reader.read();
           if (done) break;
 
@@ -185,155 +235,34 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
 
             try {
               const data = JSON.parse(dataStr);
-              console.log("API RESPONSE", data);
-              lastProgressTimeRef.current = Date.now();
-
-              if (data.error) {
-                onErrorRef.current(data.error);
-                setInitError(data.error);
-                isActive = false;
+              const isDone = processIncomingData(data);
+              if (isDone) {
+                isSubscribed = false;
+                clearInterval(pollIntervalId);
                 break;
               }
-
-              const rawStatus = (data.status || data.phase || data.state || 'QUEUED').toUpperCase();
-              console.log("DISCOVERY STATUS", rawStatus);
-              const isCompletedState = rawStatus === 'COMPLETED' || data.completed === true || data.event === 'SCAN_COMPLETED';
-
-              if (isCompletedState) {
-                const summaryObj = data.data || {
-                  totalFolders: data.foldersFound || 0,
-                  totalFiles: data.filesFound || 0,
-                  totalBytes: data.bytesFound || 0,
-                  manifestId: data.manifestId
-                };
-
-                console.log('[Frontend DiscoveryScanner] Discovery Completed event received!', summaryObj);
-                setCompleted(true);
-                setFinalSummary(summaryObj);
-                const completeStats = {
-                  status: 'COMPLETED',
-                  folders: summaryObj.totalFolders || summaryObj.foldersFound || 0,
-                  files: summaryObj.totalFiles || summaryObj.filesFound || 0,
-                  bytes: summaryObj.totalBytes || summaryObj.bytesFound || 0,
-                  googleRequests: data.googleRequests || 1,
-                  foldersPerSec: 0,
-                  filesPerSec: 0,
-                  queueDepth: 0,
-                  activeWorkers: 0,
-                  elapsed: data.elapsed || 0,
-                  message: 'Discovery complete!'
-                };
-                setStats(completeStats);
-                console.log("STATE UPDATED", completeStats.status);
-                isActive = false;
-                onCompleteRef.current(summaryObj);
-                break;
-              }
-
-              const newStats = {
-                status: rawStatus,
-                folders: data.foldersFound || 0,
-                files: data.filesFound || 0,
-                bytes: data.bytesFound || 0,
-                googleRequests: data.googleRequests || (data.foldersFound ? data.foldersFound + 1 : 1),
-                foldersPerSec: data.foldersPerSec || 0,
-                filesPerSec: data.filesPerSec || 0,
-                queueDepth: data.queueDepth || 0,
-                activeWorkers: data.activeWorkers || 0,
-                elapsed: data.elapsed || 0,
-                message: data.currentFolder 
-                  ? `Scanning folder: ${data.currentFolder}` 
-                  : (data.currentFile ? `Scanning file: ${data.currentFile}` : `Scanning Google Drive...`)
-              };
-              setStats(newStats);
-              console.log("STATE UPDATED", newStats.status);
-
             } catch (e) {
-              console.warn('[Frontend] Non-fatal SSE parse update:', e);
+              // Ignore non-JSON ping lines
             }
           }
         }
       } catch (error: any) {
-         if (error.name === 'AbortError') return;
-         console.warn('[Frontend] Stream disconnected, attempting polling fallback...', error.message);
-         
-         if (isActive) {
-            try {
-              const details = await migrationApi.getDiscoveryStatus(jobId);
-              console.log("API RESPONSE", details);
-              if (details) {
-                lastProgressTimeRef.current = Date.now();
-                const rawStatus = (details.status || details.phase || details.state || 'QUEUED').toUpperCase();
-                console.log("DISCOVERY STATUS", rawStatus);
-                const isComplete = rawStatus === 'COMPLETED' || details.completed === true;
-
-                if (isComplete) {
-                  const summaryObj = {
-                    totalFolders: details.foldersFound || 0,
-                    totalFiles: details.filesFound || 0,
-                    totalBytes: details.bytesFound || 0,
-                    manifestId: details.manifestId
-                  };
-                  console.log('[Frontend DiscoveryScanner] Polling fallback detected COMPLETED status!', summaryObj);
-                  setCompleted(true);
-                  setFinalSummary(summaryObj);
-                  const completeStats = {
-                    status: 'COMPLETED',
-                    folders: details.foldersFound || 0,
-                    files: details.filesFound || 0,
-                    bytes: details.bytesFound || 0,
-                    googleRequests: details.foldersFound || 1,
-                    foldersPerSec: 0,
-                    filesPerSec: 0,
-                    queueDepth: 0,
-                    activeWorkers: 0,
-                    elapsed: details.elapsed || 0,
-                    message: 'Discovery complete!'
-                  };
-                  setStats(completeStats);
-                  console.log("STATE UPDATED", completeStats.status);
-                  isActive = false;
-                  onCompleteRef.current(summaryObj);
-                  return;
-                } else if (rawStatus === 'FAILED' || details.status === 'failed') {
-                  setInitError('Discovery job failed during background execution.');
-                  onErrorRef.current('Discovery job failed during background execution.');
-                  isActive = false;
-                  return;
-                } else {
-                  const newStats = {
-                    status: rawStatus,
-                    folders: details.foldersFound || 0,
-                    files: details.filesFound || 0,
-                    bytes: details.bytesFound || 0,
-                    googleRequests: details.foldersFound || 1,
-                    foldersPerSec: details.foldersPerSec || 0,
-                    filesPerSec: details.filesPerSec || 0,
-                    queueDepth: details.queueDepth || 0,
-                    activeWorkers: details.activeWorkers || 0,
-                    elapsed: details.elapsed || 0,
-                    message: details.currentFolder ? `Scanning folder: ${details.currentFolder}` : 'Scanning Google Drive...'
-                  };
-                  setStats(newStats);
-                  console.log("STATE UPDATED", newStats.status);
-                }
-              }
-            } catch (pollErr: any) {
-              console.error('[Frontend] Polling fallback error:', pollErr);
-            }
-            pollTimeout = window.setTimeout(streamDiscovery, 1000);
-         }
+        if (error.name !== 'AbortError') {
+          console.warn('[DiscoveryScanner] Stream closed, continuing via polling channel:', error.message);
+        }
       }
     };
 
     streamDiscovery();
 
     return () => {
-      isActive = false;
-      if (abortControllerRef.current) abortControllerRef.current.abort();
-      clearTimeout(pollTimeout);
+      isSubscribed = false;
+      clearInterval(pollIntervalId);
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
     };
-  }, [jobId, onComplete, onError]);
+  }, [jobId, completed]);
 
   if (initError) {
     return (
@@ -343,7 +272,6 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
         <p className="text-sm text-red-600 dark:text-red-400 mb-4">{initError}</p>
         <button
           onClick={() => {
-            hasStartedRef.current = true;
             startDiscoveryProcess();
           }}
           className="inline-flex items-center px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-medium text-sm rounded-md transition-colors shadow"
@@ -373,17 +301,17 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
            <div className="bg-gray-50 dark:bg-gray-900 p-4 rounded text-center border border-gray-100 dark:border-gray-700">
               <FolderOpen className="w-6 h-6 mx-auto mb-2 text-indigo-500" />
-              <div className="text-2xl font-bold text-gray-900 dark:text-white">{finalSummary.totalFolders || 0}</div>
+              <div className="text-2xl font-bold text-gray-900 dark:text-white">{(finalSummary.totalFolders || stats.folders || 0).toLocaleString()}</div>
               <div className="text-sm text-gray-500">Folders</div>
            </div>
            <div className="bg-gray-50 dark:bg-gray-900 p-4 rounded text-center border border-gray-100 dark:border-gray-700">
               <FileIcon className="w-6 h-6 mx-auto mb-2 text-blue-500" />
-              <div className="text-2xl font-bold text-gray-900 dark:text-white">{finalSummary.totalFiles || 0}</div>
+              <div className="text-2xl font-bold text-gray-900 dark:text-white">{(finalSummary.totalFiles || stats.files || 0).toLocaleString()}</div>
               <div className="text-sm text-gray-500">Files</div>
            </div>
            <div className="bg-gray-50 dark:bg-gray-900 p-4 rounded text-center border border-gray-100 dark:border-gray-700">
               <span className="block text-2xl mb-2">💾</span>
-              <div className="text-2xl font-bold text-gray-900 dark:text-white">{formatBytes(finalSummary.totalBytes || 0)}</div>
+              <div className="text-2xl font-bold text-gray-900 dark:text-white">{formatBytes(finalSummary.totalBytes || stats.bytes || 0)}</div>
               <div className="text-sm text-gray-500">Total Size</div>
            </div>
            <div className="bg-gray-50 dark:bg-gray-900 p-4 rounded text-center border border-gray-100 dark:border-gray-700">
@@ -397,12 +325,18 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
   }
 
   const getStatusBadge = (status: string) => {
-    switch (status) {
+    const s = (status || 'QUEUED').toUpperCase();
+    switch (s) {
+      case 'DISCOVERING':
       case 'SCANNING':
         return <span className="px-3 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 text-xs font-semibold rounded-full animate-pulse border border-blue-200 dark:border-blue-800">SCANNING</span>;
+      case 'FINALIZING':
+        return <span className="px-3 py-1 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 text-xs font-semibold rounded-full animate-pulse border border-purple-200 dark:border-purple-800">FINALIZING</span>;
       case 'PREPARING':
       case 'CONNECTING':
         return <span className="px-3 py-1 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 text-xs font-semibold rounded-full border border-yellow-200 dark:border-yellow-800">CONNECTING</span>;
+      case 'COMPLETED':
+        return <span className="px-3 py-1 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-xs font-semibold rounded-full border border-green-200 dark:border-green-800">COMPLETED</span>;
       default:
         return <span className="px-3 py-1 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 text-xs font-semibold rounded-full">QUEUED</span>;
     }
@@ -430,12 +364,12 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
       
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mt-6">
         <div className="bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
-          <div className="text-2xl font-bold text-gray-900 dark:text-white">{stats.folders}</div>
+          <div className="text-2xl font-bold text-gray-900 dark:text-white">{stats.folders.toLocaleString()}</div>
           <div className="text-xs text-indigo-500 font-medium mt-0.5">+{stats.foldersPerSec}/s</div>
           <div className="text-xs text-gray-500 mt-1">Folders Found</div>
         </div>
         <div className="bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
-          <div className="text-2xl font-bold text-gray-900 dark:text-white">{stats.files}</div>
+          <div className="text-2xl font-bold text-gray-900 dark:text-white">{stats.files.toLocaleString()}</div>
           <div className="text-xs text-blue-500 font-medium mt-0.5">+{stats.filesPerSec}/s</div>
           <div className="text-xs text-gray-500 mt-1">Files Found</div>
         </div>
@@ -445,7 +379,7 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
           <div className="text-xs text-gray-500 mt-1">Total Size</div>
         </div>
         <div className="bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
-          <div className="text-2xl font-bold text-indigo-600 dark:text-indigo-400">{stats.googleRequests}</div>
+          <div className="text-2xl font-bold text-indigo-600 dark:text-indigo-400">{stats.googleRequests.toLocaleString()}</div>
           <div className="text-xs text-indigo-500 font-medium mt-0.5">Google API</div>
           <div className="text-xs text-gray-500 mt-1">API Requests</div>
         </div>
@@ -458,4 +392,3 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
     </div>
   );
 }
-

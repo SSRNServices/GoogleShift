@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { API_URL } from '../config/api';
+import { useAuthStore } from '../store/useAuthStore';
 import { HardDrive, FolderOpen, File as FileIcon, Loader2, AlertCircle, FileText, AlertTriangle } from 'lucide-react';
 import type { DriveItem } from '../types/drive';
 import type { ScanSummaryResult, StorageStats, MimeBreakdown, ScanWarningInfo } from '../types/drive';
@@ -60,7 +61,9 @@ export function TransferSummary({ sessionId, sourceSelection, onScanComplete }: 
     setStartTime(Date.now());
     setElapsedTime(0);
 
-    const url = `${API_URL}/api/discovery/${sessionId}/status`;
+    const { accessToken } = useAuthStore.getState();
+    const tokenQuery = accessToken ? `?token=${encodeURIComponent(accessToken)}&stream=true` : '?stream=true';
+    const url = `${API_URL}/api/discovery/${sessionId}/status${tokenQuery}`;
     const eventSource = new EventSource(url, { withCredentials: true });
 
     eventSource.onopen = () => {
@@ -73,41 +76,56 @@ export function TransferSummary({ sessionId, sourceSelection, onScanComplete }: 
         const payload = JSON.parse(event.data);
         if (payload.type === 'connected') return;
 
-        const { event: eventName, data } = payload;
-
-        if (eventName === 'ERROR') {
+        if (payload.error) {
           setScanState('Failed');
-          setErrorMsg(data?.message || 'Unknown error occurred');
+          setErrorMsg(payload.error);
           eventSource.close();
           return;
         }
 
-        if (eventName === 'SCAN_STARTED' || eventName === 'MANIFEST_UPDATED') {
-          setCurrentAction(data.message);
+        const rawStatus = (payload.status || payload.phase || payload.state || '').toUpperCase();
+        const isCompleted = rawStatus === 'COMPLETED' || payload.completed === true || payload.event === 'SCAN_COMPLETED';
+
+        if (isCompleted) {
+          const finalData = payload.data || payload;
+          setScanState('Completed');
+          setCurrentAction('Discovery complete');
+          setStats({
+            scanStatus: 'Completed',
+            totalFolders: Number(finalData.totalFolders || finalData.foldersFound || stats.totalFolders || 0),
+            totalFiles: Number(finalData.totalFiles || finalData.filesFound || stats.totalFiles || 0),
+            totalBytes: Number(finalData.totalBytes || finalData.bytesFound || stats.totalBytes || 0),
+            largestFile: Number(finalData.largestFile || 0)
+          });
+          if (onScanComplete && (finalData.manifestId || payload.manifestId)) {
+             onScanComplete(finalData.manifestId || payload.manifestId, finalData as ScanSummaryResult);
+          }
+          eventSource.close();
+          return;
         }
 
-        if (eventName === 'SCAN_FOLDER') {
-          setCurrentFolder(data.folderName);
-          setStats(prev => ({ ...prev, totalFolders: data.totalFolders }));
-        }
+        // Standard direct payload update
+        const fCount = Number(payload.foldersFound ?? payload.totalFolders ?? payload.folders ?? 0);
+        const fiCount = Number(payload.filesFound ?? payload.totalFiles ?? payload.files ?? 0);
+        const bCount = Number(payload.bytesFound ?? payload.totalBytes ?? payload.bytes ?? 0);
 
-        if (eventName === 'SCAN_PROGRESS') {
-          setCurrentFile(data.currentFile);
-          setStats(prev => ({ 
-             ...prev, 
-             totalFiles: data.totalFiles,
-             totalBytes: data.totalBytes
+        if (fCount > 0 || fiCount > 0 || bCount > 0) {
+          setStats(prev => ({
+            ...prev,
+            totalFolders: Math.max(prev.totalFolders, fCount),
+            totalFiles: Math.max(prev.totalFiles, fiCount),
+            totalBytes: Math.max(prev.totalBytes, bCount)
           }));
         }
 
-        if (eventName === 'SCAN_COMPLETED') {
-          setScanState('Completed');
-          setCurrentAction('Discovery complete');
-          setStats(data);
-          if (onScanComplete && data.manifestId) {
-             onScanComplete(data.manifestId, data as ScanSummaryResult);
-          }
-          eventSource.close();
+        if (payload.currentFolder) setCurrentFolder(payload.currentFolder);
+        if (payload.currentFile) setCurrentFile(payload.currentFile);
+
+        const { event: eventName, data } = payload;
+        if (eventName === 'SCAN_STARTED' || eventName === 'MANIFEST_UPDATED') {
+          setCurrentAction(data?.message || 'Scanning Google Drive...');
+        } else if (payload.message) {
+          setCurrentAction(payload.message);
         }
 
         if (eventName === 'CLOSE') {

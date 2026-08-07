@@ -22,6 +22,13 @@ export interface DiscoveryResponse {
   foldersFound: number;
   filesFound: number;
   bytesFound: number;
+  folders?: number;
+  files?: number;
+  bytes?: number;
+  totalFolders?: number;
+  totalFiles?: number;
+  totalBytes?: number;
+  googleRequests?: number;
   manifestId?: string;
   currentFolder?: string | null;
   currentFile?: string | null;

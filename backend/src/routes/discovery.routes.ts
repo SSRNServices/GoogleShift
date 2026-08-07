@@ -26,6 +26,10 @@ const formatDiscoveryResponse = (job: any, extraMessage?: string) => {
   const statusEnum = isCompleted ? DiscoveryStatus.COMPLETED : (rawState as DiscoveryStatus);
   const progress = isCompleted ? 100 : (statusEnum === DiscoveryStatus.SCANNING ? 50 : (statusEnum === DiscoveryStatus.FINALIZING ? 90 : 0));
 
+  const foldersCount = job.foldersFound || 0;
+  const filesCount = job.filesFound || 0;
+  const bytesCount = job.bytesFound || BigInt(0);
+
   return serializeBigInt({
     id: job.id || job.jobId,
     jobId: job.id || job.jobId,
@@ -36,9 +40,15 @@ const formatDiscoveryResponse = (job: any, extraMessage?: string) => {
     state: statusEnum,
     progress,
     completed: isCompleted,
-    foldersFound: job.foldersFound || 0,
-    filesFound: job.filesFound || 0,
-    bytesFound: job.bytesFound || BigInt(0),
+    foldersFound: foldersCount,
+    filesFound: filesCount,
+    bytesFound: bytesCount,
+    folders: foldersCount,
+    files: filesCount,
+    bytes: bytesCount,
+    totalFolders: foldersCount,
+    totalFiles: filesCount,
+    totalBytes: bytesCount,
     currentFolder: job.currentFolder || null,
     currentFile: job.currentFile || null,
     elapsed: job.elapsed || (job.startedAt ? Date.now() - new Date(job.startedAt).getTime() : 0),
@@ -240,6 +250,10 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  if (typeof (res as any).flushHeaders === 'function') {
+    (res as any).flushHeaders();
+  }
 
   let heartbeatCount = 0;
 

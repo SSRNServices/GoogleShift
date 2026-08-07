@@ -14,6 +14,8 @@ export const requireUserAuth = async (req: Request, res: Response, next: NextFun
       token = authHeader.split(' ')[1];
     } else if (req.cookies && req.cookies.accessToken) {
       token = req.cookies.accessToken;
+    } else if (req.query && (req.query.token || req.query.accessToken)) {
+      token = (req.query.token || req.query.accessToken) as string;
     }
 
     if (!token) {
@@ -47,6 +49,8 @@ export const requireUserAuthBrowser = async (req: Request, res: Response, next: 
       token = authHeader.split(' ')[1];
     } else if (req.cookies && req.cookies.accessToken) {
       token = req.cookies.accessToken;
+    } else if (req.query && (req.query.token || req.query.accessToken)) {
+      token = (req.query.token || req.query.accessToken) as string;
     }
 
     if (!token) {
