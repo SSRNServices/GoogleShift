@@ -1,49 +1,29 @@
-import fs from 'fs';
-import path from 'path';
 import readline from 'readline';
 import { ManifestItem } from './ManifestStorage';
-
-const MANIFEST_DIR = path.join(process.cwd(), 'data', 'manifests');
+import { defaultStorageProvider } from './storage/LocalStorageProvider';
 
 export class ManifestFileStorage {
-  private static ensureDir() {
-    if (!fs.existsSync(MANIFEST_DIR)) {
-      fs.mkdirSync(MANIFEST_DIR, { recursive: true });
-    }
-  }
-
   public static getFilePath(manifestId: string): string {
-    ManifestFileStorage.ensureDir();
-    return path.join(MANIFEST_DIR, `${manifestId}.ndjson`);
+    return defaultStorageProvider.getFilePath(`${manifestId}.ndjson`);
   }
 
   public static async appendChunk(manifestId: string, chunk: ManifestItem[]): Promise<void> {
     if (chunk.length === 0) return;
-    const filePath = ManifestFileStorage.getFilePath(manifestId);
-
-    return new Promise((resolve, reject) => {
-      const lines = chunk.map(item => JSON.stringify(item)).join('\n') + '\n';
-      fs.appendFile(filePath, lines, 'utf8', (err) => {
-        if (err) {
-          console.error(`[ManifestFileStorage] Failed to append chunk to ${filePath}:`, err.message);
-          return reject(err);
-        }
-        resolve();
-      });
-    });
+    const filename = `${manifestId}.ndjson`;
+    const lines = chunk.map(item => JSON.stringify(item)).join('\n') + '\n';
+    await defaultStorageProvider.append(filename, lines);
   }
 
-  public static exists(manifestId: string): boolean {
-    const filePath = ManifestFileStorage.getFilePath(manifestId);
-    return fs.existsSync(filePath) && fs.statSync(filePath).size > 0;
+  public static async exists(manifestId: string): Promise<boolean> {
+    return defaultStorageProvider.exists(`${manifestId}.ndjson`);
   }
 
   public static async readAllItems(manifestId: string): Promise<ManifestItem[]> {
-    const filePath = ManifestFileStorage.getFilePath(manifestId);
-    if (!fs.existsSync(filePath)) return [];
+    const filename = `${manifestId}.ndjson`;
+    const fileStream = defaultStorageProvider.readStream(filename);
+    if (!fileStream) return [];
 
     const items: ManifestItem[] = [];
-    const fileStream = fs.createReadStream(filePath);
     const rl = readline.createInterface({
       input: fileStream,
       crlfDelay: Infinity
@@ -67,11 +47,11 @@ export class ManifestFileStorage {
   }
 
   public static async getPendingFiles(manifestId: string, limit: number): Promise<ManifestItem[]> {
-    const filePath = ManifestFileStorage.getFilePath(manifestId);
-    if (!fs.existsSync(filePath)) return [];
+    const filename = `${manifestId}.ndjson`;
+    const fileStream = defaultStorageProvider.readStream(filename);
+    if (!fileStream) return [];
 
     const items: ManifestItem[] = [];
-    const fileStream = fs.createReadStream(filePath);
     const rl = readline.createInterface({
       input: fileStream,
       crlfDelay: Infinity
@@ -110,9 +90,7 @@ export class ManifestFileStorage {
   }
 
   public static async updateItemStatus(manifestId: string, itemId: string, status: ManifestItem['status']): Promise<void> {
-    const filePath = ManifestFileStorage.getFilePath(manifestId);
-    if (!fs.existsSync(filePath)) return;
-
+    const filename = `${manifestId}.ndjson`;
     const items = await ManifestFileStorage.readAllItems(manifestId);
     let updated = false;
 
@@ -126,14 +104,16 @@ export class ManifestFileStorage {
 
     if (updated) {
       const lines = items.map(i => JSON.stringify(i)).join('\n') + '\n';
-      await fs.promises.writeFile(filePath, lines, 'utf8');
+      await defaultStorageProvider.write(filename, lines);
     }
   }
 
   public static async deleteManifestFile(manifestId: string): Promise<void> {
-    const filePath = ManifestFileStorage.getFilePath(manifestId);
-    if (fs.existsSync(filePath)) {
-      await fs.promises.unlink(filePath).catch(() => {});
+    const filename = `${manifestId}.ndjson`;
+    try {
+      await defaultStorageProvider.delete(filename);
+    } catch (err: any) {
+      console.warn(`[ManifestFileStorage] Non-fatal deletion warning for ${filename}:`, err.message);
     }
   }
 }

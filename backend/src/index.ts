@@ -32,6 +32,8 @@ import dns from 'dns';
 import { promisify } from 'util';
 import { prisma, pool, validateDatabaseSchema, performWriteDiagnostics, getDatabaseConnectionInfo } from './utils/database';
 
+import { StorageInitializer } from './utils/storage/StorageInitializer';
+
 const dnsLookup = promisify(dns.lookup);
 
 async function bootstrap() {
@@ -39,6 +41,9 @@ async function bootstrap() {
   logger.info(`Environment: ${config.NODE_ENV}`);
   logger.info(`Node version: ${process.version}`);
   logger.info(`Listening address: 0.0.0.0:${config.PORT}`);
+
+  // 0. Storage Provider Initialization & Diagnostics Check
+  await StorageInitializer.initializeStorage();
 
   // 1. Environment & Database Diagnostic Check
   const dbInfo = getDatabaseConnectionInfo();

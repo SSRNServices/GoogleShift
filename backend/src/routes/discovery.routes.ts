@@ -236,21 +236,28 @@ router.post('/retry', requireUserAuth, async (req: Request, res: Response) => {
       return res.status(404).json({ code: 'INVALID_SESSION', message: 'Migration session not found' });
     }
 
-    const existingJobs = await prisma.discoveryJob.findMany({ where: { sessionId } });
-    for (const oldJob of existingJobs) {
-      console.log(`[DISCOVERY RETRY] Purging old job ${oldJob.id} (manifestId: ${oldJob.manifestId})...`);
-      if (oldJob.manifestId) {
-        const { ManifestFileStorage } = await import('../utils/ManifestFileStorage');
-        await ManifestFileStorage.deleteManifestFile(oldJob.manifestId);
-        await prisma.migrationManifest.deleteMany({ where: { jobId: oldJob.manifestId } }).catch(() => {});
-        await prisma.scanSummary.deleteMany({ where: { manifestId: oldJob.manifestId } }).catch(() => {});
-      }
-      await prisma.discoveryJob.delete({ where: { id: oldJob.id } }).catch(() => {});
-    }
-
-    const effectiveItemsParam = itemsParam || session.sourceFolderId ? `${session.sourceFolderId}:folder` : 'root:folder';
+    const effectiveItemsParam = itemsParam || (session.sourceFolderId ? `${session.sourceFolderId}:folder` : 'root:folder');
     const newJobId = uuidv4();
     const newManifestId = `manifest_scan_${Date.now()}`;
+
+    // Background best-effort cleanup of previous job artifacts
+    setImmediate(async () => {
+      try {
+        const existingJobs = await prisma.discoveryJob.findMany({ where: { sessionId } });
+        for (const oldJob of existingJobs) {
+          console.log(`[DISCOVERY RETRY] Asynchronously purging old job ${oldJob.id} (manifestId: ${oldJob.manifestId})...`);
+          if (oldJob.manifestId) {
+            const { ManifestFileStorage } = await import('../utils/ManifestFileStorage');
+            await ManifestFileStorage.deleteManifestFile(oldJob.manifestId).catch((err) => console.warn(`[DISCOVERY RETRY] Non-fatal file delete warning: ${err.message}`));
+            await prisma.migrationManifest.deleteMany({ where: { jobId: oldJob.manifestId } }).catch(() => {});
+            await prisma.scanSummary.deleteMany({ where: { manifestId: oldJob.manifestId } }).catch(() => {});
+          }
+          await prisma.discoveryJob.delete({ where: { id: oldJob.id } }).catch(() => {});
+        }
+      } catch (cleanupErr: any) {
+        console.warn('[DISCOVERY RETRY] Non-fatal background cleanup warning:', cleanupErr.message);
+      }
+    });
 
     console.log(`[DISCOVERY RETRY] Creating fresh DiscoveryJob ${newJobId} with manifestId=${newManifestId}...`);
     const newJob = await prisma.discoveryJob.create({
