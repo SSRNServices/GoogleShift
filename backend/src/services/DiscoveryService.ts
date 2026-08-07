@@ -240,44 +240,83 @@ export class DiscoveryService {
     console.log(`- Total Bytes: ${(totalBytes / 1e9).toFixed(3)} GB`);
     console.log(`==================================================\n`);
 
-    await onProgress('MANIFEST_UPDATED', { message: 'Analyzing destination storage...', googleRequests: engine.apiRequests, totalFolders, totalFiles, totalBytes });
+    await onProgress('MANIFEST_UPDATED', { message: 'Analyzing destination storage & building summary...', googleRequests: engine.apiRequests, totalFolders, totalFiles, totalBytes });
     
-    // Analyze Storage Requirements
-    const storageAnalysis = await StorageAnalyzer.analyzeStorage(userId, totalBytes);
-    
-    if (!storageAnalysis.sufficient) {
-       warnings.push(...storageAnalysis.warnings.map(w => ({ type: 'STORAGE_EXHAUSTION', message: w })));
+    let storageAnalysis = {
+      limit: 0,
+      used: 0,
+      remaining: 0,
+      sufficient: true,
+      warnings: [] as string[],
+      estimatedTimeSeconds: Math.ceil(totalBytes / (25 * 1024 * 1024))
+    };
+
+    try {
+      console.log(`[DISCOVERY] Executing StorageAnalyzer for userId=${userId}...`);
+      const res = await StorageAnalyzer.analyzeStorage(userId, totalBytes);
+      storageAnalysis = {
+        limit: res.limit || 0,
+        used: res.used || 0,
+        remaining: res.remaining || 0,
+        sufficient: res.sufficient,
+        warnings: res.warnings || [],
+        estimatedTimeSeconds: res.estimatedTimeSeconds || Math.ceil(totalBytes / (25 * 1024 * 1024))
+      };
+      if (!storageAnalysis.sufficient) {
+        warnings.push(...storageAnalysis.warnings.map(w => ({ type: 'STORAGE_EXHAUSTION', message: w })));
+      }
+      console.log(`[DISCOVERY] Storage analysis complete.`);
+    } catch (storageErr: any) {
+      console.warn(`[DISCOVERY] StorageAnalyzer error (non-fatal):`, storageErr.message);
     }
 
-    // Persist new Summary tables idempotently
-    await prisma.scanSummary.upsert({
-      where: { manifestId },
-      create: {
-        manifestId,
-        totalFolders,
-        totalFiles,
-        totalBytes,
-        destinationStorageLimit: storageAnalysis.limit,
-        destinationStorageUsed: storageAnalysis.used,
-        estimatedTimeSeconds: storageAnalysis.estimatedTimeSeconds,
-        largestFile,
-        mimeStats: {
-          create: mimeStats
-        },
-        warnings: {
-          create: warnings
-        }
-      },
-      update: {
-        totalFolders,
-        totalFiles,
-        totalBytes,
-        destinationStorageLimit: storageAnalysis.limit,
-        destinationStorageUsed: storageAnalysis.used,
-        estimatedTimeSeconds: storageAnalysis.estimatedTimeSeconds,
-        largestFile
+    try {
+      console.log(`[DISCOVERY] Persisting ScanSummary to DB for manifestId=${manifestId}...`);
+      // Delete existing relations to avoid P2002 relation constraint conflicts on upsert
+      const existingSummary = await prisma.scanSummary.findUnique({ where: { manifestId } });
+      if (existingSummary) {
+        await prisma.mimeStats.deleteMany({ where: { summaryId: existingSummary.id } }).catch(() => {});
+        await prisma.scanWarning.deleteMany({ where: { summaryId: existingSummary.id } }).catch(() => {});
       }
-    });
+
+      await prisma.scanSummary.upsert({
+        where: { manifestId },
+        create: {
+          manifestId,
+          totalFolders,
+          totalFiles,
+          totalBytes,
+          destinationStorageLimit: storageAnalysis.limit,
+          destinationStorageUsed: storageAnalysis.used,
+          estimatedTimeSeconds: storageAnalysis.estimatedTimeSeconds,
+          largestFile,
+          mimeStats: {
+            create: mimeStats
+          },
+          warnings: {
+            create: warnings
+          }
+        },
+        update: {
+          totalFolders,
+          totalFiles,
+          totalBytes,
+          destinationStorageLimit: storageAnalysis.limit,
+          destinationStorageUsed: storageAnalysis.used,
+          estimatedTimeSeconds: storageAnalysis.estimatedTimeSeconds,
+          largestFile,
+          mimeStats: {
+            create: mimeStats
+          },
+          warnings: {
+            create: warnings
+          }
+        }
+      });
+      console.log(`[DISCOVERY] ScanSummary persisted successfully.`);
+    } catch (summaryErr: any) {
+      console.error(`[DISCOVERY] Error persisting ScanSummary to DB (non-fatal):`, summaryErr.message);
+    }
 
     const finalSummary = {
        scanStatus: 'Completed' as const,
@@ -296,7 +335,7 @@ export class DiscoveryService {
        largestFile
     };
 
-    console.log(`[DISCOVERY] Discovery Finished successfully for manifestId=${manifestId}`);
+    console.log(`[DISCOVERY] Discovery Finished successfully for manifestId=${manifestId}. Emitting SCAN_COMPLETED...`);
     await onProgress('SCAN_COMPLETED', finalSummary);
     return finalSummary;
   }

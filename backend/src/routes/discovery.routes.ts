@@ -70,7 +70,7 @@ const formatDiscoveryResponse = (job: any, extraMessage?: string) => {
   });
 };
 
-const autoHealFinalizingJob = async <T extends { id: string; state: string; manifestId?: string | null; sessionId?: string | null }>(job: T): Promise<T> => {
+const autoHealFinalizingJob = async <T extends { id: string; state: string; manifestId?: string | null; sessionId?: string | null; lastHeartbeat?: Date | null; startedAt?: Date | null }>(job: T): Promise<T> => {
   if (!job || job.state !== 'FINALIZING' || !job.manifestId) return job;
   try {
     const summary = await prisma.scanSummary.findUnique({ where: { manifestId: job.manifestId } });
@@ -87,6 +87,64 @@ const autoHealFinalizingJob = async <T extends { id: string; state: string; mani
         }).catch(() => {});
       }
       return updatedJob as unknown as T;
+    }
+
+    // Fallback Auto-Healing: Check if manifest items exist and heartbeat has elapsed (> 10 seconds)
+    const lastHeartbeatMs = job.lastHeartbeat ? new Date(job.lastHeartbeat).getTime() : (job.startedAt ? new Date(job.startedAt).getTime() : 0);
+    const heartbeatAgeMs = Date.now() - lastHeartbeatMs;
+
+    if (heartbeatAgeMs > 10000) {
+      const manifestCount = await prisma.migrationManifest.count({ where: { jobId: job.manifestId } });
+      if (manifestCount > 0) {
+        console.log(`[DISCOVERY AUTO-HEAL] Computing manifest aggregates for stale FINALIZING job ${job.id} (${manifestCount} items)...`);
+        const folderCount = await prisma.migrationManifest.count({ where: { jobId: job.manifestId, isFolder: true } });
+        const fileCount = manifestCount - folderCount;
+        const sumResult = await prisma.migrationManifest.aggregate({
+          where: { jobId: job.manifestId },
+          _sum: { size: true }
+        });
+        const totalBytes = Number(sumResult._sum.size || BigInt(0));
+
+        await prisma.scanSummary.upsert({
+          where: { manifestId: job.manifestId },
+          create: {
+            manifestId: job.manifestId,
+            totalFolders: folderCount,
+            totalFiles: fileCount,
+            totalBytes,
+            destinationStorageLimit: 0,
+            destinationStorageUsed: 0,
+            estimatedTimeSeconds: Math.ceil(totalBytes / (25 * 1024 * 1024)),
+            largestFile: 0
+          },
+          update: {
+            totalFolders: folderCount,
+            totalFiles: fileCount,
+            totalBytes
+          }
+        }).catch(() => {});
+
+        console.log(`[DISCOVERY AUTO-HEAL] Successfully auto-healed and promoted job ${job.id} to COMPLETED.`);
+        const updatedJob = await prisma.discoveryJob.update({
+          where: { id: job.id },
+          data: {
+            state: 'COMPLETED',
+            completedAt: new Date(),
+            foldersFound: folderCount,
+            filesFound: fileCount,
+            bytesFound: BigInt(totalBytes)
+          }
+        });
+
+        if (job.sessionId) {
+          await prisma.migrationSession.update({
+            where: { id: job.sessionId },
+            data: { discoveryStatus: 'COMPLETED', manifestId: job.manifestId }
+          }).catch(() => {});
+        }
+
+        return updatedJob as unknown as T;
+      }
     }
   } catch (err: any) {
     console.warn('[DISCOVERY AUTO-HEAL] Non-fatal check error:', err.message);
