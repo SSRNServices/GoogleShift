@@ -16,6 +16,13 @@ export const migrationApi = {
     });
   },
 
+  async retryDiscovery(sourceId: string, sessionId: string) {
+    return apiClient('/api/discovery/retry', {
+      method: 'POST',
+      body: JSON.stringify({ itemsParam: `${sourceId}:folder`, sessionId })
+    });
+  },
+
   async getDiscoveryStatus(jobId: string) {
     return apiClient(`/api/discovery/${jobId}/status`);
   },

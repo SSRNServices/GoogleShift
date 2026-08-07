@@ -184,6 +184,43 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
     }
   }, [sourceId, sessionId, processIncomingData]);
 
+  const retryDiscoveryProcess = useCallback(async () => {
+    setInitError(null);
+    setCompleted(false);
+    setFinalSummary(null);
+    setStats({
+      status: 'QUEUED',
+      folders: 0,
+      files: 0,
+      bytes: 0,
+      googleRequests: 0,
+      foldersPerSec: 0,
+      filesPerSec: 0,
+      queueDepth: 0,
+      activeWorkers: 0,
+      message: 'Launching fresh discovery job...',
+      elapsed: 0
+    });
+
+    try {
+      console.log(`[DiscoveryScanner] Requesting RETRY for sourceId=${sourceId}, sessionId=${sessionId}`);
+      const job = await migrationApi.retryDiscovery(sourceId, sessionId);
+      console.log('[DiscoveryScanner] Retry Discovery API Response:', job);
+
+      const activeJobId = job.jobId || job.id;
+      const initialDone = processIncomingData(job as Record<string, unknown>);
+
+      if (!initialDone && activeJobId) {
+        setJobId(activeJobId);
+      }
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : 'Failed to retry discovery';
+      console.error(`[DiscoveryScanner] retryDiscovery failed:`, errMsg);
+      setInitError(errMsg);
+      onErrorRef.current(errMsg);
+    }
+  }, [sourceId, sessionId, processIncomingData]);
+
   useEffect(() => {
     const timer = setTimeout(() => {
       startDiscoveryProcess();
@@ -311,7 +348,7 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
         <p className="text-sm text-red-600 dark:text-red-400 mb-4">{initError}</p>
         <button
           onClick={() => {
-            startDiscoveryProcess();
+            retryDiscoveryProcess();
           }}
           className="inline-flex items-center px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-medium text-sm rounded-md transition-colors shadow"
         >

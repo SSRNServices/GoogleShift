@@ -216,6 +216,77 @@ router.post('/discard', requireUserAuth, async (req: Request, res: Response) => 
   }
 });
 
+router.post('/retry', requireUserAuth, async (req: Request, res: Response) => {
+  const startTime = Date.now();
+  const userId = (req as any).user?.id || 'unknown';
+  const { sessionId, itemsParam } = req.body || {};
+
+  console.log(`[DISCOVERY RETRY] Received retry request for userId=${userId}, sessionId=${sessionId}`);
+
+  try {
+    if (!sessionId) {
+      return res.status(400).json({ code: 'INVALID_REQUEST', message: 'Missing sessionId' });
+    }
+
+    const session = await prisma.migrationSession.findUnique({
+      where: { id: sessionId, ownerId: userId }
+    });
+
+    if (!session) {
+      return res.status(404).json({ code: 'INVALID_SESSION', message: 'Migration session not found' });
+    }
+
+    const existingJobs = await prisma.discoveryJob.findMany({ where: { sessionId } });
+    for (const oldJob of existingJobs) {
+      console.log(`[DISCOVERY RETRY] Purging old job ${oldJob.id} (manifestId: ${oldJob.manifestId})...`);
+      if (oldJob.manifestId) {
+        const { ManifestFileStorage } = await import('../utils/ManifestFileStorage');
+        await ManifestFileStorage.deleteManifestFile(oldJob.manifestId);
+        await prisma.migrationManifest.deleteMany({ where: { jobId: oldJob.manifestId } }).catch(() => {});
+        await prisma.scanSummary.deleteMany({ where: { manifestId: oldJob.manifestId } }).catch(() => {});
+      }
+      await prisma.discoveryJob.delete({ where: { id: oldJob.id } }).catch(() => {});
+    }
+
+    const effectiveItemsParam = itemsParam || session.sourceFolderId ? `${session.sourceFolderId}:folder` : 'root:folder';
+    const newJobId = uuidv4();
+    const newManifestId = `manifest_scan_${Date.now()}`;
+
+    console.log(`[DISCOVERY RETRY] Creating fresh DiscoveryJob ${newJobId} with manifestId=${newManifestId}...`);
+    const newJob = await prisma.discoveryJob.create({
+      data: {
+        id: newJobId,
+        ownerId: userId,
+        sessionId,
+        manifestId: newManifestId,
+        itemsParam: effectiveItemsParam,
+        state: 'QUEUED',
+        foldersFound: 0,
+        filesFound: 0,
+        bytesFound: BigInt(0),
+        lastHeartbeat: new Date(),
+        startedAt: new Date()
+      }
+    });
+
+    await prisma.migrationSession.update({
+      where: { id: sessionId },
+      data: { discoveryStatus: 'RUNNING', manifestId: newManifestId }
+    }).catch(() => {});
+
+    console.log(`[DISCOVERY RETRY] Launching background discovery worker for fresh jobId=${newJob.id}...`);
+    discoveryWorker.executeDiscovery(newJob).catch(err => {
+      console.error(`[DISCOVERY RETRY] Worker launch failed:`, err.message, err.stack);
+    });
+
+    formatAuditLog('RETRY_LAUNCHED', { newJobId, sessionId, userId, elapsed: Date.now() - startTime });
+    return res.status(200).json(formatDiscoveryResponse(newJob, 'Fresh discovery retry job queued successfully.'));
+  } catch (error: any) {
+    console.error(`[DISCOVERY RETRY] Retry execution failed:`, error.message, error.stack);
+    return res.status(500).json({ code: 'RETRY_FAILED', message: error.message || 'Failed to retry discovery' });
+  }
+});
+
 router.post('/start', requireUserAuth, async (req: Request, res: Response) => {
   const startTime = Date.now();
   const userId = (req as any).user?.id || 'unknown';
