@@ -48,14 +48,14 @@ export function validateConfig(): Config {
   const result = envSchema.safeParse(process.env);
 
   if (!result.success) {
-    console.error('\n❌ Invalid Environment Configuration:');
+    console.error('\n❌ Missing required environment variables:');
     const formattedErrors = result.error.format();
     for (const [key, val] of Object.entries(formattedErrors)) {
       if (key !== '_errors' && val && '_errors' in val && (val._errors as string[]).length > 0) {
         console.error(`  - ${key}: ${(val._errors as string[]).join(', ')}`);
       }
     }
-    console.error('\nPlease check your .env file or environment settings before starting the server.\n');
+    console.error('\nPlease verify your .env file or environment settings before starting the server.\n');
     process.exit(1);
   }
 

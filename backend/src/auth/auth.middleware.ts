@@ -2,8 +2,9 @@ import { Request, Response, NextFunction } from 'express';
 import { tokenStore, AccountType } from './token.store';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../utils/database';
+import { getConfig } from '../config/config';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_for_development';
+const getJwtSecret = () => getConfig().JWT_SECRET;
 
 export const requireUserAuth = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -20,7 +21,7 @@ export const requireUserAuth = async (req: Request, res: Response, next: NextFun
       return res.status(401).json({ authenticated: false, error: 'Unauthorized', message: 'Missing token.' });
     }
 
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    const decoded = jwt.verify(token, getJwtSecret()) as any;
     
     const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
     if (!user || user.status === 'PENDING' || !user.isActive) {
@@ -53,7 +54,7 @@ export const requireUserAuthBrowser = async (req: Request, res: Response, next: 
       return res.redirect(`${frontendUrl}/login?error=auth_required`);
     }
 
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    const decoded = jwt.verify(token, getJwtSecret()) as any;
     const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
     if (!user || user.status === 'PENDING' || !user.isActive) {
       const frontendUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? 'https://migration.ssrnservices.in' : 'http://localhost:5173');

@@ -6,9 +6,10 @@ import { AccountType } from './token.store';
 import { prisma } from '../utils/database';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
+import { getConfig } from '../config/config';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_for_development';
-const REFRESH_SECRET = process.env.REFRESH_SECRET || 'fallback_refresh_secret';
+const getJwtSecret = () => getConfig().JWT_SECRET;
+const getRefreshSecret = () => getConfig().JWT_SECRET;
 
 export class AuthController {
   
@@ -98,7 +99,7 @@ export class AuthController {
         return;
       }
       
-      const decoded = jwt.verify(refreshToken, REFRESH_SECRET) as any;
+      const decoded = jwt.verify(refreshToken, getRefreshSecret()) as any;
       const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
       
       if (!user || user.status !== 'ACTIVE' || !user.isActive) {
@@ -125,8 +126,8 @@ export class AuthController {
 
   private issueTokens(user: any, res: Response) {
     const payload = { userId: user.id, email: user.email, role: user.role };
-    const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: '1h' });
-    const refreshToken = jwt.sign(payload, REFRESH_SECRET, { expiresIn: '7d' });
+    const accessToken = jwt.sign(payload, getJwtSecret(), { expiresIn: '1h' });
+    const refreshToken = jwt.sign(payload, getRefreshSecret(), { expiresIn: '7d' });
     
     // Omit passwordHash before sending
     const { passwordHash, ...userWithoutPassword } = user;
@@ -240,7 +241,7 @@ export class AuthController {
 
         if (!userId && req.cookies?.accessToken) {
           try {
-            const decodedJwt = jwt.verify(req.cookies.accessToken, JWT_SECRET) as any;
+            const decodedJwt = jwt.verify(req.cookies.accessToken, getJwtSecret()) as any;
             if (decodedJwt?.userId) {
               userId = decodedJwt.userId;
               console.log(`[OAuthAudit] SESSION_FOUND | Extracted userId ${userId} from accessToken cookie`);
@@ -323,8 +324,8 @@ export class AuthController {
 
       try {
         const payload = { userId: user.id, email: user.email, role: user.role };
-        const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: '1h' });
-        const refreshToken = jwt.sign(payload, REFRESH_SECRET, { expiresIn: '7d' });
+        const accessToken = jwt.sign(payload, getJwtSecret(), { expiresIn: '1h' });
+        const refreshToken = jwt.sign(payload, getRefreshSecret(), { expiresIn: '7d' });
         const domain = process.env.COOKIE_DOMAIN || (process.env.NODE_ENV === 'production' ? '.migration.ssrnservices.in' : undefined);
 
         const cookieOptions = {
