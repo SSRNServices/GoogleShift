@@ -86,7 +86,7 @@ for (const name of envVarNames) {
 console.log(`=> Selected Connection Variable: ${selectedVarName || 'NONE'}`);
 console.log('==================================================\n');
 
-const connectionString = connectionStringRaw.replace(/\?sslmode=require|&sslmode=require/, '');
+const connectionString = connectionStringRaw;
 
 // Cap pg.Pool max connections at 10 to stay safely below Supabase/PG limits
 export const pool = new Pool({

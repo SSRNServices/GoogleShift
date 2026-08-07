@@ -6,6 +6,255 @@ datasource db {
   provider = "postgresql"
 }
 
+model User {
+  id                String             @id @default(uuid())
+  googleId          String?            @unique
+  email             String             @unique
+  name              String
+  avatar            String?
+  role              Role               @default(USER)
+  status            Status             @default(PENDING)
+  isActive          Boolean            @default(true)
+  passwordHash      String?
+  createdBy         String?
+  timezone          String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  lastLogin         DateTime?
+  activityLogs      ActivityLog[]
+  auditLogs         AuditLog[]
+  discoveryJobs     DiscoveryJob[]
+  migrations        MigrationJob[]
+  migrationSessions MigrationSession[]
+  oauthAccounts     OAuthAccount[]
+
+  @@index([email])
+  @@index([googleId])
+  @@index([createdAt])
+}
+
+model OAuthAccount {
+  id                String    @id @default(uuid())
+  userId            String
+  provider          String
+  providerAccountId String
+  email             String?
+  googleAccountId   String?
+  accessToken       String?
+  refreshToken      String?
+  expiresAt         DateTime?
+  scopes            String?
+  tokenVersion      Int       @default(1)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model DiscoveryJob {
+  id             String            @id
+  ownerId        String
+  sessionId      String?           @unique
+  manifestId     String            @unique
+  state          DiscoveryState    @default(QUEUED)
+  sourceEmail    String?
+  itemsParam     String?
+  foldersFound   Int               @default(0)
+  filesFound     Int               @default(0)
+  bytesFound     BigInt            @default(0)
+  currentFolder  String?
+  currentFile    String?
+  checkpointData String?
+  lastHeartbeat  DateTime?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  cancelledAt    DateTime?
+  owner          User              @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  session        MigrationSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId])
+  @@index([state])
+}
+
+model MigrationJob {
+  id                  String            @id
+  ownerId             String
+  sessionId           String?
+  manifestId          String?
+  state               MigrationState    @default(QUEUED)
+  sourceEmail         String?
+  destinationEmail    String?
+  sourceFolderId      String?
+  destinationFolderId String?
+  totalFolders        Int               @default(0)
+  totalFiles          Int               @default(0)
+  completedFiles      Int               @default(0)
+  failedFiles         Int               @default(0)
+  totalBytes          BigInt            @default(0)
+  transferredBytes    BigInt            @default(0)
+  speed               Float             @default(0)
+  eta                 Float             @default(0)
+  currentAction       String?
+  currentFile         String?
+  currentFolder       String?
+  startedAt           DateTime?
+  completedAt         DateTime?
+  cancelledAt         DateTime?
+  items               MigrationItem[]
+  owner               User              @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  session             MigrationSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  logs                MigrationLog[]
+
+  @@index([ownerId])
+  @@index([state])
+}
+
+model MigrationItem {
+  id       String       @id @default(uuid())
+  jobId    String
+  fileId   String
+  fileName String?
+  mimeType String?
+  status   ItemStatus   @default(PENDING)
+  size     BigInt       @default(0)
+  error    String?
+  job      MigrationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, fileId])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  userId      String
+  action      String
+  description String?
+  ip          String?
+  browser     String?
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ActivityLog {
+  id        String   @id @default(uuid())
+  userId    String
+  title     String
+  message   String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model MigrationLog {
+  id        String       @id @default(uuid())
+  jobId     String
+  level     String       @default("info")
+  message   String
+  metadata  Json?
+  createdAt DateTime     @default(now())
+  job       MigrationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+  @@index([createdAt])
+}
+
+model SystemSetting {
+  id    String @id @default(uuid())
+  key   String @unique
+  value String
+}
+
+model session {
+  sid    String   @id @db.VarChar
+  sess   Json     @db.Json
+  expire DateTime @db.Timestamp(6)
+}
+
+model MigrationManifest {
+  id               String
+  jobId            String
+  sourceId         String?
+  sourceParentId   String?
+  destParentId     String?
+  createdDestId    String?
+  name             String?
+  mimeType         String?
+  size             BigInt  @default(0)
+  originalId       String?
+  originalMimeType String?
+  status           String  @default("PENDING")
+  isFolder         Boolean @default(false)
+  depth            Int     @default(0)
+  retryCount       Int     @default(0)
+
+  @@id([jobId, id])
+  @@index([jobId, status])
+  @@index([jobId, sourceParentId])
+}
+
+model ScanSummary {
+  id                      String        @id @default(uuid())
+  manifestId              String        @unique
+  totalFolders            Int           @default(0)
+  totalFiles              Int           @default(0)
+  totalBytes              BigInt        @default(0)
+  destinationStorageLimit BigInt        @default(0)
+  destinationStorageUsed  BigInt        @default(0)
+  estimatedTimeSeconds    Int           @default(0)
+  largestFile             BigInt        @default(0)
+  createdAt               DateTime      @default(now())
+  mimeStats               MimeStats?
+  warnings                ScanWarning[]
+}
+
+model MimeStats {
+  id           String      @id @default(uuid())
+  summaryId    String      @unique
+  googleDocs   Int         @default(0)
+  googleSheets Int         @default(0)
+  googleSlides Int         @default(0)
+  pdf          Int         @default(0)
+  images       Int         @default(0)
+  videos       Int         @default(0)
+  archives     Int         @default(0)
+  unsupported  Int         @default(0)
+  duplicates   Int         @default(0)
+  other        Int         @default(0)
+  summary      ScanSummary @relation(fields: [summaryId], references: [id], onDelete: Cascade)
+}
+
+model ScanWarning {
+  id        String      @id @default(uuid())
+  summaryId String
+  type      String
+  message   String
+  fileId    String?
+  fileName  String?
+  summary   ScanSummary @relation(fields: [summaryId], references: [id], onDelete: Cascade)
+}
+
+model MigrationSession {
+  id                   String         @id @default(uuid())
+  ownerId              String
+  sourceEmail          String?
+  destinationEmail     String?
+  sourceAccountId      String?
+  destinationAccountId String?
+  sourceFolderId       String?
+  destinationFolderId  String?
+  manifestId           String?
+  discoveryStatus      String         @default("PENDING")
+  migrationStatus      String         @default("PENDING")
+  statistics           Json?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+  discoveryJob         DiscoveryJob?
+  migrationJobs        MigrationJob[]
+  owner                User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId])
+}
+
 enum Role {
   SUPER_ADMIN
   ADMIN
@@ -49,269 +298,4 @@ enum ItemStatus {
   UPLOADING
   SUCCESS
   FAILED
-}
-
-model User {
-  id          String   @id @default(uuid())
-  googleId    String?  @unique
-  email       String   @unique
-  name        String
-  avatar      String?
-  role        Role     @default(USER)
-  status      Status   @default(PENDING)
-  isActive    Boolean  @default(true)
-  passwordHash String?
-  createdBy   String?
-  timezone    String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  lastLogin   DateTime?
-
-  oauthAccounts OAuthAccount[]
-  migrations        MigrationJob[]
-  discoveryJobs     DiscoveryJob[]
-  migrationSessions MigrationSession[]
-  auditLogs     AuditLog[]
-  activityLogs  ActivityLog[]
-
-  @@index([email])
-  @@index([googleId])
-  @@index([createdAt])
-}
-
-model OAuthAccount {
-  id                String   @id @default(uuid())
-  userId            String
-  provider          String
-  providerAccountId String
-  email             String?
-  googleAccountId   String?
-  accessToken       String?
-  refreshToken      String?
-  expiresAt         DateTime?
-  scopes            String?
-  tokenVersion      Int      @default(1)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([provider, providerAccountId])
-  @@index([userId])
-}
-
-model DiscoveryJob {
-  id                  String   @id
-  ownerId             String
-  sessionId           String?  @unique
-  manifestId          String   @unique
-  state               DiscoveryState @default(QUEUED)
-  sourceEmail         String?
-  itemsParam          String?
-  foldersFound        Int      @default(0)
-  filesFound          Int      @default(0)
-  bytesFound          BigInt   @default(0)
-  currentFolder       String?
-  currentFile         String?
-  checkpointData      String?
-  lastHeartbeat       DateTime?
-  
-  startedAt           DateTime?
-  completedAt         DateTime?
-  cancelledAt         DateTime?
-
-  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  session MigrationSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  
-  @@index([ownerId])
-  @@index([state])
-}
-
-model MigrationJob {
-  id                  String   @id
-  ownerId             String
-  sessionId           String?
-  manifestId          String?
-  state               MigrationState @default(QUEUED)
-  sourceEmail         String?
-  destinationEmail    String?
-  sourceFolderId      String?
-  destinationFolderId String?
-  totalFolders        Int      @default(0)
-  totalFiles          Int      @default(0)
-  completedFiles      Int      @default(0)
-  failedFiles         Int      @default(0)
-  
-  totalBytes          BigInt   @default(0)
-  transferredBytes    BigInt   @default(0)
-  
-  speed               Float    @default(0)
-  eta                 Float    @default(0)
-  currentAction       String?
-  currentFile         String?
-  currentFolder       String?
-  
-  startedAt           DateTime?
-  completedAt         DateTime?
-  cancelledAt         DateTime?
-
-  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  session MigrationSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  items MigrationItem[]
-  logs  MigrationLog[]
-
-  @@index([ownerId])
-  @@index([state])
-}
-
-model MigrationItem {
-  id        String   @id @default(uuid())
-  jobId     String
-  fileId    String
-  fileName  String?
-  mimeType  String?
-  status    ItemStatus @default(PENDING)
-  size      BigInt   @default(0)
-  error     String?
-
-  job MigrationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
-
-  @@unique([jobId, fileId])
-}
-
-model AuditLog {
-  id          String   @id @default(uuid())
-  userId      String
-  action      String
-  description String?
-  ip          String?
-  browser     String?
-  createdAt   DateTime @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-}
-
-model ActivityLog {
-  id        String   @id @default(uuid())
-  userId    String
-  title     String
-  message   String
-  createdAt DateTime @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-}
-
-model MigrationLog {
-  id        String   @id @default(uuid())
-  jobId     String
-  level     String   @default("info")
-  message   String
-  metadata  Json?
-  createdAt DateTime @default(now())
-
-  job MigrationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
-
-  @@index([jobId])
-  @@index([createdAt])
-}
-
-model SystemSetting {
-  id    String @id @default(uuid())
-  key   String @unique
-  value String
-}
-
-model session {
-  sid    String   @id @db.VarChar
-  sess   Json     @db.Json
-  expire DateTime @db.Timestamp(6)
-}
-
-model MigrationManifest {
-  id                String
-  jobId             String
-  sourceId          String?
-  sourceParentId    String?
-  destParentId      String?
-  createdDestId     String?
-  name              String?
-  mimeType          String?
-  size              BigInt   @default(0)
-  originalId        String?
-  originalMimeType  String?
-  status            String   @default("PENDING")
-  isFolder          Boolean  @default(false)
-  depth             Int      @default(0)
-  retryCount        Int      @default(0)
-
-  @@id([jobId, id])
-  @@index([jobId, status])
-  @@index([jobId, sourceParentId])
-}
-
-model ScanSummary {
-  id                      String   @id @default(uuid())
-  manifestId              String   @unique
-  totalFolders            Int      @default(0)
-  totalFiles              Int      @default(0)
-  totalBytes              BigInt   @default(0)
-  destinationStorageLimit BigInt   @default(0)
-  destinationStorageUsed  BigInt   @default(0)
-  estimatedTimeSeconds    Int      @default(0)
-  largestFile             BigInt   @default(0)
-  createdAt               DateTime @default(now())
-  
-  mimeStats               MimeStats?
-  warnings                ScanWarning[]
-}
-
-model MimeStats {
-  id           String @id @default(uuid())
-  summaryId    String @unique
-  googleDocs   Int    @default(0)
-  googleSheets Int    @default(0)
-  googleSlides Int    @default(0)
-  pdf          Int    @default(0)
-  images       Int    @default(0)
-  videos       Int    @default(0)
-  archives     Int    @default(0)
-  unsupported  Int    @default(0)
-  duplicates   Int    @default(0)
-  other        Int    @default(0)
-
-  summary ScanSummary @relation(fields: [summaryId], references: [id], onDelete: Cascade)
-}
-
-model ScanWarning {
-  id          String @id @default(uuid())
-  summaryId   String
-  type        String // e.g. "LARGE_FILE", "UNSUPPORTED_MIME", "DUPLICATE_NAME"
-  message     String
-  fileId      String?
-  fileName    String?
-
-  summary ScanSummary @relation(fields: [summaryId], references: [id], onDelete: Cascade)
-}
-
-model MigrationSession {
-  id                  String   @id @default(uuid())
-  ownerId             String
-  sourceEmail         String?
-  destinationEmail    String?
-  sourceAccountId     String?
-  destinationAccountId String?
-  sourceFolderId      String?
-  destinationFolderId String?
-  manifestId          String?
-  discoveryStatus     String   @default("PENDING") // PENDING, RUNNING, COMPLETED, FAILED
-  migrationStatus     String   @default("PENDING") // PENDING, RUNNING, PAUSED, COMPLETED, FAILED
-  statistics          Json?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
-
-  owner               User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  discoveryJob        DiscoveryJob?
-  migrationJobs       MigrationJob[]
-
-  @@index([ownerId])
 }
