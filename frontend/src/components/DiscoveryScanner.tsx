@@ -342,18 +342,32 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
 
   if (initError) {
     return (
-      <div className="bg-red-50 dark:bg-red-900/20 p-6 rounded-lg border border-red-200 dark:border-red-800 text-center shadow-sm">
-        <AlertTriangle className="w-10 h-10 text-red-500 mx-auto mb-3 animate-bounce" />
-        <h3 className="text-lg font-semibold text-red-800 dark:text-red-300 mb-2">Discovery Phase Error</h3>
-        <p className="text-sm text-red-600 dark:text-red-400 mb-4">{initError}</p>
-        <button
-          onClick={() => {
-            retryDiscoveryProcess();
-          }}
-          className="inline-flex items-center px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-medium text-sm rounded-md transition-colors shadow"
-        >
-          <RefreshCw className="w-4 h-4 mr-2" /> Retry Discovery
-        </button>
+      <div className="bg-red-50 dark:bg-red-900/20 p-6 rounded-xl border border-red-200 dark:border-red-800 text-center shadow-sm max-w-xl mx-auto">
+        <AlertTriangle className="w-12 h-12 text-red-500 mx-auto mb-3 animate-bounce" />
+        <h3 className="text-xl font-bold text-red-900 dark:text-red-300 mb-2">Discovery Phase Error</h3>
+        <p className="text-sm font-mono bg-red-100 dark:bg-red-950/50 p-3 rounded-lg text-red-700 dark:text-red-300 mb-4 text-left border border-red-200 dark:border-red-900 overflow-x-auto">
+          {initError}
+        </p>
+
+        <div className="flex justify-center items-center space-x-3 mt-4">
+          <button
+            onClick={() => {
+              navigator.clipboard.writeText(`JobId: ${jobId || 'N/A'}\nError: ${initError}\nTimestamp: ${new Date().toISOString()}`);
+              alert('Error details copied to clipboard');
+            }}
+            className="inline-flex items-center px-4 py-2 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-medium text-sm rounded-lg transition-colors"
+          >
+            Copy Error Details
+          </button>
+          <button
+            onClick={() => {
+              retryDiscoveryProcess();
+            }}
+            className="inline-flex items-center px-5 py-2 bg-red-600 hover:bg-red-700 text-white font-medium text-sm rounded-lg transition-colors shadow-sm"
+          >
+            <RefreshCw className="w-4 h-4 mr-2" /> Retry Discovery
+          </button>
+        </div>
       </div>
     );
   }
