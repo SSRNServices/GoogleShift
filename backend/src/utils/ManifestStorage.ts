@@ -1,5 +1,5 @@
-// @ts-nocheck
 import { prisma } from './database';
+import { ManifestFileStorage } from './ManifestFileStorage';
 
 export interface ManifestItem {
   id: string;
@@ -24,34 +24,42 @@ export class ManifestStorage {
     // Handled by Prisma
   }
 
-  public static async saveManifestChunk(chunk: ManifestItem[]) {
+  public static async saveManifestChunk(chunk: ManifestItem[]): Promise<void> {
     if (chunk.length === 0) return;
-    const { RetryHelper } = await import('./retry');
+    const jobId = chunk[0].jobId;
     
-    await RetryHelper.withRetry(
-      `ManifestStorage.saveManifestChunk [${chunk.length} items]`,
-      () => prisma.migrationManifest.createMany({
-        data: chunk.map(item => ({
-          jobId: item.jobId,
-          id: item.id,
-          sourceId: item.sourceId,
-          sourceParentId: item.sourceParentId,
-          destParentId: item.destParentId,
-          createdDestId: item.createdDestId,
-          name: item.name,
-          mimeType: item.mimeType,
-          size: BigInt(item.size),
-          originalId: item.originalId,
-          originalMimeType: item.originalMimeType,
-          status: item.status,
-          isFolder: item.isFolder,
-          depth: item.depth || 0,
-          retryCount: item.retryCount || 0
-        })),
-        skipDuplicates: true
-      }),
-      (msg) => console.log(`[DB] ${msg}`)
-    );
+    // 1. Append all items (folders + files) to NDJSON stream file on disk
+    await ManifestFileStorage.appendChunk(jobId, chunk);
+
+    // 2. Persist ONLY folder items (isFolder: true) to PostgreSQL for fast parent/child hierarchy lookups
+    const folderItems = chunk.filter(item => item.isFolder);
+    if (folderItems.length > 0) {
+      const { RetryHelper } = await import('./retry');
+      await RetryHelper.withRetry(
+        `ManifestStorage.saveManifestChunk.folders [${folderItems.length} folders]`,
+        () => prisma.migrationManifest.createMany({
+          data: folderItems.map(item => ({
+            jobId: item.jobId,
+            id: item.id,
+            sourceId: item.sourceId,
+            sourceParentId: item.sourceParentId,
+            destParentId: item.destParentId,
+            createdDestId: item.createdDestId,
+            name: item.name,
+            mimeType: item.mimeType,
+            size: BigInt(item.size),
+            originalId: item.originalId,
+            originalMimeType: item.originalMimeType,
+            status: item.status,
+            isFolder: item.isFolder,
+            depth: item.depth || 0,
+            retryCount: item.retryCount || 0
+          })),
+          skipDuplicates: true
+        }),
+        (msg) => console.log(`[DB Folders] ${msg}`)
+      );
+    }
   }
 
   public static async saveManifest(items: ManifestItem[]) {
@@ -150,10 +158,14 @@ export class ManifestStorage {
       orderBy: { depth: 'asc' },
       take: limit
     });
-    return rows.map(row => ({
-      ...row,
-      size: Number(row.size)
-    })) as ManifestItem[];
+    if (rows.length > 0) {
+      return rows.map(row => ({
+        ...row,
+        size: Number(row.size)
+      })) as ManifestItem[];
+    }
+    // Fallback to streaming NDJSON file storage
+    return ManifestFileStorage.getPendingFiles(jobId, limit);
   }
 }
 

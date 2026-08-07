@@ -231,6 +231,12 @@ export function classifyError(e: any): 'retryable' | 'permanent' | 'unknown' {
   const code = e?.code ?? e?.cause?.code;
 
   if (
+    msg.includes('53100') ||
+    msg.includes('project size limit') ||
+    msg.includes('quota exceeded') ||
+    msg.includes('ENOSPC') ||
+    code === '53100' ||
+    code === 'ENOSPC' ||
     msg.includes('push() after EOF') ||
     msg.includes('ERR_STREAM_PUSH_AFTER_EOF') ||
     code === 'ERR_STREAM_PUSH_AFTER_EOF' ||

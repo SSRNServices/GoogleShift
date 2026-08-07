@@ -177,7 +177,10 @@ export class DiscoveryWorker {
       try {
         await prisma.discoveryJob.update({
            where: { id: job.id },
-           data: { state: 'FAILED' }
+           data: {
+             state: 'FAILED',
+             currentFolder: `Error: ${e.message}`
+           }
         });
       } catch (dbErr: any) {
         console.error(`[DISCOVERY] Failed to mark discovery job state as FAILED:`, dbErr.message);

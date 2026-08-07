@@ -219,10 +219,13 @@ export class DiscoveryService {
     const flushResults = await Promise.allSettled(flushPromises);
     const failedFlushes = flushResults.filter(r => r.status === 'rejected');
     if (failedFlushes.length > 0) {
-      console.warn(`[DISCOVERY] ${failedFlushes.length}/${flushPromises.length} DB manifest chunk flushes rejected with errors. Continuing finalization.`);
-    } else {
-      console.log(`[DISCOVERY] All ${flushPromises.length} DB manifest chunk flushes completed successfully.`);
+      const firstError = (failedFlushes[0] as PromiseRejectedResult).reason;
+      const errorMsg = firstError instanceof Error ? firstError.message : String(firstError);
+      console.error(`[DISCOVERY FATAL] ${failedFlushes.length}/${flushPromises.length} manifest batch flushes failed. Failing discovery job fast: ${errorMsg}`);
+      await onProgress('SCAN_FAILED', { error: `Manifest persistence failed: ${errorMsg}` });
+      throw new Error(`Manifest persistence failed: ${errorMsg}`);
     }
+    console.log(`[DISCOVERY] All ${flushPromises.length} DB/file manifest chunk flushes completed successfully.`);
 
     const totalElapsedSec = Math.max(0.1, (Date.now() - startTime) / 1000);
     const finalFoldersPerSec = Math.round((totalFolders / totalElapsedSec) * 10) / 10;
