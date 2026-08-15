@@ -60,9 +60,9 @@ FRONTEND_URL=https://googleshift.com
 JWT_SECRET=your_strong_random_jwt_secret_64chars
 SESSION_SECRET=your_strong_random_session_secret_64chars
 
-# Database & Supabase Connections
-DATABASE_URL=postgresql://postgres:password@aws-1-ap-northeast-2.pooler.supabase.com:5432/postgres
-DIRECT_URL=postgresql://postgres:password@aws-1-ap-northeast-2.pooler.supabase.com:5432/postgres
+# Database Connections (Self-Hosted PostgreSQL 18.4 container)
+DATABASE_URL=postgresql://googleshift:password@googleshift-db:5432/googleshift
+DIRECT_URL=postgresql://googleshift:password@googleshift-db:5432/googleshift
 
 # Google OAuth Credentials
 GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com

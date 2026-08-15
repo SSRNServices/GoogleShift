@@ -52,7 +52,7 @@ Populate `backend/.env` with your production keys:
 - Set `NODE_ENV=production`
 - Set `PORT=3100`
 - Set strong random values for `JWT_SECRET` and `SESSION_SECRET`
-- Supply `DATABASE_URL` (Supabase connection string)
+- Supply `DATABASE_URL` (Self-hosted PostgreSQL 18.4 connection string: `postgresql://googleshift:password@googleshift-db:5432/googleshift`)
 - Supply `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
 
 ---

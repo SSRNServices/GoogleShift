@@ -46,7 +46,7 @@ Edit `.env` and supply your database credentials and Google OAuth keys:
 ```env
 NODE_ENV=development
 PORT=3100
-DATABASE_URL="postgresql://postgres:password@localhost:5432/googleshift"
+DATABASE_URL="postgresql://googleshift:password@127.0.0.1:5434/googleshift"
 GOOGLE_CLIENT_ID="your-client-id"
 GOOGLE_CLIENT_SECRET="your-client-secret"
 GOOGLE_LOGIN_REDIRECT_URI="http://localhost:3100/auth/google/callback"
