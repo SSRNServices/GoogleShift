@@ -86,6 +86,9 @@ jobs:
 
             echo "[1/6] Updating deployment files on VPS..."
             git pull origin main || true
+            if [ -f "deploy/docker-compose.yml" ]; then
+              cp deploy/docker-compose.yml docker-compose.yml
+            fi
 
             echo "[2/6] Logging in to GitHub Container Registry..."
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.repository_owner }}" --password-stdin

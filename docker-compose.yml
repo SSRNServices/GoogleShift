@@ -6,7 +6,7 @@ services:
     image: ghcr.io/ssrnservices/googleshift-backend:latest
     restart: unless-stopped
     env_file:
-      - ./backend/.env
+      - .env
     ports:
       - "3100:3100"
     healthcheck:
