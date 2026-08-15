@@ -33,11 +33,20 @@ for (const name of envVarNames) {
 }
 
 const parseHost = (rawUrl: string) => {
+  if (!rawUrl) return 'NOT SET';
   try {
+    const match = rawUrl.match(/^(?:pg(?:sql|sqlfdw|stream)?|postgres(?:ql)?):\/\/(?:([^:]+):([^@]+)@)?([^:\/\?]+)(?::(\d+))?(\/[^?\s]*)?/);
+    if (match) {
+      const user = match[1] ? match[1].substring(0, 3) + '***' : '***';
+      const host = match[3] || 'unknown';
+      const port = match[4] || '5432';
+      const db = match[5] || '/postgres';
+      return `postgres://${user}:***@${host}:${port}${db}`;
+    }
     const parsed = new URL(rawUrl);
-    return `${parsed.protocol}//${parsed.username ? parsed.username.split('.')[0] + '***' : '***'}@${parsed.hostname}:${parsed.port || '5432'}${parsed.pathname}`;
+    return `${parsed.protocol}//${parsed.username ? parsed.username.substring(0, 3) + '***' : '***'}@${parsed.hostname}:${parsed.port || '5432'}${parsed.pathname}`;
   } catch (_) {
-    return 'Invalid/Unparseable URL';
+    return 'Unparseable URL string';
   }
 };
 
@@ -87,6 +96,11 @@ console.log(`=> Selected Connection Variable: ${selectedVarName || 'NONE'}`);
 console.log('==================================================\n');
 
 const connectionString = connectionStringRaw;
+const isLocalHost = /127\.0\.0\.1|localhost|googleshift-db/.test(connectionStringRaw);
+const isExplicitSslDisable = connectionStringRaw.includes('sslmode=disable');
+const isExplicitSslEnable = connectionStringRaw.includes('sslmode=require') || connectionStringRaw.includes('sslmode=verify-full');
+
+const useSsl = isExplicitSslEnable || (!isExplicitSslDisable && !isLocalHost);
 
 // Cap pg.Pool max connections at 10 to stay safely below Supabase/PG limits
 export const pool = new Pool({
@@ -96,7 +110,7 @@ export const pool = new Pool({
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
   allowExitOnIdle: false,
-  ssl: { rejectUnauthorized: false },
+  ssl: useSsl ? { rejectUnauthorized: false } : false,
 });
 
 // Handle idle or background client connection errors without crashing Node process
