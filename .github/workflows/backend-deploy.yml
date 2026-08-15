@@ -95,62 +95,62 @@ jobs:
 
             echo "[1/6] Writing production Compose configuration on VPS..."
             cat << 'EOF' > docker-compose.yml
-services:
-  backend:
-    image: ghcr.io/${REPO_OWNER}/googleshift-backend:${IMAGE_TAG}
-    container_name: googleshift-backend
-    restart: unless-stopped
-    env_file:
-      - .env
-    ports:
-      - "3100:3100"
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3100/health', (res) => process.exit(res.statusCode === 200 ? 0 : 1))"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "5"
-    environment:
-      - PORT=3100
-      - MANIFEST_STORAGE_PATH=/app/data/manifests
-    volumes:
-      - googleshift_data:/app/data
-    depends_on:
-      - redis
-    networks:
-      - googleshift-network
+            services:
+              backend:
+                image: ghcr.io/${REPO_OWNER}/googleshift-backend:${IMAGE_TAG}
+                container_name: googleshift-backend
+                restart: unless-stopped
+                env_file:
+                  - .env
+                ports:
+                  - "3100:3100"
+                healthcheck:
+                  test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3100/health', (res) => process.exit(res.statusCode === 200 ? 0 : 1))"]
+                  interval: 30s
+                  timeout: 5s
+                  retries: 3
+                  start_period: 15s
+                logging:
+                  driver: "json-file"
+                  options:
+                    max-size: "10m"
+                    max-file: "5"
+                environment:
+                  - PORT=3100
+                  - MANIFEST_STORAGE_PATH=/app/data/manifests
+                volumes:
+                  - googleshift_data:/app/data
+                depends_on:
+                  - redis
+                networks:
+                  - googleshift-network
 
-  redis:
-    image: redis:7-alpine
-    container_name: googleshift-redis
-    restart: unless-stopped
-    command: redis-server --appendonly yes
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "5"
-    volumes:
-      - redis_data:/data
-    networks:
-      - googleshift-network
+              redis:
+                image: redis:7-alpine
+                container_name: googleshift-redis
+                restart: unless-stopped
+                command: redis-server --appendonly yes
+                logging:
+                  driver: "json-file"
+                  options:
+                    max-size: "10m"
+                    max-file: "5"
+                volumes:
+                  - redis_data:/data
+                networks:
+                  - googleshift-network
 
-networks:
-  googleshift-network:
-    name: googleshift-network
-    external: true
+            networks:
+              googleshift-network:
+                name: googleshift-network
+                external: true
 
-volumes:
-  redis_data:
-    driver: local
-  googleshift_data:
-    driver: local
-EOF
+            volumes:
+              redis_data:
+                driver: local
+              googleshift_data:
+                driver: local
+            EOF
 
             # Substitute environment variables in docker-compose.yml
             sed -i "s/\${REPO_OWNER}/${REPO_OWNER}/g" docker-compose.yml
