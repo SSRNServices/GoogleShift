@@ -198,8 +198,9 @@ export class AuthController {
     const rawState = req.query.state as string;
     const errorParam = req.query.error as string;
 
+    const sanitizedUrl = (req.originalUrl || req.url || '').replace(/code=[^&]+/g, 'code=[REDACTED]');
     console.log(`\n================================================================================`);
-    console.log(`[OAuthAudit] CALLBACK_RECEIVED | CodePresent: ${!!code} | StatePresent: ${!!rawState} | ErrorParam: ${errorParam || 'none'} | URL: ${req.originalUrl || req.url}`);
+    console.log(`[OAuthAudit] CALLBACK_RECEIVED | CodePresent: ${!!code} | StatePresent: ${!!rawState} | ErrorParam: ${errorParam || 'none'} | URL: ${sanitizedUrl}`);
     console.log(`================================================================================\n`);
 
     if (errorParam) {
@@ -325,6 +326,12 @@ export class AuthController {
     passport.authenticate('google', (err: any, user: any) => {
       if (err || !user) {
         console.error(`[OAuthAudit] ERROR | Passport Google Authentication error:`, err || 'No user returned');
+        const errMsg = (err?.message || '').toLowerCase();
+        const isDbErr = err?.code === 'EAI_AGAIN' || err?.code?.startsWith('P') || errMsg.includes('getaddrinfo') || errMsg.includes('econnrefused');
+        if (isDbErr) {
+          console.error(`[OAuthAudit] CRITICAL | Database connectivity error during Google OAuth callback: ${err?.message}`);
+          return res.redirect(`${frontendUrl}/login?error=service_unavailable&reason=${encodeURIComponent('Database connection temporary issue')}`);
+        }
         return res.redirect(`${frontendUrl}/login?error=google_auth_failed`);
       }
 

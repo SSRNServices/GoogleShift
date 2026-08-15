@@ -1,6 +1,6 @@
 import passport from 'passport';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
-import { getUserById, getUserByGoogleId, createUser } from '../utils/database';
+import { getUserById, getUserByGoogleId, createUser, prisma } from '../utils/database';
 
 passport.serializeUser((user: any, done) => {
   console.log("serializeUser", user);
@@ -33,7 +33,22 @@ export const configurePassport = () => {
       try {
         let user = await getUserByGoogleId(profile.id);
         if (!user) {
-          user = await createUser(profile);
+          const email = profile.emails?.[0]?.value;
+          if (email) {
+            const existingUser = await prisma.user.findUnique({ where: { email } });
+            if (existingUser) {
+              user = await prisma.user.update({
+                where: { id: existingUser.id },
+                data: {
+                  googleId: profile.id,
+                  avatar: profile.photos?.[0]?.value || existingUser.avatar
+                }
+              });
+            }
+          }
+          if (!user) {
+            user = await createUser(profile);
+          }
         }
         return done(null, user);
       } catch (err) {

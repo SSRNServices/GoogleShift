@@ -181,9 +181,6 @@ async function bootstrap() {
     }
     logger.info('====================================');
 
-    // Start Worker Watchdog for stalled migration jobs
-    workerWatchdog.start();
-    logger.info('[WorkerWatchdog] Monitoring COPYING jobs every 60s.');
   });
 
   // Asynchronous Background Initialization Tasks
@@ -238,7 +235,10 @@ async function bootstrap() {
         }
       }
 
-      if (!dbConnected) {
+      if (dbConnected) {
+        workerWatchdog.start();
+        logger.info('[WorkerWatchdog] Monitoring COPYING jobs every 60s.');
+      } else {
         logger.warn('⚠️ [Database Notice] Connection retries exhausted. Background reconnect active.');
       }
     } catch (bgErr: any) {
