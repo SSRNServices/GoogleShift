@@ -91,11 +91,12 @@ jobs:
             if [ -f "deploy/docker-compose.yml" ]; then
               cp deploy/docker-compose.yml docker-compose.yml
             fi
-            if [ ! -s ".env" ] && [ -f "backend/.env" ]; then
-              cp backend/.env .env
-            fi
-            if [ ! -s ".env" ] && [ -f "backend/.env.example" ]; then
-              cp backend/.env.example .env
+            if [ ! -s ".env" ] || ! grep -q "DATABASE_URL=" .env 2>/dev/null; then
+              if [ -f "backend/.env" ]; then
+                cp backend/.env .env
+              elif [ -f "backend/.env.example" ]; then
+                cp backend/.env.example .env
+              fi
             fi
 
             echo "[2/6] Logging in to GitHub Container Registry..."
