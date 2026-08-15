@@ -7,7 +7,8 @@ export class NetworkClient {
   private static agent = new https.Agent({
     keepAlive: true,
     maxSockets: 100,
-    maxFreeSockets: 20,
+    maxFreeSockets: 50,
+    freeSocketTimeout: 30000,
     timeout: 60000 // 60s timeout
   });
 
@@ -50,6 +51,11 @@ export class NetworkClient {
       version: 'v3', 
       auth,
       httpAgent: this.agent,
+      httpsAgent: this.agent,
+      options: {
+        agent: this.agent,
+        httpsAgent: this.agent
+      }
     } as any);
   }
 

@@ -395,7 +395,7 @@ export class UploadWorker {
           bytesSinceLast = 0;
         }
       },
-      this.config.streamBufferSize || 4 * 1024 * 1024
+      (item.size || 0) < 10 * 1024 * 1024 ? 256 * 1024 : (this.config.streamBufferSize || 4 * 1024 * 1024)
     );
     this.activePassThrough = progressPT;
 
@@ -539,9 +539,12 @@ export class UploadWorker {
     await this.stateManager.commitSuccess(item);
     this.rateLimiter.reportSuccess();
 
+    const totalDurationMs = Date.now() - this.startedAt;
+    const mbps = (item.size || 0) > 0 && totalDurationMs > 0 ? (((item.size || 0) / (1024 * 1024)) / (totalDurationMs / 1000)).toFixed(2) : '0.00';
+
     console.log(
       `[Worker ${this.id}] FILE_SUCCESS | File: ${item.name} | FileId: ${item.sourceId} | ` +
-      `DestFileId: ${uploadedFileId} | Size: ${item.size}`
+      `DestFileId: ${uploadedFileId} | Size: ${item.size} | DurationMs: ${totalDurationMs} | Speed: ${mbps} MB/s`
     );
   }
 }

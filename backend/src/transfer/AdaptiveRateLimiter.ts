@@ -8,10 +8,14 @@ export class AdaptiveRateLimiter {
   private lastBandwidthCheckTime: number = Date.now();
   private lastBandwidth: number = 0;
 
-  constructor(defaultConcurrency: number = 10, min: number = 2, max: number = 50) {
-    this.currentConcurrency = defaultConcurrency;
-    this.minConcurrency = min;
-    this.maxConcurrency = max;
+  constructor(defaultConcurrency: number = 16, min: number = 4, max: number = 30) {
+    const envInitial = process.env.TRANSFER_INITIAL_CONCURRENCY ? parseInt(process.env.TRANSFER_INITIAL_CONCURRENCY, 10) : NaN;
+    const envMin = process.env.TRANSFER_MIN_CONCURRENCY ? parseInt(process.env.TRANSFER_MIN_CONCURRENCY, 10) : NaN;
+    const envMax = process.env.TRANSFER_MAX_CONCURRENCY ? parseInt(process.env.TRANSFER_MAX_CONCURRENCY, 10) : NaN;
+
+    this.minConcurrency = !isNaN(envMin) ? envMin : min;
+    this.maxConcurrency = !isNaN(envMax) ? envMax : max;
+    this.currentConcurrency = !isNaN(envInitial) ? envInitial : defaultConcurrency;
   }
 
   public getConcurrency(): number {
@@ -36,10 +40,10 @@ export class AdaptiveRateLimiter {
     const now = Date.now();
     
     if (now - this.lastBandwidthCheckTime > 5000 && now - this.lastDownscaleTime > 10000) {
-       // Only tune if we have significant traffic (e.g. > 100 KB/s) to avoid tuning noise
-       if (bytesPerSecond > 102400) {
+       // Tune concurrency if we have traffic > 10 KB/s
+       if (bytesPerSecond > 10240) {
            if (bytesPerSecond >= this.lastBandwidth * 0.95 && this.currentConcurrency < this.maxConcurrency) {
-              this.currentConcurrency = Math.min(this.maxConcurrency, this.currentConcurrency + 5);
+              this.currentConcurrency = Math.min(this.maxConcurrency, this.currentConcurrency + 4);
               this.lastUpscaleTime = now;
               console.log(`[RateLimiter] Probing bandwidth. Upscaled to ${this.currentConcurrency}`);
            } else if (bytesPerSecond < this.lastBandwidth * 0.8) {

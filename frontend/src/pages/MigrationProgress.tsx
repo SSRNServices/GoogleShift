@@ -131,6 +131,9 @@ export default function MigrationProgress() {
             logs: details.logs || [],
             failedItems: details.failedItems || []
           });
+          if (details.progress.averageSpeed && details.progress.averageSpeed > 0) {
+            setAverageSpeed(details.progress.averageSpeed);
+          }
         }
         setLoading(false);
       } catch (err: unknown) {
@@ -220,7 +223,9 @@ export default function MigrationProgress() {
           return;
         }
 
-        if (data.speedBytesPerSecond > 0) {
+        if (data.averageSpeed && data.averageSpeed > 0) {
+          setAverageSpeed(data.averageSpeed);
+        } else if (data.speedBytesPerSecond > 0) {
           speedSamplesRef.current.push(data.speedBytesPerSecond);
           if (speedSamplesRef.current.length > 10) speedSamplesRef.current.shift();
           const avg = speedSamplesRef.current.reduce((a, b) => a + b, 0) / speedSamplesRef.current.length;

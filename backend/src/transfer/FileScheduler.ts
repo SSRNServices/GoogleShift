@@ -14,7 +14,7 @@ const WORKER_STALL_MS = 5 * 60 * 1000; // 5 minutes
 const HEARTBEAT_INTERVAL_MS = 30 * 1000; // 30 seconds
 
 /** Main scheduler loop tick rate */
-const TICK_MS = 200;
+const TICK_MS = 20;
 
 /** Time without any queue/worker progress before deadlock recovery kicks in */
 const DEADLOCK_TIMEOUT_MS = 60_000; // 60 seconds
@@ -378,8 +378,8 @@ export class FileScheduler implements ISchedulerHandle {
 
         // ── Replenish bucket from DB ───────────────────────────────────────────
         const totalPending = Object.values(this.buckets).reduce((acc, b) => acc + b.length, 0);
-        if (totalPending < this.rateLimiter.getConcurrency() * 2) {
-          const items = await ManifestStorage.getPendingFiles(this.manifestId, 500);
+        if (totalPending < this.rateLimiter.getConcurrency() * 4) {
+          const items = await ManifestStorage.getPendingFiles(this.manifestId, 1000);
           let added = 0;
           for (const item of items) {
             if (this.categorizeAndPush(item)) added++;

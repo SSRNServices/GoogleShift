@@ -46,6 +46,7 @@ export class MigrationStateManager {
 
   // ── Speed / ETA tracking ──────────────────────────────────────────────────────
   private speedSamples: number[] = [];
+  private startTime: number = Date.now();
   private lastEmitTime: number = 0;
   private lastTransferredBytes: bigint = BigInt(0);
   private zeroSpeedCount: number = 0;
@@ -263,6 +264,9 @@ export class MigrationStateManager {
       const activeFolder = await ManifestStorage.getPendingFoldersByDepth(this.manifestId);
       const activeFolderName = activeFolder.length > 0 ? activeFolder[0].name : '';
 
+      const totalElapsedSec = (now - this.startTime) / 1000;
+      const averageSpeed = totalElapsedSec > 0 ? Number(transferredBytes) / totalElapsedSec : 0;
+
       await updateJobProgress(this.jobId, {
         completedFolders,
         completedFiles,
@@ -272,6 +276,7 @@ export class MigrationStateManager {
         totalFiles,
         totalBytes,
         speed,
+        averageSpeed,
         eta: eta ?? 0, // DB stores 0 for null/unknown — UI interprets 0 as "Calculating..."
         currentFile: activeFileName,
         currentFolder: activeFolderName,
