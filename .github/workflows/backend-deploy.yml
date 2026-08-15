@@ -96,12 +96,13 @@ jobs:
             echo "[3/6] Pulling latest production container image..."
             $COMPOSE_CMD pull
 
-            echo "[4/6] Starting container services..."
+            echo "[4/6] Recreating container services..."
+            $COMPOSE_CMD down --remove-orphans || true
             $COMPOSE_CMD up -d
 
             echo "[5/6] Executing database migrations (ONE-SHOT)..."
             sleep 3
-            $COMPOSE_CMD exec -T backend npx prisma migrate deploy || $COMPOSE_CMD run --rm --no-deps backend npx prisma migrate deploy
+            $COMPOSE_CMD exec -T backend npx prisma migrate deploy || true
 
             echo "[6/6] Pruning obsolete Docker images..."
             docker image prune -f
