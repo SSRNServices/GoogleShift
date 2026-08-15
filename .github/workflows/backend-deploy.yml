@@ -68,6 +68,7 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT || 22 }}
+          timeout: 60s
           command_timeout: 10m
           script: |
             set -e
@@ -86,8 +87,8 @@ jobs:
             fi
 
             echo "[1/6] Updating deployment files on VPS..."
-            git fetch origin main || true
-            git reset --hard origin/main || true
+            git fetch origin main
+            git reset --hard origin/main
             if [ -f "deploy/docker-compose.yml" ]; then
               cp deploy/docker-compose.yml docker-compose.yml
             fi
@@ -113,7 +114,7 @@ jobs:
 
             echo "[5/6] Executing database migrations (ONE-SHOT)..."
             sleep 3
-            $COMPOSE_CMD exec -T backend npx prisma migrate deploy || true
+            $COMPOSE_CMD exec -T backend npx prisma migrate deploy
 
             echo "[6/6] Pruning obsolete Docker images..."
             docker image prune -f
