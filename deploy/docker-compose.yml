@@ -18,6 +18,7 @@ services:
         max-size: "10m"
         max-file: "5"
     environment:
+      - PORT=3100
       - MANIFEST_STORAGE_PATH=/app/data/manifests
     volumes:
       - googleshift_data:/app/data
