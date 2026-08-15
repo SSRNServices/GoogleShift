@@ -120,6 +120,10 @@ jobs:
                 break
               fi
               echo "Waiting for backend service startup... ($i/24) Diagnostic: $RESPONSE"
+              if [ $((i % 3)) -eq 0 ]; then
+                echo "--- Live Container Logs Snapshot ---"
+                $COMPOSE_CMD logs --tail 30 backend || true
+              fi
               sleep 5
             done
 
