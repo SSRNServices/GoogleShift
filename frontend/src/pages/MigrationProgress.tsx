@@ -236,7 +236,7 @@ export default function MigrationProgress() {
               if (!combinedLogs.includes(l)) combinedLogs.push(l);
             }
           }
-          if (data.currentAction && !combinedLogs.includes(data.currentAction)) {
+          if (data.currentAction && !combinedLogs.some(l => l.endsWith(data.currentAction!))) {
             combinedLogs.push(`[${new Date().toLocaleTimeString()}] ${data.currentAction}`);
           }
           return {
@@ -356,6 +356,7 @@ export default function MigrationProgress() {
   }
 
   const isFailed = status.status === 'failed';
+  const isFinishedSuccess = ['completed', 'completed_with_errors'].includes(status.status);
   const isCompleted = ['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(status.status);
   const isActive = ['copying', 'preparing'].includes(status.status);
   const lastErrorLog = status.logs?.slice().reverse().find(l => l.includes('FAILED') || l.includes('Error') || l.includes('not authenticated')) || 'Migration encountered an unrecoverable error.';
@@ -370,8 +371,8 @@ export default function MigrationProgress() {
     return formatted ?? 'Calculating...';
   })();
 
-  const byteProgressPct = isCompleted ? 100 : Math.min(100, status.bytePercentage ?? status.percentage ?? 0);
-  const fileProgressPct = isCompleted ? 100 : Math.min(100, status.filePercentage ?? 0);
+  const byteProgressPct = isFinishedSuccess ? 100 : Math.min(100, status.bytePercentage ?? status.percentage ?? 0);
+  const fileProgressPct = isFinishedSuccess ? 100 : Math.min(100, status.filePercentage ?? 0);
 
   const displayFolder = isCompleted ? (status.status === 'completed_with_errors' ? 'Completed with Errors' : 'Completed') : (status.currentFolder || status.currentAction || 'Active Migration');
   const displayFile = isCompleted ? (status.status === 'completed_with_errors' ? 'Completed with Errors' : 'Completed') : (status.currentFile || status.currentAction || 'Transferring...');

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { drive_v3 } from 'googleapis';
 import { ManifestStorage, ManifestItem } from '../utils/ManifestStorage';
 import { AdaptiveRateLimiter } from './AdaptiveRateLimiter';
@@ -317,12 +316,8 @@ export class FileScheduler implements ISchedulerHandle {
     );
 
     try {
-      const totalFiles = await prisma.migrationManifest.count({
-        where: { jobId: this.manifestId, isFolder: false }
-      });
-      const queuedFiles = await prisma.migrationManifest.count({
-        where: { jobId: this.manifestId, isFolder: false, status: 'QUEUED' }
-      });
+      const totalFiles = await ManifestStorage.countItems(this.manifestId, { isFolder: false });
+      const queuedFiles = await ManifestStorage.countItems(this.manifestId, { isFolder: false, status: 'QUEUED' });
 
       console.log(
         `[FileScheduler] QUEUE_SIZE | TotalFiles: ${totalFiles} | QueuedFiles: ${queuedFiles} | ` +
@@ -331,18 +326,20 @@ export class FileScheduler implements ISchedulerHandle {
 
       if (totalFiles > 0 && queuedFiles === 0) {
         // Pre-init: ensure PENDING files are queued
-        const pendingFolders = await prisma.migrationManifest.count({
-          where: { jobId: this.manifestId, isFolder: true, status: { notIn: ['SUCCESS', 'FAILED'] } }
+        const pendingFolders = await ManifestStorage.countItems(this.manifestId, {
+          isFolder: true,
+          statusIn: ['PENDING', 'QUEUED', 'UPLOADING', 'VERIFYING']
         });
         if (pendingFolders === 0) {
           console.warn(
             `[FileScheduler] QUEUE_EMPTY_PREINIT | Pre-queuing remaining PENDING files. ` +
             `JobId: ${this.jobId}`
           );
-          await prisma.migrationManifest.updateMany({
-            where: { jobId: this.manifestId, isFolder: false, status: 'PENDING' },
-            data: { status: 'QUEUED' }
-          });
+          await ManifestStorage.updateManyStatus(
+            this.manifestId,
+            { isFolder: false, statusIn: ['PENDING'] },
+            'QUEUED'
+          );
         }
       }
 
@@ -440,11 +437,8 @@ export class FileScheduler implements ISchedulerHandle {
         const currentPending = Object.values(this.buckets).reduce((acc, b) => acc + b.length, 0);
 
         if (currentPending === 0 && busyCount === 0) {
-          const unresolvedCount = await prisma.migrationManifest.count({
-            where: {
-              jobId: this.manifestId,
-              status: { in: ['PENDING', 'QUEUED', 'UPLOADING', 'VERIFYING'] }
-            }
+          const unresolvedCount = await ManifestStorage.countItems(this.manifestId, {
+            statusIn: ['PENDING', 'QUEUED', 'UPLOADING', 'VERIFYING']
           });
 
           if (unresolvedCount === 0) {
@@ -467,13 +461,7 @@ export class FileScheduler implements ISchedulerHandle {
             deadlockTimer += TICK_MS;
 
             if (deadlockTimer === TICK_MS || deadlockTimer % 10_000 === 0) {
-              const unresolvedItems = await prisma.migrationManifest.findMany({
-                where: {
-                  jobId: this.manifestId,
-                  status: { in: ['PENDING', 'QUEUED', 'UPLOADING', 'VERIFYING'] }
-                },
-                select: { id: true, name: true, isFolder: true, status: true, sourceParentId: true }
-              });
+              const unresolvedItems = await ManifestStorage.getUnresolvedItems(this.manifestId, 100);
 
               console.warn(
                 `[FileScheduler] DEADLOCK_AUDIT | UnresolvedCount: ${unresolvedCount} | ` +
@@ -496,13 +484,11 @@ export class FileScheduler implements ISchedulerHandle {
                   `[FileScheduler] DEADLOCK_RECOVERY | Moving ${stuckItems.length} stuck ` +
                   `UPLOADING/VERIFYING items back to QUEUED | JobId: ${this.jobId}`
                 );
-                await prisma.migrationManifest.updateMany({
-                  where: {
-                    jobId: this.manifestId,
-                    status: { in: ['UPLOADING', 'VERIFYING'] }
-                  },
-                  data: { status: 'QUEUED' }
-                });
+                await ManifestStorage.updateManyStatus(
+                  this.manifestId,
+                  { statusIn: ['UPLOADING', 'VERIFYING'] },
+                  'QUEUED'
+                );
                 for (const item of stuckItems) {
                   this.enqueuedFiles.delete(item.id);
                 }

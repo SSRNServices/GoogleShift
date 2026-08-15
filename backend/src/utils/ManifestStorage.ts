@@ -263,6 +263,19 @@ export class ManifestStorage {
     })) as ManifestItem[];
   }
 
+  public static async getUnresolvedItems(manifestId: string, limit: number = 100): Promise<ManifestItem[]> {
+    const db = await this.getDb(manifestId);
+    const rows = await db.all<any[]>(
+      `SELECT * FROM manifest_items WHERE status IN ('PENDING', 'QUEUED', 'UPLOADING', 'VERIFYING') LIMIT ?`,
+      [limit]
+    );
+    return rows.map(row => ({
+      ...row,
+      isFolder: Boolean(row.isFolder),
+      size: Number(row.size)
+    })) as ManifestItem[];
+  }
+
   public static async countItems(
     manifestId: string,
     filter?: { isFolder?: boolean; status?: string | string[]; statusIn?: string[] }
