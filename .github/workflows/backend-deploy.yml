@@ -10,6 +10,10 @@ on:
       - '.github/workflows/backend-deploy.yml'
   workflow_dispatch:
 
+concurrency:
+  group: googleshift-production-deploy
+  cancel-in-progress: false
+
 permissions:
   contents: read
   packages: write
@@ -65,7 +69,7 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT || 22 }}
           script: |
-            set -e
+            set -euo pipefail
             echo "=== Starting Production VPS Deployment ==="
             
             cd /var/www/googleshift
@@ -80,16 +84,19 @@ jobs:
               exit 1
             fi
 
-            echo "[1/4] Logging in to GitHub Container Registry..."
+            echo "[1/5] Logging in to GitHub Container Registry..."
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.repository_owner }}" --password-stdin
 
-            echo "[2/4] Pulling latest production container image..."
+            echo "[2/5] Pulling latest production container image..."
             $COMPOSE_CMD pull
 
-            echo "[3/4] Starting container services..."
+            echo "[3/5] Executing database migrations (ONE-SHOT)..."
+            $COMPOSE_CMD run --rm backend npx prisma migrate deploy
+
+            echo "[4/5] Starting container services..."
             $COMPOSE_CMD up -d
 
-            echo "[4/4] Pruning obsolete Docker images..."
+            echo "[5/5] Pruning obsolete Docker images..."
             docker image prune -f
 
             echo "=== Verifying Backend Health Status ==="
@@ -107,8 +114,13 @@ jobs:
             done
 
             if [ $HEALTHCHECK_PASSED -eq 0 ]; then
-              echo "❌ [FATAL] Healthcheck failed after 120s! Container logs:"
-              docker logs --tail 100 googleshift-backend
+              echo "❌ [FATAL] Healthcheck failed after 120s! Running Diagnostics:"
+              echo "--- Container Process List ---"
+              $COMPOSE_CMD ps || true
+              echo "--- Container Logs (Tail 200) ---"
+              docker logs --tail 200 googleshift-backend || true
+              echo "--- Container Inspection ---"
+              docker inspect googleshift-backend || true
               exit 1
             fi
 
