@@ -5,8 +5,10 @@ services:
     env_file:
       - .env
     ports:
-      - "3100:3100"
-      - "3000:3100"
+      - "0.0.0.0:3100:3100"
+      - "127.0.0.1:3100:3100"
+      - "0.0.0.0:3000:3100"
+      - "127.0.0.1:3000:3100"
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3100/health', (res) => process.exit(res.statusCode === 200 ? 0 : 1))"]
       interval: 30s
