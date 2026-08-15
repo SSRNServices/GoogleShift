@@ -1,7 +1,6 @@
 services:
   backend:
     image: ghcr.io/ssrnservices/googleshift-backend:latest
-    container_name: googleshift-backend
     restart: unless-stopped
     env_file:
       - .env
