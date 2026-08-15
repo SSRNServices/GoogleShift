@@ -146,7 +146,7 @@ export default function MigrationProgress() {
   useEffect(() => {
     if (!jobId) return;
 
-    let pollingInterval: NodeJS.Timeout | null = null;
+    let pollingInterval: ReturnType<typeof setInterval> | null = null;
 
     const startPollingFallback = () => {
       if (pollingInterval) return;
