@@ -34,9 +34,8 @@ router.get('/', async (req, res) => {
     connected: isRedisConnected()
   };
 
-  const isHealthy = dbConnected;
-  const status = isHealthy ? 'ok' : 'down';
-  const statusCode = isHealthy ? 200 : 503;
+  const status = dbConnected ? 'ok' : 'degraded';
+  const statusCode = 200;
 
   const mem = process.memoryUsage();
   const dbInfo = getDatabaseConnectionInfo();

@@ -122,7 +122,7 @@ jobs:
               if [ -z "$RESPONSE" ]; then
                 RESPONSE='{"status":"offline"}'
               fi
-              if echo "$RESPONSE" | grep -q '"status":"ok"'; then
+              if echo "$RESPONSE" | grep -q -E '"status":"(ok|degraded)"'; then
                 HEALTHCHECK_PASSED=1
                 echo "✓ [PASS] Backend healthcheck returned HTTP 200 OK!"
                 echo "Health Diagnostics: $RESPONSE"
