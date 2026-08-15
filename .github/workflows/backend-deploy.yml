@@ -84,19 +84,23 @@ jobs:
               exit 1
             fi
 
-            echo "[1/5] Logging in to GitHub Container Registry..."
+            echo "[1/6] Updating deployment files on VPS..."
+            git pull origin main || true
+
+            echo "[2/6] Logging in to GitHub Container Registry..."
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.repository_owner }}" --password-stdin
 
-            echo "[2/5] Pulling latest production container image..."
+            echo "[3/6] Pulling latest production container image..."
             $COMPOSE_CMD pull
 
-            echo "[3/5] Starting container services..."
+            echo "[4/6] Starting container services..."
             $COMPOSE_CMD up -d
 
-            echo "[4/5] Executing database migrations (ONE-SHOT)..."
-            $COMPOSE_CMD exec -T backend npx prisma migrate deploy
+            echo "[5/6] Executing database migrations (ONE-SHOT)..."
+            sleep 3
+            $COMPOSE_CMD exec -T backend npx prisma migrate deploy || $COMPOSE_CMD run --rm --no-deps backend npx prisma migrate deploy
 
-            echo "[5/5] Pruning obsolete Docker images..."
+            echo "[6/6] Pruning obsolete Docker images..."
             docker image prune -f
 
             echo "=== Verifying Backend Health Status ==="
