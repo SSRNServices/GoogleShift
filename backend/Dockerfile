@@ -27,7 +27,7 @@ ENV MANIFEST_STORAGE_PATH=/app/data/manifests
 RUN mkdir -p /app/data/manifests && chown -R node:node /app/data
 
 COPY package*.json ./
-RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+RUN npm ci --omit=dev && npm cache clean --force
 
 COPY prisma ./prisma/
 COPY prisma.config.ts ./
