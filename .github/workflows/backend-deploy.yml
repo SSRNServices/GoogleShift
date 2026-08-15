@@ -106,8 +106,10 @@ jobs:
             $COMPOSE_CMD pull
 
             echo "[4/6] Recreating container services..."
+            docker network create googleshift-network 2>/dev/null || true
             $COMPOSE_CMD down --remove-orphans || true
             $COMPOSE_CMD up -d
+            docker network connect googleshift-network googleshift-db 2>/dev/null || true
 
             echo "[5/6] Executing database migrations (ONE-SHOT)..."
             sleep 3

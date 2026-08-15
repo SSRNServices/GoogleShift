@@ -118,11 +118,6 @@ pool.on('error', (err) => {
   console.error('⚠️ [pg.Pool Idle/Background Client Error]:', err.message);
 });
 
-// Auto-override session-level transaction_read_only setting if enabled on role/session
-pool.on('connect', (client) => {
-  client.query('SET SESSION default_transaction_read_only = off;').catch(() => {});
-});
-
 const adapter = new PrismaPg(pool);
 
 if (!globalForPrisma.prisma) {

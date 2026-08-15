@@ -43,10 +43,13 @@ function AuthInit({ children }: { children: React.ReactNode }) {
     // Proactive background token refresh every 45 minutes (2,700,000 ms)
     // Ensures 1-hour access tokens are renewed long before expiration
     const refreshInterval = setInterval(() => {
-      console.log('[AuthInit] Proactive background token refresh executing...');
-      apiClient('/auth/me').catch(err => {
-        console.warn('[AuthInit] Proactive refresh warning:', err.message);
-      });
+      const { user, accessToken } = useAuthStore.getState();
+      if (user || accessToken) {
+        console.log('[AuthInit] Proactive background token refresh executing...');
+        apiClient('/auth/me').catch(err => {
+          console.warn('[AuthInit] Proactive refresh warning:', err.message);
+        });
+      }
     }, 45 * 60 * 1000);
 
     return () => clearInterval(refreshInterval);

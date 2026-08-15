@@ -27,34 +27,45 @@ export const apiClient = async (endpoint: string, options: FetchOptions = {}) =>
   let response = await fetch(url, { ...options, headers });
 
   if (response.status === 401 && !endpoint.includes('/auth/login') && !endpoint.includes('/auth/refresh')) {
-    console.warn(`[apiClient 401] Received 401 Unauthorized for ${endpoint}. Attempting automatic token refresh...`);
-    try {
-      const refreshPayload = refreshToken ? JSON.stringify({ refreshToken }) : undefined;
-      const refreshRes = await fetch(`${API_URL}/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        ...(refreshPayload ? { body: refreshPayload } : {})
-      });
-      
-      if (refreshRes.ok) {
-        const data = await refreshRes.json();
-        console.log('[apiClient 200] Token refresh succeeded. Retrying original request to:', endpoint);
-        setAuth(data.user, data.accessToken, data.refreshToken);
-        
-        // Retry original request with refreshed access token
-        if (data.accessToken) {
-          headers.set('Authorization', `Bearer ${data.accessToken}`);
+    const hasTokens = !!accessToken || !!refreshToken || document.cookie.includes('refresh_token') || document.cookie.includes('access_token');
+
+    // If an unauthenticated user receives 401 on initial /auth/me check with no tokens, return quietly without refresh attempt
+    if (!hasTokens && endpoint.includes('/auth/me')) {
+      return response.json().catch(() => ({ authenticated: false }));
+    }
+
+    if (hasTokens) {
+      console.warn(`[apiClient 401] Received 401 Unauthorized for ${endpoint}. Attempting automatic token refresh...`);
+      try {
+        const refreshPayload = refreshToken ? JSON.stringify({ refreshToken }) : undefined;
+        const refreshRes = await fetch(`${API_URL}/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          ...(refreshPayload ? { body: refreshPayload } : {})
+        });
+
+        if (refreshRes.ok) {
+          const data = await refreshRes.json();
+          console.log('[apiClient 200] Token refresh succeeded. Retrying original request to:', endpoint);
+          setAuth(data.user, data.accessToken, data.refreshToken);
+
+          // Retry original request with refreshed access token
+          if (data.accessToken) {
+            headers.set('Authorization', `Bearer ${data.accessToken}`);
+          }
+          response = await fetch(url, { ...options, headers });
+        } else {
+          console.warn('[apiClient] Refresh endpoint rejected with status:', refreshRes.status);
+          logout('Session expired. Please log in again.');
         }
-        response = await fetch(url, { ...options, headers });
-      } else {
-        console.warn('[apiClient] Refresh endpoint rejected with status:', refreshRes.status);
-        logout('Session expired. Please log in again.');
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error('[apiClient] Exception during token refresh attempt:', errMsg);
+        logout('Network or auth exception during token refresh.');
       }
-    } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.error('[apiClient] Exception during token refresh attempt:', errMsg);
-      logout('Network or auth exception during token refresh.');
+    } else {
+      logout();
     }
   }
 

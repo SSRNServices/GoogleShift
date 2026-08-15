@@ -44,7 +44,8 @@ services:
 
 networks:
   googleshift-network:
-    driver: bridge
+    name: googleshift-network
+    external: true
 
 volumes:
   redis_data:
