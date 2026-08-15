@@ -92,10 +92,8 @@ router.get('/history', requireUserAuth, async (req, res) => {
 async function getDetailedFailedItems(jobId: string, manifestId?: string) {
   try {
     const targetId = manifestId || jobId;
-    const failedManifestItems = await prisma.migrationManifest.findMany({
-      where: { jobId: targetId, status: 'FAILED', isFolder: false },
-      select: { id: true, name: true, mimeType: true, size: true, retryCount: true }
-    });
+    const { ManifestStorage } = await import('../utils/ManifestStorage');
+    const failedManifestItems = await ManifestStorage.getFailedItems(targetId);
 
     const failedItems = await prisma.migrationItem.findMany({
       where: { jobId, status: 'FAILED' }
@@ -105,7 +103,7 @@ async function getDetailedFailedItems(jobId: string, manifestId?: string) {
       if (item.error) errMap.set(item.fileId, item.error);
     }
 
-    return failedManifestItems.map(item => {
+    return failedManifestItems.map((item: any) => {
       const rawError = errMap.get(item.id) || 'Transfer retries exhausted';
       let errorMsg = rawError;
       let classification = 'Stream Lifecycle Error';
@@ -326,7 +324,8 @@ router.get('/validate/:sessionId', requireUserAuth, async (req, res) => {
     let manifestExists = false;
     let manifestCount = 0;
     if (manifestId) {
-      manifestCount = await prisma.migrationManifest.count({ where: { jobId: manifestId } });
+      const { ManifestStorage } = await import('../utils/ManifestStorage');
+      manifestCount = await ManifestStorage.countItems(manifestId);
       manifestExists = manifestCount > 0;
     }
 
@@ -437,7 +436,8 @@ router.post('/start', requireBothAuth, async (req, res) => {
     }
 
     // Check manifest entries count
-    const manifestCount = await prisma.migrationManifest.count({ where: { jobId: payload.manifestId } });
+    const { ManifestStorage } = await import('../utils/ManifestStorage');
+    const manifestCount = await ManifestStorage.countItems(payload.manifestId);
     if (manifestCount === 0) {
        return res.status(400).json({ error: 'Manifest is empty. No files were found to migrate.' });
     }

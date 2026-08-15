@@ -94,16 +94,14 @@ const autoHealFinalizingJob = async <T extends { id: string; state: string; mani
     const heartbeatAgeMs = Date.now() - lastHeartbeatMs;
 
     if (heartbeatAgeMs > 10000) {
-      const manifestCount = await prisma.migrationManifest.count({ where: { jobId: job.manifestId } });
+      const { ManifestStorage } = await import('../utils/ManifestStorage');
+      const manifestCount = await ManifestStorage.countItems(job.manifestId);
       if (manifestCount > 0) {
         console.log(`[DISCOVERY AUTO-HEAL] Computing manifest aggregates for stale FINALIZING job ${job.id} (${manifestCount} items)...`);
-        const folderCount = await prisma.migrationManifest.count({ where: { jobId: job.manifestId, isFolder: true } });
-        const fileCount = manifestCount - folderCount;
-        const sumResult = await prisma.migrationManifest.aggregate({
-          where: { jobId: job.manifestId },
-          _sum: { size: true }
-        });
-        const totalBytes = Number(sumResult._sum.size || BigInt(0));
+        const stats = await ManifestStorage.getSummaryStats(job.manifestId);
+        const folderCount = stats.totalFolders;
+        const fileCount = stats.totalFiles;
+        const totalBytes = stats.totalBytes;
 
         await prisma.scanSummary.upsert({
           where: { manifestId: job.manifestId },
@@ -247,9 +245,8 @@ router.post('/retry', requireUserAuth, async (req: Request, res: Response) => {
         for (const oldJob of existingJobs) {
           console.log(`[DISCOVERY RETRY] Asynchronously purging old job ${oldJob.id} (manifestId: ${oldJob.manifestId})...`);
           if (oldJob.manifestId) {
-            const { ManifestFileStorage } = await import('../utils/ManifestFileStorage');
-            await ManifestFileStorage.deleteManifestFile(oldJob.manifestId).catch((err) => console.warn(`[DISCOVERY RETRY] Non-fatal file delete warning: ${err.message}`));
-            await prisma.migrationManifest.deleteMany({ where: { jobId: oldJob.manifestId } }).catch(() => {});
+            const { ManifestStorage } = await import('../utils/ManifestStorage');
+            await ManifestStorage.deleteManifest(oldJob.manifestId).catch((err) => console.warn(`[DISCOVERY RETRY] Non-fatal manifest delete warning: ${err.message}`));
             await prisma.scanSummary.deleteMany({ where: { manifestId: oldJob.manifestId } }).catch(() => {});
           }
           await prisma.discoveryJob.delete({ where: { id: oldJob.id } }).catch(() => {});

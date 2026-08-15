@@ -37,19 +37,10 @@ export class CopyService {
 
     // ── Build folder cache ────────────────────────────────────────────────────────
     const actualDestId = destinationFolder.id === 'root' ? 'root' : destinationFolder.id;
-    const folderCache = new Map<string, string>();
+    const { ManifestStorage } = await import('../utils/ManifestStorage');
+    const folderCache = await ManifestStorage.getFolderCache(manifestId);
     folderCache.set('root_dest', actualDestId);
     folderCache.set('root', actualDestId);
-
-    const manifestRows = await prisma.migrationManifest.findMany({
-      where: { jobId: manifestId, isFolder: true },
-      select: { id: true, createdDestId: true }
-    });
-    for (const row of manifestRows) {
-      if (row.createdDestId) {
-        folderCache.set(row.id, row.createdDestId);
-      }
-    }
     console.log(
       `[CopyService] FOLDER_CACHE | Size: ${folderCache.size} | JobId: ${jobId}`
     );

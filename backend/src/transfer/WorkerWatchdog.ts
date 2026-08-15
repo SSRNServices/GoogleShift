@@ -215,14 +215,12 @@ export class WorkerWatchdog {
 
         // Recover stuck UPLOADING items in manifest back to QUEUED
         if (job.manifestId) {
-          const recovered = await prisma.migrationManifest.updateMany({
-            where: {
-              jobId: job.manifestId,
-              isFolder: false,
-              status: { in: ['UPLOADING', 'DOWNLOADING', 'VERIFYING'] }
-            },
-            data: { status: 'QUEUED' }
-          }).catch(() => ({ count: 0 }));
+          const { ManifestStorage } = await import('../utils/ManifestStorage');
+          const recovered = await ManifestStorage.updateManyStatus(
+            job.manifestId,
+            { isFolder: false, statusIn: ['UPLOADING', 'DOWNLOADING', 'VERIFYING'] },
+            'QUEUED'
+          ).catch(() => ({ count: 0 }));
 
           if (recovered.count > 0) {
             console.warn(
@@ -263,12 +261,13 @@ export class WorkerWatchdog {
   private async getQueueDiagnostics(manifestId: string | null): Promise<string> {
     if (!manifestId) return 'N/A';
     try {
-      const counts = await prisma.migrationManifest.groupBy({
-        by: ['status'],
-        where: { jobId: manifestId },
-        _count: { id: true }
-      });
-      return counts.map(c => `${c.status}:${c._count.id}`).join(' | ');
+      const { ManifestStorage } = await import('../utils/ManifestStorage');
+      const pending = await ManifestStorage.countItems(manifestId, { status: 'PENDING' });
+      const queued = await ManifestStorage.countItems(manifestId, { status: 'QUEUED' });
+      const uploading = await ManifestStorage.countItems(manifestId, { status: 'UPLOADING' });
+      const success = await ManifestStorage.countItems(manifestId, { status: 'SUCCESS' });
+      const failed = await ManifestStorage.countItems(manifestId, { status: 'FAILED' });
+      return `PENDING:${pending} | QUEUED:${queued} | UPLOADING:${uploading} | SUCCESS:${success} | FAILED:${failed}`;
     } catch {
       return 'N/A';
     }

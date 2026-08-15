@@ -213,11 +213,6 @@ const EXPECTED_SCHEMA: Record<string, string[]> = {
     'createdAt', 'updatedAt'
   ],
   session: ['sid', 'sess', 'expire'],
-  MigrationManifest: [
-    'id', 'jobId', 'sourceId', 'sourceParentId', 'destParentId', 
-    'createdDestId', 'name', 'mimeType', 'size', 'originalId', 
-    'originalMimeType', 'status', 'isFolder', 'depth', 'retryCount'
-  ],
   ScanSummary: [
     'id', 'manifestId', 'totalFolders', 'totalFiles', 'totalBytes', 
     'destinationStorageLimit', 'destinationStorageUsed', 

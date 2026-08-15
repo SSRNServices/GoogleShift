@@ -3,3 +3,8 @@ node_modules
 dist
 build
 backend/tokens/
+backend/data/
+data/
+*.db
+*.db-wal
+*.db-shm

@@ -1,14 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { MigrationStateManager } from '../src/services/MigrationStateManager';
-import { prisma } from '../src/utils/database';
+import { ManifestStorage } from '../src/utils/ManifestStorage';
 
 vi.mock('../src/utils/database', () => ({
   prisma: {
-    migrationManifest: {
-      groupBy: vi.fn(),
-      updateMany: vi.fn(),
-      update: vi.fn()
-    },
     migrationJob: {
       update: vi.fn()
     },
@@ -26,7 +21,9 @@ vi.mock('../src/utils/database', () => ({
 vi.mock('../src/utils/ManifestStorage', () => ({
   ManifestStorage: {
     updateCreatedDestId: vi.fn(),
-    updateItemStatus: vi.fn()
+    updateItemStatus: vi.fn(),
+    queueChildrenOf: vi.fn().mockResolvedValue({ count: 5 }),
+    countItems: vi.fn()
   }
 }));
 
@@ -39,20 +36,16 @@ describe('Pipeline Invariants', () => {
   });
 
   it('should throw invariant violation if pending files remain on finalize', async () => {
-    vi.mocked(prisma.migrationManifest.groupBy).mockResolvedValue([
-      { status: 'PENDING', _count: { id: 5 } }
-    ] as any);
+    vi.mocked(ManifestStorage.countItems).mockImplementation(async (_manifestId, filter) => {
+      if (filter?.status === 'PENDING') return 5;
+      return 0;
+    });
 
     await expect(stateManager.finalizeMigration(0, 0)).rejects.toThrow('non-terminal items');
   });
   
   it('should queue children correctly', async () => {
-    vi.mocked(prisma.migrationManifest.updateMany).mockResolvedValue({ count: 5 } as any);
-    
     await stateManager.queueChildren('parent-id');
-    expect(prisma.migrationManifest.updateMany).toHaveBeenCalledWith({
-      where: { jobId: 'test-job', sourceParentId: 'parent-id', status: 'PENDING' },
-      data: { status: 'QUEUED' }
-    });
+    expect(ManifestStorage.queueChildrenOf).toHaveBeenCalledWith('test-job', 'parent-id');
   });
 });

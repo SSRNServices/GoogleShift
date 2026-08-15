@@ -8,6 +8,8 @@ export interface StorageDiagnostics {
   readable: boolean;
   userUid?: number;
   userGid?: number;
+  availableSpaceBytes?: number;
+  freeSpaceFormatted?: string;
   error?: string;
 }
 

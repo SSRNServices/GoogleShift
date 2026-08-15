@@ -170,27 +170,7 @@ model session {
   expire DateTime @db.Timestamp(6)
 }
 
-model MigrationManifest {
-  id               String
-  jobId            String
-  sourceId         String?
-  sourceParentId   String?
-  destParentId     String?
-  createdDestId    String?
-  name             String?
-  mimeType         String?
-  size             BigInt  @default(0)
-  originalId       String?
-  originalMimeType String?
-  status           String  @default("PENDING")
-  isFolder         Boolean @default(false)
-  depth            Int     @default(0)
-  retryCount       Int     @default(0)
 
-  @@id([jobId, id])
-  @@index([jobId, status])
-  @@index([jobId, sourceParentId])
-}
 
 model ScanSummary {
   id                      String        @id @default(uuid())

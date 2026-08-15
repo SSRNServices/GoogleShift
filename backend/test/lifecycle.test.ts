@@ -6,11 +6,6 @@ vi.mock('../src/utils/database', () => ({
     migrationSession: {
       findUnique: vi.fn().mockResolvedValue({ id: 'test_session', ownerId: 'user1', sourceFolderId: 'src_1', destinationFolderId: 'dst_1' })
     },
-    migrationManifest: {
-      findUnique: vi.fn().mockResolvedValue({ id: 'test_manifest_1' }),
-      findFirst: vi.fn().mockResolvedValue({ id: 'test_manifest_1' }),
-      findMany: vi.fn().mockResolvedValue([])
-    },
     migrationJob: {
       findFirst: vi.fn().mockResolvedValue(null),
       create: vi.fn().mockResolvedValue({ id: 'test_manifest_1' }),
@@ -20,6 +15,12 @@ vi.mock('../src/utils/database', () => ({
   createJob: vi.fn().mockResolvedValue(undefined),
   updateJobStatus: vi.fn().mockResolvedValue(undefined),
   getJob: vi.fn().mockResolvedValue(null)
+}));
+
+vi.mock('../src/utils/ManifestStorage', () => ({
+  ManifestStorage: {
+    hasManifest: vi.fn().mockResolvedValue(true)
+  }
 }));
 
 vi.mock('../src/services/MigrationWorker', () => ({

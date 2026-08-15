@@ -97,9 +97,8 @@ export class MigrationWorker {
       }
 
       // ── Check Manifest ────────────────────────────────────────────────────────
-      const totalFiles = await prisma.migrationManifest.count({
-        where: { jobId: targetManifestId }
-      });
+      const { ManifestStorage } = await import('../utils/ManifestStorage');
+      const totalFiles = await ManifestStorage.countItems(targetManifestId);
       if (totalFiles === 0) {
         throw new Error(
           'FATAL: Manifest is empty or missing. Please ensure the discovery phase completed before starting migration.'

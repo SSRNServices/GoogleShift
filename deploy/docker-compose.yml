@@ -18,6 +18,10 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+    environment:
+      - MANIFEST_STORAGE_PATH=/app/data/manifests
+    volumes:
+      - googleshift_data:/app/data
     depends_on:
       - redis
     networks:
@@ -44,4 +48,6 @@ networks:
 
 volumes:
   redis_data:
+    driver: local
+  googleshift_data:
     driver: local

@@ -30,10 +30,9 @@ export class PreparationService {
       });
 
       // ── Determine if this is a fresh start or a resume ───────────────────────
-      // On a fresh start: all items are PENDING → reset and re-process folders.
-      // On a resume: some items are already SUCCESS/FAILED → do NOT wipe them.
-      const alreadyCompletedCount = await prisma.migrationManifest.count({
-        where: { jobId: manifestId, status: { in: ['SUCCESS', 'FAILED'] } }
+      const { ManifestStorage } = await import('../utils/ManifestStorage');
+      const alreadyCompletedCount = await ManifestStorage.countItems(manifestId, {
+        statusIn: ['SUCCESS', 'FAILED']
       });
       const isResume = alreadyCompletedCount > 0;
 
@@ -43,14 +42,12 @@ export class PreparationService {
           `AlreadyCompleted: ${alreadyCompletedCount} | Skipping full manifest reset.`
         );
         // On resume: only reset items that were stuck mid-flight (not SUCCESS/FAILED)
-        const resetCount = await prisma.migrationManifest.updateMany({
-          where: {
-            jobId: manifestId,
-            isFolder: true,
-            status: { in: ['QUEUED', 'UPLOADING', 'VERIFYING', 'DOWNLOADING'] }
-          },
-          data: { status: 'PENDING', createdDestId: null }
-        });
+        const resetCount = await ManifestStorage.updateManyStatus(
+          manifestId,
+          { isFolder: true, statusIn: ['QUEUED', 'UPLOADING', 'VERIFYING', 'DOWNLOADING'] },
+          'PENDING',
+          true
+        );
         if (resetCount.count > 0) {
           console.log(
             `[PreparationService] RESUME_RESET | Moved ${resetCount.count} stuck folders ` +
@@ -63,10 +60,7 @@ export class PreparationService {
           `[PreparationService] FRESH_START | JobId: ${jobId} | ` +
           `Resetting all manifest items to PENDING.`
         );
-        await prisma.migrationManifest.updateMany({
-          where: { jobId: manifestId },
-          data: { status: 'PENDING', createdDestId: null }
-        });
+        await ManifestStorage.resetAllStatus(manifestId, 'PENDING');
       }
 
       if (!destinationFolder || !destinationFolder.id) {
@@ -78,7 +72,6 @@ export class PreparationService {
       const actualDestId = destinationFolder.id === 'root' ? 'root' : destinationFolder.id;
 
       // Seed root folder mapping
-      const { ManifestStorage } = await import('../utils/ManifestStorage');
       await ManifestStorage.updateDestParentId(manifestId, 'root', actualDestId);
       await stateManager.queueChildren('root');
 
@@ -88,8 +81,9 @@ export class PreparationService {
       });
 
       // Only run FolderScheduler if there are pending folders
-      const pendingFolders = await prisma.migrationManifest.count({
-        where: { jobId: manifestId, isFolder: true, status: { in: ['PENDING', 'QUEUED'] } }
+      const pendingFolders = await ManifestStorage.countItems(manifestId, {
+        isFolder: true,
+        statusIn: ['PENDING', 'QUEUED']
       });
 
       if (pendingFolders > 0) {
@@ -112,10 +106,11 @@ export class PreparationService {
       }
 
       // Ensure all PENDING files are queued for transfer
-      const unqueuedFiles = await prisma.migrationManifest.updateMany({
-        where: { jobId: manifestId, isFolder: false, status: 'PENDING' },
-        data: { status: 'QUEUED' }
-      });
+      const unqueuedFiles = await ManifestStorage.updateManyStatus(
+        manifestId,
+        { isFolder: false, statusIn: ['PENDING'] },
+        'QUEUED'
+      );
       if (unqueuedFiles && unqueuedFiles.count > 0) {
         console.log(
           `[PreparationService] FILES_QUEUED | Count: ${unqueuedFiles.count} | JobId: ${jobId}`

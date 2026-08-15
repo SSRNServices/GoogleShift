@@ -30,9 +30,8 @@ export class MigrationService {
       throw new ManifestError('Manifest ID missing in request or session.');
     }
 
-    const manifestExists = await prisma.migrationManifest.findFirst({
-      where: { jobId: manifestId }
-    });
+    const { ManifestStorage } = await import('../utils/ManifestStorage');
+    const manifestExists = await ManifestStorage.hasManifest(manifestId);
     if (!manifestExists) {
       throw new ManifestError(`Manifest with ID ${manifestId} not found.`);
     }

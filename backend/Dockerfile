@@ -22,6 +22,9 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV PORT=3100
+ENV MANIFEST_STORAGE_PATH=/app/data/manifests
+
+RUN mkdir -p /app/data/manifests && chown -R node:node /app/data
 
 COPY package*.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force

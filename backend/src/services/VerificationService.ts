@@ -8,30 +8,28 @@ export class VerificationService {
     await updateJobProgress(jobId, { status: 'verifying', currentAction: 'Verifying files...', event: 'VERIFY_STARTED' });
 
     // Ensure all items are SUCCESS or FAILED (no PENDING/QUEUED)
-    const stuckItems = await prisma.migrationManifest.count({
-      where: {
-         jobId: manifestId,
-         status: { in: ['PENDING', 'QUEUED', 'DOWNLOADING', 'UPLOADING'] }
-      }
+    const { ManifestStorage } = await import('../utils/ManifestStorage');
+    const stuckItems = await ManifestStorage.countItems(manifestId, {
+      statusIn: ['PENDING', 'QUEUED', 'DOWNLOADING', 'UPLOADING']
     });
 
     if (stuckItems > 0) {
        console.warn(`[VerificationService] Found ${stuckItems} stuck items. Marking as FAILED.`);
-       await prisma.migrationManifest.updateMany({
-         where: {
-            jobId: manifestId,
-            status: { in: ['PENDING', 'QUEUED', 'DOWNLOADING', 'UPLOADING'] }
-         },
-         data: { status: 'FAILED' }
-       });
+       await ManifestStorage.updateManyStatus(
+         manifestId,
+         { statusIn: ['PENDING', 'QUEUED', 'DOWNLOADING', 'UPLOADING'] },
+         'FAILED'
+       );
     }
 
-    const completed = await prisma.migrationManifest.count({
-       where: { jobId: manifestId, status: 'SUCCESS', isFolder: false }
+    const completed = await ManifestStorage.countItems(manifestId, {
+       status: 'SUCCESS',
+       isFolder: false
     });
     
-    const failed = await prisma.migrationManifest.count({
-       where: { jobId: manifestId, status: 'FAILED', isFolder: false }
+    const failed = await ManifestStorage.countItems(manifestId, {
+       status: 'FAILED',
+       isFolder: false
     });
 
     const finalStatus = failed > 0 ? 'completed_with_errors' : 'completed';

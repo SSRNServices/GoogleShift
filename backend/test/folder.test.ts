@@ -1,14 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { MigrationStateManager } from '../src/services/MigrationStateManager';
-import { prisma } from '../src/utils/database';
+import { ManifestStorage } from '../src/utils/ManifestStorage';
 
 vi.mock('../src/utils/database', () => ({
   prisma: {
-    migrationManifest: {
-      groupBy: vi.fn(),
-      updateMany: vi.fn(),
-      update: vi.fn()
-    },
     migrationJob: {
       update: vi.fn()
     },
@@ -28,8 +23,8 @@ vi.mock('../src/utils/database', () => ({
 
 vi.mock('../src/utils/ManifestStorage', () => ({
   ManifestStorage: {
-    updateCreatedDestId: vi.fn(),
-    updateItemStatus: vi.fn()
+    updateCreatedDestId: vi.fn().mockResolvedValue(undefined),
+    updateItemStatus: vi.fn().mockResolvedValue(undefined)
   }
 }));
 
@@ -41,20 +36,16 @@ describe('MigrationStateManager - Folders', () => {
     vi.clearAllMocks();
   });
 
-  it('should commit folder success automatically inside a transaction', async () => {
-    vi.mocked(prisma.migrationManifest.update).mockResolvedValue({ id: 'source-folder-1', createdDestId: 'dest-folder-1', status: 'SUCCESS' } as any);
-
+  it('should commit folder success automatically inside storage provider', async () => {
     await stateManager.commitFolderSuccess('source-folder-1', 'dest-folder-1');
 
-    expect(prisma.migrationManifest.update).toHaveBeenCalledWith({
-      where: { jobId_id: { jobId: 'test-job', id: 'source-folder-1' } },
-      data: { createdDestId: 'dest-folder-1', status: 'SUCCESS' }
-    });
+    expect(ManifestStorage.updateCreatedDestId).toHaveBeenCalledWith('test-job', 'source-folder-1', 'dest-folder-1');
+    expect(ManifestStorage.updateItemStatus).toHaveBeenCalledWith('test-job', 'source-folder-1', 'SUCCESS');
   });
 
-  it('should throw error on transaction failure', async () => {
-    vi.mocked(prisma.$transaction).mockRejectedValueOnce(new Error('DB Error'));
+  it('should throw error on storage failure', async () => {
+    vi.mocked(ManifestStorage.updateCreatedDestId).mockRejectedValueOnce(new Error('Storage Error'));
 
-    await expect(stateManager.commitFolderSuccess('source-folder-1', 'dest-folder-1')).rejects.toThrow('DB Error');
+    await expect(stateManager.commitFolderSuccess('source-folder-1', 'dest-folder-1')).rejects.toThrow('Storage Error');
   });
 });

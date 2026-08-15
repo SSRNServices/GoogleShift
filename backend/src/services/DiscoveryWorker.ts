@@ -164,8 +164,19 @@ export class DiscoveryWorker {
       
     } catch (e: any) {
       console.error(`[DISCOVERY] Fatal error executing discovery for jobId=${job.id}:`, e.message, e.stack);
+      
+      let errorCode = 'DISCOVERY_ERROR';
+      const msg = (e.message || '').toLowerCase();
+      if (msg.includes('project size limit') || msg.includes('database error') || e.code === '53100' || e.code?.startsWith('P20')) {
+        errorCode = 'DATABASE_ERROR';
+      } else if (msg.includes('manifest') || msg.includes('storage') || msg.includes('enoent') || msg.includes('eacces') || msg.includes('disk')) {
+        errorCode = 'STORAGE_ERROR';
+      } else if (msg.includes('google') || msg.includes('gaxios') || msg.includes('invalid_grant') || msg.includes('quota') || msg.includes('403') || msg.includes('401')) {
+        errorCode = 'GOOGLE_API_ERROR';
+      }
+
       formatAuditLog('ERROR', {
-        code: 'GOOGLE_API_ERROR',
+        code: errorCode,
         message: e.message,
         stack: e.stack,
         jobId: job.id,

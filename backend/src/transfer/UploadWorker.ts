@@ -175,10 +175,8 @@ export class UploadWorker {
 
     // PRE-EXECUTION DB MANIFEST CHECK (ISSUE 7, 8, 9)
     try {
-      const dbRow = await prisma.migrationManifest.findUnique({
-        where: { jobId_id: { jobId: this.manifestId || this.jobId, id: item.id } },
-        select: { status: true, retryCount: true }
-      });
+      const { ManifestStorage } = await import('../utils/ManifestStorage');
+      const dbRow = await ManifestStorage.getItem(this.manifestId || this.jobId, item.id);
       if (dbRow && (dbRow.status === 'FAILED' || dbRow.status === 'SUCCESS')) {
         console.warn(
           `[Worker ${this.id}] REJECT_ASSIGNMENT | File: ${item.name} | ` +

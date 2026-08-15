@@ -140,6 +140,16 @@ export class LocalStorageProvider implements IStorageProvider {
       if (typeof process.getgid === 'function') gid = process.getgid();
     } catch (_) {}
 
+    let availableSpaceBytes: number | undefined;
+    let freeSpaceFormatted: string | undefined;
+    try {
+      if (fs.statfsSync) {
+        const stats = fs.statfsSync(this.storagePath);
+        availableSpaceBytes = Number(stats.bavail) * Number(stats.bsize);
+        freeSpaceFormatted = `${(availableSpaceBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+      }
+    } catch (_) {}
+
     return {
       provider: this.getProviderName(),
       path: this.storagePath,
@@ -148,6 +158,8 @@ export class LocalStorageProvider implements IStorageProvider {
       readable,
       userUid: uid,
       userGid: gid,
+      availableSpaceBytes,
+      freeSpaceFormatted,
       error
     };
   }

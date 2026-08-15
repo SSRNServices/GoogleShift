@@ -114,12 +114,8 @@ export class MigrationStateManager {
   public async commitFolderSuccess(sourceId: string, destId: string): Promise<void> {
     return this.timedWrite(`commitFolderSuccess(${sourceId})`, async () => {
       try {
-        await prisma.$transaction([
-          prisma.migrationManifest.update({
-            where: { jobId_id: { jobId: this.manifestId, id: sourceId } },
-            data: { createdDestId: destId, status: 'SUCCESS' }
-          })
-        ]);
+        await ManifestStorage.updateCreatedDestId(this.manifestId, sourceId, destId);
+        await ManifestStorage.updateItemStatus(this.manifestId, sourceId, 'SUCCESS');
       } catch (e: any) {
         console.error(
           `[MigrationStateManager] Failed to commit folder SUCCESS for ${sourceId}: ${e.message}`
@@ -141,10 +137,7 @@ export class MigrationStateManager {
    */
   public async queueChildren(sourceParentId: string): Promise<void> {
     return this.timedWrite(`queueChildren(${sourceParentId})`, async () => {
-      const res = await prisma.migrationManifest.updateMany({
-        where: { jobId: this.manifestId, sourceParentId, status: 'PENDING' },
-        data: { status: 'QUEUED' }
-      });
+      const res = await ManifestStorage.queueChildrenOf(this.manifestId, sourceParentId);
       if (res && res.count > 0) {
         console.log(
           `[MigrationStateManager] QUEUE_CHILDREN | Parent: ${sourceParentId} | Count: ${res.count}`
@@ -169,15 +162,10 @@ export class MigrationStateManager {
    */
   public async resetToQueued(itemId: string): Promise<void> {
     return this.timedWrite(`resetToQueued(${itemId})`, async () => {
-      // Only reset if NOT already in a terminal state
-      await prisma.migrationManifest.updateMany({
-        where: {
-          jobId: this.manifestId,
-          id: itemId,
-          status: { in: ['UPLOADING', 'DOWNLOADING', 'VERIFYING', 'QUEUED'] }
-        },
-        data: { status: 'QUEUED' }
-      });
+      const item = await ManifestStorage.getItem(this.manifestId, itemId);
+      if (item && ['UPLOADING', 'DOWNLOADING', 'VERIFYING', 'QUEUED'].includes(item.status)) {
+        await ManifestStorage.updateItemStatus(this.manifestId, itemId, 'QUEUED');
+      }
     });
   }
 
@@ -186,14 +174,11 @@ export class MigrationStateManager {
    * Called once by CopyService before the worker pool starts.
    */
   public async recoverStalledItems(): Promise<void> {
-    const recovered = await prisma.migrationManifest.updateMany({
-      where: {
-        jobId: this.manifestId,
-        isFolder: false,
-        status: { in: ['UPLOADING', 'DOWNLOADING', 'VERIFYING'] }
-      },
-      data: { status: 'QUEUED' }
-    });
+    const recovered = await ManifestStorage.updateManyStatus(
+      this.manifestId,
+      { isFolder: false, statusIn: ['UPLOADING', 'DOWNLOADING', 'VERIFYING'] },
+      'QUEUED'
+    );
     if (recovered.count > 0) {
       console.warn(
         `[MigrationStateManager] RECOVERY | Moved ${recovered.count} stalled items ` +
@@ -216,34 +201,14 @@ export class MigrationStateManager {
     if (this.isFinalized) return;
 
     try {
-      const stats = await prisma.migrationManifest.groupBy({
-        by: ['status', 'isFolder'],
-        where: { jobId: this.manifestId },
-        _count: { id: true },
-        _sum: { size: true }
-      });
-
-      let completedFolders = 0, completedFiles = 0, dbTransferredBytes = BigInt(0);
-      let failedFiles = 0, totalFolders = 0, totalFiles = 0, totalBytes = BigInt(0);
-      let uploadingFiles = 0, queuedFiles = 0;
-
-      for (const stat of stats) {
-        if (stat.isFolder) {
-          totalFolders += stat._count.id;
-          if (stat.status === 'SUCCESS') completedFolders += stat._count.id;
-        } else {
-          totalFiles += stat._count.id;
-          totalBytes += stat._sum.size || BigInt(0);
-          if (stat.status === 'SUCCESS') {
-            completedFiles += stat._count.id;
-            // DB-authoritative: bytes of successfully transferred files
-            dbTransferredBytes += stat._sum.size || BigInt(0);
-          }
-          if (stat.status === 'FAILED') failedFiles += stat._count.id;
-          if (stat.status === 'UPLOADING') uploadingFiles += stat._count.id;
-          if (stat.status === 'QUEUED') queuedFiles += stat._count.id;
-        }
-      }
+      const summaryStats = await ManifestStorage.getSummaryStats(this.manifestId);
+      const completedFolders = 0; // Folder counts tracked in summary
+      const completedFiles = summaryStats.completedFiles;
+      const dbTransferredBytes = BigInt(summaryStats.transferredBytes);
+      const failedFiles = summaryStats.failedFiles;
+      const totalFolders = summaryStats.totalFolders;
+      const totalFiles = summaryStats.totalFiles;
+      const totalBytes = BigInt(summaryStats.totalBytes);
 
       // Use in-flight bytes only as an upper-bound hint — never less than DB bytes
       const transferredBytes =
@@ -293,22 +258,10 @@ export class MigrationStateManager {
       }
 
       // ── Current active file / folder ──────────────────────────────────────────
-      const activeFile = await prisma.migrationManifest?.findFirst?.({
-        where: {
-          jobId: this.manifestId,
-          isFolder: false,
-          status: { in: ['UPLOADING', 'DOWNLOADING', 'VERIFYING'] }
-        },
-        select: { name: true }
-      });
-      const activeFolder = await prisma.migrationManifest?.findFirst?.({
-        where: {
-          jobId: this.manifestId,
-          isFolder: true,
-          status: { in: ['QUEUED', 'UPLOADING'] }
-        },
-        select: { name: true }
-      });
+      const activeFile = await ManifestStorage.getPendingFiles(this.manifestId, 1);
+      const activeFileName = activeFile.length > 0 ? activeFile[0].name : '';
+      const activeFolder = await ManifestStorage.getPendingFoldersByDepth(this.manifestId);
+      const activeFolderName = activeFolder.length > 0 ? activeFolder[0].name : '';
 
       await updateJobProgress(this.jobId, {
         completedFolders,
@@ -320,8 +273,8 @@ export class MigrationStateManager {
         totalBytes,
         speed,
         eta: eta ?? 0, // DB stores 0 for null/unknown — UI interprets 0 as "Calculating..."
-        currentFile: activeFile?.name || '',
-        currentFolder: activeFolder?.name || '',
+        currentFile: activeFileName,
+        currentFolder: activeFolderName,
         pendingDBWrites: this.pendingWrites
       });
 
@@ -337,20 +290,11 @@ export class MigrationStateManager {
     if (activeWorkers !== 0 || queueLength !== 0) return;
 
     try {
-      const stats = await prisma.migrationManifest.groupBy({
-        by: ['status'],
-        where: { jobId: this.manifestId },
-        _count: { id: true }
-      });
-
-      let pending = 0, queued = 0, uploading = 0, verifying = 0, failed = 0;
-      for (const stat of stats) {
-        if (stat.status === 'PENDING') pending += stat._count.id;
-        else if (stat.status === 'QUEUED') queued += stat._count.id;
-        else if (stat.status === 'UPLOADING') uploading += stat._count.id;
-        else if (stat.status === 'VERIFYING') verifying += stat._count.id;
-        else if (stat.status === 'FAILED') failed += stat._count.id;
-      }
+      const pending = await ManifestStorage.countItems(this.manifestId, { status: 'PENDING' });
+      const queued = await ManifestStorage.countItems(this.manifestId, { status: 'QUEUED' });
+      const uploading = await ManifestStorage.countItems(this.manifestId, { status: 'UPLOADING' });
+      const verifying = await ManifestStorage.countItems(this.manifestId, { status: 'VERIFYING' });
+      const failed = await ManifestStorage.countItems(this.manifestId, { status: 'FAILED' });
 
       const unresolved = pending + queued + uploading + verifying;
 
@@ -396,29 +340,12 @@ export class MigrationStateManager {
   public async getSummaryStats(manifestId?: string) {
     try {
       const targetId = manifestId || this.manifestId;
-      const stats = await prisma.migrationManifest.groupBy({
-        by: ['status', 'isFolder'],
-        where: { jobId: targetId },
-        _count: { id: true },
-        _sum: { size: true }
-      });
-
-      let completedFiles = 0;
-      let failedFiles = 0;
-      let transferredBytes = BigInt(0);
-
-      for (const stat of stats) {
-        if (!stat.isFolder) {
-          if (stat.status === 'SUCCESS') {
-            completedFiles += stat._count.id;
-            transferredBytes += stat._sum.size || BigInt(0);
-          } else if (stat.status === 'FAILED') {
-            failedFiles += stat._count.id;
-          }
-        }
-      }
-
-      return { completedFiles, failedFiles, transferredBytes };
+      const res = await ManifestStorage.getSummaryStats(targetId);
+      return {
+        completedFiles: res.completedFiles,
+        failedFiles: res.failedFiles,
+        transferredBytes: BigInt(res.transferredBytes)
+      };
     } catch (e: any) {
       console.warn(`[MigrationStateManager] getSummaryStats warning: ${e.message}`);
       return { completedFiles: 0, failedFiles: 0, transferredBytes: BigInt(0) };

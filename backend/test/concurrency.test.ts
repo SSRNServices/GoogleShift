@@ -1,17 +1,21 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { MigrationStateManager } from '../src/services/MigrationStateManager';
-import { prisma } from '../src/utils/database';
+import { ManifestStorage } from '../src/utils/ManifestStorage';
 
 vi.mock('../src/utils/database', () => ({
   prisma: {
-    migrationManifest: {
-      update: vi.fn().mockResolvedValue({})
-    },
     $transaction: vi.fn((cb: any) => Promise.all(cb))
   },
   updateJobProgress: vi.fn(),
   updateJobStatus: vi.fn(),
   logJobEvent: vi.fn()
+}));
+
+vi.mock('../src/utils/ManifestStorage', () => ({
+  ManifestStorage: {
+    updateCreatedDestId: vi.fn().mockResolvedValue(undefined),
+    updateItemStatus: vi.fn().mockResolvedValue(undefined)
+  }
 }));
 
 describe('Database Concurrency and State Manager', () => {
@@ -36,7 +40,8 @@ describe('Database Concurrency and State Manager', () => {
     
     await Promise.all(promises);
     
-    expect(prisma.migrationManifest.update).toHaveBeenCalledTimes(100);
+    expect(ManifestStorage.updateCreatedDestId).toHaveBeenCalledTimes(100);
+    expect(ManifestStorage.updateItemStatus).toHaveBeenCalledTimes(100);
     expect(stateManager.getPendingWriteCount()).toBe(0);
   });
 });
