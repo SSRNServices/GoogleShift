@@ -1,8 +1,5 @@
 services:
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
     image: ghcr.io/ssrnservices/googleshift-backend:latest
     restart: unless-stopped
     env_file:
