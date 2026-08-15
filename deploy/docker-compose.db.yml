@@ -1,0 +1,33 @@
+# Self-Hosted PostgreSQL 18.4 Compose Configuration (/var/www/googleshift-db/docker-compose.yml)
+version: '3.8'
+
+services:
+  googleshift-db:
+    image: postgres:18.4
+    container_name: googleshift-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: googleshift
+      POSTGRES_USER: googleshift
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-googleshift}
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - googleshift_postgres_data:/var/lib/postgresql/data
+    networks:
+      - googleshift-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U googleshift -d googleshift"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  googleshift-network:
+    name: googleshift-network
+    external: true
+
+volumes:
+  googleshift_postgres_data:
+    external: true
+    name: googleshift-db_googleshift_postgres_data
