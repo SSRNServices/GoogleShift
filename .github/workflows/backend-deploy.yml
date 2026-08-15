@@ -63,17 +63,24 @@ jobs:
 
       - name: Deploy to VPS via SSH
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+          REPO_OWNER: ${{ steps.owner.outputs.repo_owner }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT || 22 }}
+          envs: IMAGE_TAG,REPO_OWNER
           timeout: 60s
           command_timeout: 10m
           script: |
             set -e
             echo "=== Starting Production VPS Deployment ==="
-            
+            echo "Target Image SHA: ${IMAGE_TAG}"
+            echo "Target Repository Owner: ${REPO_OWNER}"
+
+            mkdir -p /var/www/googleshift
             cd /var/www/googleshift
 
             # Detect Docker Compose binary (Compose V2 plugin vs Compose V1 standalone)
@@ -86,34 +93,87 @@ jobs:
               exit 1
             fi
 
-            echo "[1/6] Updating deployment files on VPS..."
-            git fetch origin main
-            git reset --hard origin/main
-            if [ -f "deploy/docker-compose.yml" ]; then
-              cp deploy/docker-compose.yml docker-compose.yml
-            fi
-            if [ ! -s ".env" ] || ! grep -q "DATABASE_URL=" .env 2>/dev/null; then
-              if [ -f "backend/.env" ]; then
-                cp backend/.env .env
-              elif [ -f "backend/.env.example" ]; then
-                cp backend/.env.example .env
-              fi
-            fi
+            echo "[1/6] Writing production Compose configuration on VPS..."
+            cat << 'EOF' > docker-compose.yml
+services:
+  backend:
+    image: ghcr.io/${REPO_OWNER}/googleshift-backend:${IMAGE_TAG}
+    container_name: googleshift-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "3100:3100"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3100/health', (res) => process.exit(res.statusCode === 200 ? 0 : 1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    environment:
+      - PORT=3100
+      - MANIFEST_STORAGE_PATH=/app/data/manifests
+    volumes:
+      - googleshift_data:/app/data
+    depends_on:
+      - redis
+    networks:
+      - googleshift-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: googleshift-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    volumes:
+      - redis_data:/data
+    networks:
+      - googleshift-network
+
+networks:
+  googleshift-network:
+    name: googleshift-network
+    external: true
+
+volumes:
+  redis_data:
+    driver: local
+  googleshift_data:
+    driver: local
+EOF
+
+            # Substitute environment variables in docker-compose.yml
+            sed -i "s/\${REPO_OWNER}/${REPO_OWNER}/g" docker-compose.yml
+            sed -i "s/\${IMAGE_TAG}/${IMAGE_TAG}/g" docker-compose.yml
 
             echo "[2/6] Logging in to GitHub Container Registry..."
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.repository_owner }}" --password-stdin
 
-            echo "[3/6] Pulling latest production container image..."
-            $COMPOSE_CMD pull
+            echo "[3/6] Pulling exact production container image tag..."
+            docker pull "ghcr.io/${REPO_OWNER}/googleshift-backend:${IMAGE_TAG}"
 
-            echo "[4/6] Recreating container services..."
+            echo "[4/6] Recreating backend and redis services..."
             docker network create googleshift-network 2>/dev/null || true
-            $COMPOSE_CMD down --remove-orphans || true
-            $COMPOSE_CMD up -d
+            $COMPOSE_CMD up -d --force-recreate backend redis
             docker network connect googleshift-network googleshift-db 2>/dev/null || true
 
-            echo "[5/6] Executing database migrations (ONE-SHOT)..."
-            sleep 3
+            echo "[5/6] Verifying database connectivity & executing migrations..."
+            echo "Checking database DNS resolution..."
+            docker exec googleshift-backend getent hosts googleshift-db
+            echo "Checking database TCP connection..."
+            docker exec googleshift-backend node -e "const net=require('net');const s=net.createConnection(5432,'googleshift-db');s.setTimeout(10000);s.on('connect',()=>{console.log('✓ Database TCP OK');s.end();process.exit(0);});s.on('error',e=>{console.error('❌ Database TCP error:',e.message);process.exit(1);});"
+
+            sleep 2
             $COMPOSE_CMD exec -T backend npx prisma migrate deploy
 
             echo "[6/6] Pruning obsolete Docker images..."
@@ -122,17 +182,14 @@ jobs:
             echo "=== Verifying Backend Health Status ==="
             HEALTHCHECK_PASSED=0
             for i in $(seq 1 24); do
-              RESPONSE=$(curl -s http://127.0.0.1:3100/health || true)
-              if [ -z "$RESPONSE" ]; then
-                RESPONSE='{"status":"offline"}'
-              fi
-              if echo "$RESPONSE" | grep -q -E '"status":"(ok|degraded)"'; then
+              RESPONSE=$(curl -fsS http://127.0.0.1:3100/health || true)
+              if [ -n "$RESPONSE" ] && echo "$RESPONSE" | grep -q -E '"status":"(ok|degraded)"'; then
                 HEALTHCHECK_PASSED=1
                 echo "✓ [PASS] Backend healthcheck returned HTTP 200 OK!"
                 echo "Health Diagnostics: $RESPONSE"
                 break
               fi
-              echo "Waiting for backend service startup... ($i/24) Diagnostic: $RESPONSE"
+              echo "Waiting for backend service startup... ($i/24)"
               if [ $((i % 3)) -eq 0 ]; then
                 echo "--- Live Container Logs Snapshot ---"
                 $COMPOSE_CMD logs --tail 30 backend || true
