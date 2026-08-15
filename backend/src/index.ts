@@ -42,78 +42,14 @@ async function bootstrap() {
   logger.info(`Node version: ${process.version}`);
   logger.info(`Listening address: 0.0.0.0:${config.PORT}`);
 
-  // 0. Storage Provider Initialization & Diagnostics Check
-  await StorageInitializer.initializeStorage();
-
-  // 1. Environment & Database Diagnostic Check
-  const dbInfo = getDatabaseConnectionInfo();
-  logger.info('--- Database Diagnostic Check ---');
-  logger.info(`✓ Variable Used: ${dbInfo.variableName || 'DATABASE_URL'}`);
-  logger.info(`✓ Connection Mode: ${dbInfo.isPooler ? 'Transaction Pooler (6543)' : 'Session / Direct (5432)'}`);
-  logger.info(`✓ Target Host: ${dbInfo.host}`);
-  logger.info(`✓ Target Port: ${dbInfo.port}`);
-  logger.info(`✓ Target Database: ${dbInfo.database}`);
-  logger.info(`✓ SSL Mode: ${dbInfo.sslMode}`);
-  logger.info(`✓ Masked Connection String: ${dbInfo.maskedUrl}`);
-  logger.info('---------------------------------');
-
-  // 2. Test DNS Resolution
-  if (dbInfo.host && dbInfo.host !== 'unknown' && !dbInfo.host.startsWith('127.') && dbInfo.host !== 'localhost') {
-    try {
-      const dnsResult = await dnsLookup(dbInfo.host);
-      logger.info(`✓ DNS Resolution Passed: ${dbInfo.host} -> ${dnsResult.address}`);
-    } catch (dnsErr: any) {
-      logger.warn(`⚠️ [DNS Check Warning] Could not resolve host '${dbInfo.host}': ${dnsErr.message}`);
-    }
-  }
-
-  // 3. Database connection check & schema validation (with Exponential Backoff Retry)
-  const MAX_DB_RETRIES = 5;
-  let dbConnected = false;
-
-  for (let attempt = 1; attempt <= MAX_DB_RETRIES; attempt++) {
-    try {
-      const start = Date.now();
-      await prisma.$queryRaw`SELECT 1`;
-      const pingMs = Date.now() - start;
-      logger.info(`✓ Database Connected (Ping: ${pingMs}ms, Attempt ${attempt}/${MAX_DB_RETRIES})`);
-
-      await performWriteDiagnostics();
-      await validateDatabaseSchema();
-      dbConnected = true;
-      break;
-    } catch (err: any) {
-      const delayMs = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s, 16s, 32s
-      logger.warn(`⚠️ [Database Attempt ${attempt}/${MAX_DB_RETRIES} Failed] Code: ${err.code || 'UNKNOWN'}, Message: ${err.message}`);
-      logger.warn(`   Retrying connection in ${delayMs / 1000} seconds...`);
-
-      if (attempt < MAX_DB_RETRIES) {
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-      } else {
-        logger.error('❌ [FATAL] Database Connection Failed after 5 retries. Diagnostic details:', {
-          host: dbInfo.host,
-          port: dbInfo.port,
-          database: dbInfo.database,
-          error: err.message,
-          code: err.code
-        });
-      }
-    }
-  }
-
-  if (!dbConnected) {
-    logger.error('❌ Exiting process: Database unavailable.');
-    process.exit(1);
-  }
-
-  // 2. Initialize Redis (if configured)
+  // 1. Initialize Redis (if configured)
   initRedis();
 
-  // 3. Configure Passport Strategies
+  // 2. Configure Passport Strategies
   configurePassport();
   configureLocalStrategy();
 
-  // 4. Initialize Express Application
+  // 3. Initialize Express Application
   const app = express();
 
   // Security Headers & Proxy Setup (Trust first proxy hop for Nginx)
@@ -234,7 +170,7 @@ async function bootstrap() {
   // Global Error Handler
   app.use(globalErrorHandler);
 
-  // Start HTTP Server
+  // Start HTTP Server IMMEDIATELY to respond to health checks
   const server = app.listen(config.PORT, '0.0.0.0', () => {
     logger.info('====================================');
     logger.info(`GoogleShift Backend is running!`);
@@ -249,6 +185,66 @@ async function bootstrap() {
     workerWatchdog.start();
     logger.info('[WorkerWatchdog] Monitoring COPYING jobs every 60s.');
   });
+
+  // Asynchronous Background Initialization Tasks
+  (async () => {
+    try {
+      // 0. Storage Provider Initialization & Diagnostics Check
+      await StorageInitializer.initializeStorage();
+
+      // 1. Environment & Database Diagnostic Check
+      const dbInfo = getDatabaseConnectionInfo();
+      logger.info('--- Database Diagnostic Check ---');
+      logger.info(`✓ Variable Used: ${dbInfo.variableName || 'DATABASE_URL'}`);
+      logger.info(`✓ Connection Mode: ${dbInfo.isPooler ? 'Transaction Pooler (6543)' : 'Session / Direct (5432)'}`);
+      logger.info(`✓ Target Host: ${dbInfo.host}`);
+      logger.info(`✓ Target Port: ${dbInfo.port}`);
+      logger.info(`✓ Target Database: ${dbInfo.database}`);
+      logger.info(`✓ SSL Mode: ${dbInfo.sslMode}`);
+      logger.info(`✓ Masked Connection String: ${dbInfo.maskedUrl}`);
+      logger.info('---------------------------------');
+
+      // 2. Test DNS Resolution
+      if (dbInfo.host && dbInfo.host !== 'unknown' && !dbInfo.host.startsWith('127.') && dbInfo.host !== 'localhost') {
+        try {
+          const dnsResult = await dnsLookup(dbInfo.host);
+          logger.info(`✓ DNS Resolution Passed: ${dbInfo.host} -> ${dnsResult.address}`);
+        } catch (dnsErr: any) {
+          logger.warn(`⚠️ [DNS Check Warning] Could not resolve host '${dbInfo.host}': ${dnsErr.message}`);
+        }
+      }
+
+      // 3. Database connection check & schema validation (with Exponential Backoff Retry)
+      const MAX_DB_RETRIES = 5;
+      let dbConnected = false;
+
+      for (let attempt = 1; attempt <= MAX_DB_RETRIES; attempt++) {
+        try {
+          const start = Date.now();
+          await prisma.$queryRaw`SELECT 1`;
+          const pingMs = Date.now() - start;
+          logger.info(`✓ Database Connected (Ping: ${pingMs}ms, Attempt ${attempt}/${MAX_DB_RETRIES})`);
+
+          await performWriteDiagnostics();
+          await validateDatabaseSchema();
+          dbConnected = true;
+          break;
+        } catch (err: any) {
+          const delayMs = Math.pow(2, attempt) * 1000;
+          logger.warn(`⚠️ [Database Attempt ${attempt}/${MAX_DB_RETRIES} Failed] Code: ${err.code || 'UNKNOWN'}, Message: ${err.message}`);
+          if (attempt < MAX_DB_RETRIES) {
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+          }
+        }
+      }
+
+      if (!dbConnected) {
+        logger.warn('⚠️ [Database Notice] Connection retries exhausted. Background reconnect active.');
+      }
+    } catch (bgErr: any) {
+      logger.error(`⚠️ Async initialization error: ${bgErr.message}`);
+    }
+  })();
 
   // Graceful Shutdown Logic
   const gracefulShutdown = async (signal: string) => {
