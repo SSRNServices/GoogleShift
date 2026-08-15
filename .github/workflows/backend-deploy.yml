@@ -86,14 +86,15 @@ jobs:
             fi
 
             echo "[1/6] Updating deployment files on VPS..."
-            git pull origin main || true
+            git fetch origin main || true
+            git reset --hard origin/main || true
             if [ -f "deploy/docker-compose.yml" ]; then
               cp deploy/docker-compose.yml docker-compose.yml
             fi
-            if [ ! -f ".env" ] && [ -f "backend/.env" ]; then
+            if [ ! -s ".env" ] && [ -f "backend/.env" ]; then
               cp backend/.env .env
             fi
-            if [ ! -f ".env" ] && [ -f "backend/.env.example" ]; then
+            if [ ! -s ".env" ] && [ -f "backend/.env.example" ]; then
               cp backend/.env.example .env
             fi
 
