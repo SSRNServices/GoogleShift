@@ -61,8 +61,8 @@ export class FolderScheduler {
       
       const now = Date.now();
       
-      // 1-second Diagnostic Dump
-      if (now - lastDiagTime >= 1000) {
+      // 10-second Diagnostic Dump (prevents stdout log flooding & event loop starvation)
+      if (now - lastDiagTime >= 10000) {
         const concurrency = this.rateLimiter.getConcurrency();
         console.log(`[Scheduler Status] Workers Running: ${activeCount} | Workers Idle: ${concurrency - activeCount} | Ready Queue: ${readyCount}`);
         lastDiagTime = now;
@@ -121,8 +121,6 @@ export class FolderScheduler {
   }
 
   private async processNode(node: DAGNode) {
-    console.log(`[ENTRY] processNode() | Node: ${node.name} (${node.id})`);
-    const pStart = Date.now();
     try {
       const destParentId = this.dag.getDestParentId(node.sourceParentId);
       if (!destParentId) {
@@ -135,7 +133,6 @@ export class FolderScheduler {
       // Check existing
       if (this.options.skipExisting) {
         await RetryHelper.withRetry('Check Existing Folder', async () => {
-            console.log(`[Google API] drive.files.list | Searching for ${node.name}`);
             const existing = await this.destDrive.files.list({
                 q: `name = '${node.name.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.folder' and '${destParentId}' in parents and trashed = false`,
                 fields: 'files(id)'
@@ -143,16 +140,14 @@ export class FolderScheduler {
             if (existing.data.files && existing.data.files.length > 0 && existing.data.files[0].id) {
                 newDestFolderId = existing.data.files[0].id;
                 folderExists = true;
-                console.log(`[Google API] Found existing folder ${node.name}`);
             }
-        }, (msg) => console.log(msg), () => this.rateLimiter.reportRateLimit());
+        }, (msg) => {}, () => this.rateLimiter.reportRateLimit());
         this.rateLimiter.reportSuccess();
       }
 
       // Create new
       if (!folderExists) {
         await RetryHelper.withRetry('Create Folder', async () => {
-            console.log(`[Google API] drive.files.create | Creating folder ${node.name}`);
             const createRes = await this.destDrive.files.create({
                 requestBody: {
                     name: node.name,
@@ -165,8 +160,7 @@ export class FolderScheduler {
                 throw new Error(`Google Drive API created folder but returned no ID for ${node.name}`);
             }
             newDestFolderId = createRes.data.id;
-            console.log(`[Google API] Success | Created folder ${node.name}`);
-        }, (msg) => { console.log(msg); }, () => this.rateLimiter.reportRateLimit());
+        }, (msg) => {}, () => this.rateLimiter.reportRateLimit());
         this.rateLimiter.reportSuccess();
       }
 
@@ -180,18 +174,13 @@ export class FolderScheduler {
       await this.stateManager.queueChildren(node.id);
 
     } catch (e: any) {
-      console.error(`\n[FOLDER ERROR]`);
-      console.error(`Folder: ${node.name}`);
-      console.error(`Message: ${e.message}`);
+      console.error(`\n[FOLDER ERROR] Folder: ${node.name} | Message: ${e.message}`);
       if (e.response) {
-         console.error(`Status: ${e.response.status}`);
-         console.error(`Data: ${JSON.stringify(e.response.data)}`);
+         console.error(`Status: ${e.response.status} | Data: ${JSON.stringify(e.response.data)}`);
       }
       
       this.dag.markFailed(node.id);
       await this.stateManager.commitFolderError(node.id);
-    } finally {
-      console.log(`[EXIT] processNode() | Node: ${node.name} | Duration: ${Date.now() - pStart}ms`);
     }
   }
 }

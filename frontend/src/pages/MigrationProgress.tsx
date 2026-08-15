@@ -146,21 +146,68 @@ export default function MigrationProgress() {
   useEffect(() => {
     if (!jobId) return;
 
+    let pollingInterval: NodeJS.Timeout | null = null;
+
+    const startPollingFallback = () => {
+      if (pollingInterval) return;
+      console.log('[MigrationProgress] Using HTTP polling for progress updates...');
+      pollingInterval = setInterval(async () => {
+        try {
+          const details = await migrationApi.getJobDetails(jobId);
+          if (details && details.progress) {
+            setLoading(false);
+            setConnectionError(null);
+            setStatus(prev => ({
+              ...prev,
+              status: details.status || prev.status,
+              percentage: details.progress.percentage || prev.percentage,
+              bytePercentage: details.progress.bytePercentage || prev.bytePercentage,
+              filePercentage: details.progress.filePercentage || prev.filePercentage,
+              totalFolders: details.progress.totalFolders || prev.totalFolders,
+              totalFiles: details.progress.totalFiles || prev.totalFiles,
+              completedFiles: details.progress.completedFiles || prev.completedFiles,
+              failedFiles: details.progress.failedFiles || prev.failedFiles,
+              totalBytes: Number(details.progress.totalBytes || prev.totalBytes),
+              transferredBytes: Number(details.progress.transferredBytes || prev.transferredBytes),
+              currentFile: details.progress.currentFile || prev.currentFile,
+              currentFolder: details.progress.currentFolder || prev.currentFolder,
+              currentAction: details.progress.currentAction || prev.currentAction,
+              speedBytesPerSecond: details.progress.speedBytesPerSecond || prev.speedBytesPerSecond,
+              remainingSeconds: details.progress.remainingSeconds ?? prev.remainingSeconds,
+              logs: details.logs || prev.logs,
+              failedItems: details.failedItems || prev.failedItems
+            }));
+          }
+        } catch (e) {
+          console.warn('[MigrationProgress] Polling update warning:', e);
+        }
+      }, 3000);
+    };
+
     const eventSource = new EventSource(`${API_URL}/api/migrations/${jobId}/status`, {
       withCredentials: true
     });
 
-    const timeoutId = setTimeout(() => {
-      if (loading) {
-        setConnectionError('Connection timed out while waiting for migration service.');
-        setLoading(false);
-        eventSource.close();
-      }
-    }, 10000);
+    const sseTimeout = setTimeout(() => {
+      // If SSE takes >5s to emit data, fall back to HTTP polling without breaking UI
+      setLoading(false);
+      startPollingFallback();
+    }, 5000);
+
+    eventSource.onopen = () => {
+      setLoading(false);
+    };
+
+    eventSource.onerror = () => {
+      console.warn('[MigrationProgress] SSE connection issue. Switching to HTTP polling fallback...');
+      setLoading(false);
+      eventSource.close();
+      startPollingFallback();
+    };
 
     eventSource.onmessage = (event) => {
       try {
-        clearTimeout(timeoutId);
+        clearTimeout(sseTimeout);
         if (event.data === 'heartbeat') return;
 
         const data = JSON.parse(event.data);
@@ -169,6 +216,7 @@ export default function MigrationProgress() {
           setConnectionError(data.error);
           setLoading(false);
           eventSource.close();
+          startPollingFallback();
           return;
         }
 
@@ -205,22 +253,17 @@ export default function MigrationProgress() {
 
         if (['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(data.status)) {
           eventSource.close();
+          if (pollingInterval) clearInterval(pollingInterval);
         }
       } catch (e) {
         console.error('Failed to parse SSE data', e);
       }
     };
 
-    eventSource.onerror = (err) => {
-      console.error('EventSource failed', err);
-      clearTimeout(timeoutId);
-      setLoading(false);
-      eventSource.close();
-    };
-
     return () => {
-      clearTimeout(timeoutId);
+      clearTimeout(sseTimeout);
       eventSource.close();
+      if (pollingInterval) clearInterval(pollingInterval);
     };
   }, [jobId]);
 

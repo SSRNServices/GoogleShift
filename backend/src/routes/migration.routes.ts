@@ -509,6 +509,7 @@ router.get('/:jobId/status', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
 
   let lastCheckedDate = lastEventId !== '0' ? new Date(parseInt(lastEventId as string)) : new Date(0);
 
@@ -518,7 +519,7 @@ router.get('/:jobId/status', async (req, res) => {
   let stallTickCount = 0;
   const STALL_TICK_THRESHOLD = 3; // 3 ticks × 2s = 6 seconds without change → stalled
 
-  const interval = setInterval(async () => {
+  const sendSseTick = async () => {
     try {
       res.write(':\n\n'); // SSE comment heartbeat
 
@@ -526,7 +527,7 @@ router.get('/:jobId/status', async (req, res) => {
 
       if (!job) {
         res.write(`data: ${JSON.stringify({ error: 'Job not found' })}\n\n`);
-        clearInterval(interval);
+        if (interval) clearInterval(interval);
         res.end();
         return;
       }
@@ -609,19 +610,28 @@ router.get('/:jobId/status', async (req, res) => {
       })}\n\n`);
 
       if (isTerminal) {
-        clearInterval(interval);
+        if (interval) clearInterval(interval);
         res.end();
       }
     } catch (e: any) {
       console.error('SSE Error:', e);
       res.write(`data: ${JSON.stringify({ error: 'Internal server error while fetching job status' })}\n\n`);
-      clearInterval(interval);
+      if (interval) clearInterval(interval);
       res.end();
     }
-  }, 2000);
+  };
+
+  // 1. Fire immediate initial tick on connection setup so client receives data immediately
+  await sendSseTick();
+
+  // 2. Set recurring tick interval
+  let interval: NodeJS.Timeout | null = setInterval(sendSseTick, 2000);
 
   req.on('close', () => {
-    clearInterval(interval);
+    if (interval) {
+      clearInterval(interval);
+      interval = null;
+    }
   });
 });
 
