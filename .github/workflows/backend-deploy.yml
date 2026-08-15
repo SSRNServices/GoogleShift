@@ -61,6 +61,40 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Audit VPS Connection Secrets & TCP Reachability
+        run: |
+          echo "=== Auditing VPS Connection Credentials ==="
+          if [ -z "${{ secrets.VPS_HOST }}" ]; then
+            echo "❌ [FATAL] VPS_HOST secret is missing or empty in repository settings!"
+            exit 1
+          fi
+          echo "✓ VPS Host secret: Configured"
+
+          if [ -z "${{ secrets.VPS_USER }}" ]; then
+            echo "❌ [FATAL] VPS_USER secret is missing or empty in repository settings!"
+            exit 1
+          fi
+          echo "✓ VPS User secret: Configured"
+
+          if [ -z "${{ secrets.VPS_SSH_KEY }}" ]; then
+            echo "❌ [FATAL] VPS_SSH_KEY secret is missing or empty in repository settings!"
+            exit 1
+          fi
+          echo "✓ VPS SSH Key secret: Configured"
+
+          TARGET_PORT="${{ secrets.VPS_PORT }}"
+          if [ -z "$TARGET_PORT" ]; then
+            TARGET_PORT="22"
+          fi
+          echo "✓ Target SSH Port: ${TARGET_PORT}"
+
+          echo "Testing direct TCP reachability to VPS SSH endpoint..."
+          if nc -zv -w 15 "${{ secrets.VPS_HOST }}" "$TARGET_PORT" 2>&1; then
+            echo "✓ [PASS] Direct TCP Connection to VPS SSH endpoint succeeded!"
+          else
+            echo "⚠️ [WARN] Direct TCP probe timed out or failed. SSH action will attempt connection with 60s timeout."
+          fi
+
       - name: Deploy to VPS via SSH
         uses: appleboy/ssh-action@v1.0.3
         env:
