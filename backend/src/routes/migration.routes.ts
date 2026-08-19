@@ -206,6 +206,7 @@ router.get('/:jobId', requireUserAuth, async (req, res) => {
         totalBytes: job.totalBytes,
         transferredBytes: job.transferredBytes,
         speedBytesPerSecond: job.speed,
+        averageSpeed: (job as any).averageSpeed || 0,
         remainingSeconds: isTerminal ? null : job.eta,
         currentAction: isSuccessTerminal ? (computedStatus === 'completed_with_errors' ? 'Completed with Errors' : 'Completed') : (job.state === 'FAILED' ? 'Migration Failed' : (job.state === 'CANCELLED' ? 'Migration Cancelled' : job.currentAction)),
         currentFile: isSuccessTerminal ? 'Completed' : (job.state === 'FAILED' ? 'Failed' : (job.state === 'CANCELLED' ? 'Cancelled' : ((job as any).currentFile || ''))),

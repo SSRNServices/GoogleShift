@@ -51,6 +51,10 @@ export class MigrationStateManager {
   private lastTransferredBytes: bigint = BigInt(0);
   private zeroSpeedCount: number = 0;
 
+  // ── Active item tracking ──────────────────────────────────────────────────────
+  public activeFileName: string = '';
+  public activeFolderName: string = '';
+
   // ── Stall flag (read by FileScheduler / WorkerWatchdog) ──────────────────────
   public isStalled: boolean = false;
 
@@ -258,11 +262,9 @@ export class MigrationStateManager {
         this.lastEmitTime = now;
       }
 
-      // ── Current active file / folder ──────────────────────────────────────────
-      const activeFile = await ManifestStorage.getPendingFiles(this.manifestId, 1);
-      const activeFileName = activeFile.length > 0 ? activeFile[0].name : '';
-      const activeFolder = await ManifestStorage.getPendingFoldersByDepth(this.manifestId);
-      const activeFolderName = activeFolder.length > 0 ? activeFolder[0].name : '';
+      // ── Current active file / folder (in-memory tracking) ─────────────────────
+      const activeFileName = this.activeFileName || '';
+      const activeFolderName = this.activeFolderName || '';
 
       const totalElapsedSec = (now - this.startTime) / 1000;
       const averageSpeed = totalElapsedSec > 0 ? Number(transferredBytes) / totalElapsedSec : 0;

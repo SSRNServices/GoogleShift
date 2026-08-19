@@ -12,7 +12,26 @@ export class NetworkClient {
     timeout: 60000 // 60s timeout
   });
 
+  private static clientCache: Map<string, { drive: drive_v3.Drive; cachedAt: number }> = new Map();
+
+  public static clearClientCache(identifier?: string): void {
+    if (identifier) {
+      this.clientCache.delete(`${identifier}:source`);
+      this.clientCache.delete(`${identifier}:destination`);
+    } else {
+      this.clientCache.clear();
+    }
+  }
+
   public static async getDriveClient(sessionIdOrUserId: string, type: 'source' | 'destination'): Promise<drive_v3.Drive> {
+    const cacheKey = `${sessionIdOrUserId}:${type}`;
+    const cached = this.clientCache.get(cacheKey);
+    const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes TTL
+
+    if (cached && (Date.now() - cached.cachedAt) < CACHE_TTL_MS) {
+      return cached.drive;
+    }
+
     const { prisma } = await import('../utils/database');
     const { tokenStore } = await import('../auth/token.store');
 
@@ -47,7 +66,7 @@ export class NetworkClient {
       throw new Error(`Account ${type} not authenticated. Please reconnect ${type} account.`);
     }
 
-    return google.drive({ 
+    const driveClient = google.drive({ 
       version: 'v3', 
       auth,
       httpAgent: this.agent,
@@ -57,6 +76,13 @@ export class NetworkClient {
         httpsAgent: this.agent
       }
     } as any);
+
+    this.clientCache.set(cacheKey, { drive: driveClient, cachedAt: Date.now() });
+    if (sessionId && sessionId !== sessionIdOrUserId) {
+      this.clientCache.set(`${sessionId}:${type}`, { drive: driveClient, cachedAt: Date.now() });
+    }
+
+    return driveClient;
   }
 
   public static isTransientError(e: any): boolean {

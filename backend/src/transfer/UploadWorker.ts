@@ -173,25 +173,18 @@ export class UploadWorker {
   ) {
     this.isBusy = true;
 
-    // PRE-EXECUTION DB MANIFEST CHECK (ISSUE 7, 8, 9)
-    try {
-      const { ManifestStorage } = await import('../utils/ManifestStorage');
-      const dbRow = await ManifestStorage.getItem(this.manifestId || this.jobId, item.id);
-      if (dbRow && (dbRow.status === 'FAILED' || dbRow.status === 'SUCCESS')) {
-        console.warn(
-          `[Worker ${this.id}] REJECT_ASSIGNMENT | File: ${item.name} | ` +
-          `FileId: ${item.sourceId} | DB Status is already ${dbRow.status}. Skipping execution.`
-        );
-        this.isBusy = false;
-        this.currentFile = null;
-        this.currentItem = null;
-        releaseWorker(this.id);
-        return;
-      }
-    } catch (_) {}
+    // PRE-EXECUTION IN-MEMORY STATUS CHECK
+    if (item.status === 'SUCCESS' || item.status === 'FAILED') {
+      this.isBusy = false;
+      this.currentFile = null;
+      this.currentItem = null;
+      releaseWorker(this.id);
+      return;
+    }
 
     this.currentFile = item.name;
     this.currentItem = item;
+    this.stateManager.activeFileName = item.name;
     this.startedAt = Date.now();
     this.lastActivity = Date.now();
     this.lastProgressAt = Date.now();
@@ -199,12 +192,6 @@ export class UploadWorker {
     this.lastUploadBytes = 0;
 
     const transferTimeoutMs = computeTransferTimeout(item.size || 0);
-
-    console.log(
-      `[Worker ${this.id}] FILE_START | ` +
-      `File: ${item.name} | FileId: ${item.sourceId} | Size: ${item.size} | ` +
-      `Bucket: ${this.affinity} | TimeoutMs: ${transferTimeoutMs} | JobId: ${this.jobId}`
-    );
 
     this.controller = new AbortController();
 
@@ -220,11 +207,6 @@ export class UploadWorker {
 
     try {
       await this.uploadFile(item, this.controller);
-      console.log(
-        `[Worker ${this.id}] FILE_COMPLETE | File: ${item.name} | FileId: ${item.sourceId} | ` +
-        `Size: ${item.size} | BytesMoved: ${this.uploadBytesTracked} | ` +
-        `Duration: ${Date.now() - this.startedAt}ms`
-      );
     } catch (e: any) {
       const isAbort =
         e.name === 'AbortError' ||
@@ -294,16 +276,6 @@ export class UploadWorker {
       }
     }
 
-    const cp = await getCheckpoint(this.jobId, 'file', destParentId, item.sourceId);
-    if (cp === 'completed' || cp === 'skipped') {
-      console.log(
-        `[Worker ${this.id}] FILE_SKIP | File: ${item.name} | FileId: ${item.sourceId} | ` +
-        `Reason: Already ${cp} per checkpoint`
-      );
-      await this.stateManager.commitSuccess(item);
-      return;
-    }
-
     this.lastActivity = Date.now();
     this.lastProgressAt = Date.now();
 
@@ -335,6 +307,84 @@ export class UploadWorker {
         );
         await saveCheckpoint(this.jobId, 'file', destParentId!, item.sourceId, 'skipped');
         await this.stateManager.commitSuccess(item);
+        return;
+      }
+    }
+
+    // ── TINY FILE FAST PATH (Files < 1 MB non-Workspace) ──────────────────────
+    const isTinyFile = !exportMimeType && (Number(item.size || 0) < 1024 * 1024);
+
+    if (isTinyFile) {
+      let downloadRes: any;
+      try {
+        downloadRes = await this.sourceDrive.files.get(
+          { fileId: item.sourceId, alt: 'media' },
+          { responseType: 'arraybuffer', signal: controller.signal }
+        );
+      } catch (e: any) {
+        throw new DownloadError(
+          `DOWNLOAD_TINY failed for file "${item.name}" (${item.sourceId}): ${e.message}`,
+          { isRetryable: true }
+        );
+      }
+
+      if (!downloadRes || !downloadRes.data) {
+        throw new DownloadError(
+          `Failed to obtain download buffer for tiny file: ${item.name} (${item.sourceId})`,
+          { isRetryable: true }
+        );
+      }
+
+      // Check if data is a Buffer / ArrayBuffer or if it returned a stream (e.g. in stream lifecycle tests or legacy mocks)
+      const data = downloadRes.data;
+      const isBufferData = Buffer.isBuffer(data) || data instanceof ArrayBuffer || (data && typeof data.pipe !== 'function');
+
+      if (isBufferData) {
+        const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
+        this.uploadBytesTracked = buffer.length;
+        this.stateManager.reportProgressBytes(buffer.length);
+        this.lastActivity = Date.now();
+        this.lastProgressAt = Date.now();
+
+        let createRes: any;
+        try {
+          createRes = await this.destDrive.files.create(
+            {
+              requestBody: {
+                name: item.name,
+                parents: [destParentId!],
+                mimeType: targetMimeType
+              },
+              media: {
+                mimeType: targetMimeType,
+                body: buffer
+              },
+              fields: 'id'
+            },
+            { signal: controller.signal }
+          );
+        } catch (e: any) {
+          throw new UploadError(
+            `UPLOAD_TINY failed for file "${item.name}" (${item.sourceId}): ${e.message}`,
+            { isRetryable: true }
+          );
+        }
+
+        if (!createRes.data || !createRes.data.id) {
+          throw new UploadError(
+            `No file ID returned for tiny file: ${item.name} (${item.sourceId})`
+          );
+        }
+
+        const uploadedFileId = createRes.data.id;
+        await this.stateManager.commitSuccess(item);
+        this.rateLimiter.reportSuccess();
+
+        const totalDurationMs = Date.now() - this.startedAt;
+        console.log(
+          `[Worker ${this.id}] FILE_SUCCESS (TINY_FAST_PATH) | File: ${item.name} | ` +
+          `Size: ${buffer.length} B | DurationMs: ${totalDurationMs}`
+        );
         return;
       }
     }

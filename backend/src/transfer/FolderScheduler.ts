@@ -122,6 +122,7 @@ export class FolderScheduler {
 
   private async processNode(node: DAGNode) {
     try {
+      this.stateManager.activeFolderName = node.name;
       const destParentId = this.dag.getDestParentId(node.sourceParentId);
       if (!destParentId) {
         throw new Error(`Critical Error: Destination Parent ID missing for node ${node.name} (Source Parent: ${node.sourceParentId})`);
@@ -132,17 +133,23 @@ export class FolderScheduler {
 
       // Check existing
       if (this.options.skipExisting) {
-        await RetryHelper.withRetry('Check Existing Folder', async () => {
-            const existing = await this.destDrive.files.list({
-                q: `name = '${node.name.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.folder' and '${destParentId}' in parents and trashed = false`,
-                fields: 'files(id)'
-            }, { timeout: 30000 });
-            if (existing.data.files && existing.data.files.length > 0 && existing.data.files[0].id) {
-                newDestFolderId = existing.data.files[0].id;
-                folderExists = true;
-            }
-        }, (msg) => {}, () => this.rateLimiter.reportRateLimit());
-        this.rateLimiter.reportSuccess();
+        const cachedDestId = this.dag.getDestParentId(node.id);
+        if (cachedDestId) {
+          newDestFolderId = cachedDestId;
+          folderExists = true;
+        } else {
+          await RetryHelper.withRetry('Check Existing Folder', async () => {
+              const existing = await this.destDrive.files.list({
+                  q: `name = '${node.name.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.folder' and '${destParentId}' in parents and trashed = false`,
+                  fields: 'files(id)'
+              }, { timeout: 30000 });
+              if (existing.data.files && existing.data.files.length > 0 && existing.data.files[0].id) {
+                  newDestFolderId = existing.data.files[0].id;
+                  folderExists = true;
+              }
+          }, (msg) => {}, () => this.rateLimiter.reportRateLimit());
+          this.rateLimiter.reportSuccess();
+        }
       }
 
       // Create new
