@@ -160,6 +160,7 @@ router.get('/:jobId', requireUserAuth, async (req, res) => {
     }
 
     const logs = job.logs.map(l => l.message);
+    const isSuccessTerminal = job.state === 'COMPLETED';
     const isTerminal = ['COMPLETED', 'FAILED', 'CANCELLED'].includes(job.state);
     let computedStatus = job.state.toLowerCase();
     if (job.state === 'COMPLETED') {
@@ -170,13 +171,17 @@ router.get('/:jobId', requireUserAuth, async (req, res) => {
     let filePercentage = job.totalFiles > 0 ? Math.min(100, Math.floor((processed / job.totalFiles) * 100)) : 0;
     let bytePercentage = job.totalBytes > BigInt(0) ? Math.min(100, Math.floor((Number(job.transferredBytes) / Number(job.totalBytes)) * 100)) : 0;
 
-    if (isTerminal) {
+    if (isSuccessTerminal) {
       filePercentage = 100;
       bytePercentage = 100;
     }
-    const percentage = isTerminal ? 100 : (job.totalBytes > BigInt(0) ? bytePercentage : filePercentage);
+    const percentage = isSuccessTerminal ? 100 : (job.totalBytes > BigInt(0) ? bytePercentage : filePercentage);
 
     const failedItems = await getDetailedFailedItems(jobId, job.manifestId || undefined);
+
+    const failureReason = job.state === 'FAILED'
+      ? (logs.slice().reverse().find(l => l.includes('FAILED') || l.includes('Error')) || 'Migration encountered an error during execution.')
+      : null;
 
     res.json(serializeBigInt({
       jobId: job.id,
@@ -187,6 +192,7 @@ router.get('/:jobId', requireUserAuth, async (req, res) => {
       sourceEmail: job.session?.sourceEmail,
       destinationEmail: job.session?.destinationEmail,
       failedItems,
+      failureReason,
       progress: {
         status: computedStatus,
         percentage,
@@ -201,9 +207,9 @@ router.get('/:jobId', requireUserAuth, async (req, res) => {
         transferredBytes: job.transferredBytes,
         speedBytesPerSecond: job.speed,
         remainingSeconds: isTerminal ? null : job.eta,
-        currentAction: isTerminal ? (computedStatus === 'completed_with_errors' ? 'Completed with Errors' : 'Completed') : job.currentAction,
-        currentFile: isTerminal ? 'Completed' : ((job as any).currentFile || ''),
-        currentFolder: isTerminal ? 'Completed' : ((job as any).currentFolder || '')
+        currentAction: isSuccessTerminal ? (computedStatus === 'completed_with_errors' ? 'Completed with Errors' : 'Completed') : (job.state === 'FAILED' ? 'Migration Failed' : (job.state === 'CANCELLED' ? 'Migration Cancelled' : job.currentAction)),
+        currentFile: isSuccessTerminal ? 'Completed' : (job.state === 'FAILED' ? 'Failed' : (job.state === 'CANCELLED' ? 'Cancelled' : ((job as any).currentFile || ''))),
+        currentFolder: isSuccessTerminal ? 'Completed' : (job.state === 'FAILED' ? 'Failed' : (job.state === 'CANCELLED' ? 'Cancelled' : ((job as any).currentFolder || '')))
       },
       logs,
       errors: logs.filter(l => l.includes('FAILED') || l.includes('Error'))
@@ -241,6 +247,7 @@ router.get('/:jobId/live', requireUserAuth, async (req, res) => {
     const failed = job.failedFiles;
     const processed = completed + failed;
 
+    const isSuccessTerminal = job.state === 'COMPLETED';
     const isTerminal = ['COMPLETED', 'FAILED', 'CANCELLED'].includes(job.state);
     let computedStatus = job.state.toLowerCase();
     if (job.state === 'COMPLETED') {
@@ -248,7 +255,7 @@ router.get('/:jobId/live', requireUserAuth, async (req, res) => {
     }
 
     let percentage = 0;
-    if (isTerminal) {
+    if (isSuccessTerminal) {
       percentage = 100;
     } else if (totalBytes > 0) {
       percentage = Math.floor((transferred / totalBytes) * 100);
@@ -272,9 +279,9 @@ router.get('/:jobId/live', requireUserAuth, async (req, res) => {
       speedBytesPerSecond: job.speed,
       remainingSeconds: isTerminal ? null : job.eta,
       elapsed,
-      currentAction: isTerminal ? (computedStatus === 'completed_with_errors' ? 'Completed with Errors' : 'Completed') : job.currentAction,
-      currentFile: isTerminal ? 'Completed' : ((job as any).currentFile || ''),
-      currentFolder: isTerminal ? 'Completed' : ((job as any).currentFolder || ''),
+      currentAction: isSuccessTerminal ? (computedStatus === 'completed_with_errors' ? 'Completed with Errors' : 'Completed') : (job.state === 'FAILED' ? 'Migration Failed' : (job.state === 'CANCELLED' ? 'Migration Cancelled' : job.currentAction)),
+      currentFile: isSuccessTerminal ? 'Completed' : (job.state === 'FAILED' ? 'Failed' : (job.state === 'CANCELLED' ? 'Cancelled' : ((job as any).currentFile || ''))),
+      currentFolder: isSuccessTerminal ? 'Completed' : (job.state === 'FAILED' ? 'Failed' : (job.state === 'CANCELLED' ? 'Cancelled' : ((job as any).currentFolder || ''))),
       failedItems,
       logs: job.logs.map(l => l.message).reverse()
     }));
@@ -427,11 +434,13 @@ router.post('/start', requireBothAuth, async (req, res) => {
     });
     
     if (active) {
-      return res.status(409).json(serializeBigInt({
-        error: 'Another migration is currently active.',
+      return res.status(200).json(serializeBigInt({
+        success: true,
+        isExisting: true,
         jobId: active.id,
         status: active.state.toLowerCase(),
-        message: 'Active migration in progress.'
+        job: active,
+        message: 'Reconnected to existing active migration job.'
       }));
     }
 
@@ -547,6 +556,7 @@ router.get('/:jobId/status', async (req, res) => {
       const failed = job.failedFiles;
       const processed = completed + failed;
 
+      const isSuccessTerminal = job.state === 'COMPLETED';
       const isTerminal = ['COMPLETED', 'FAILED', 'CANCELLED'].includes(job.state);
       let computedStatus = job.state.toLowerCase();
       if (job.state === 'COMPLETED') {
@@ -556,11 +566,11 @@ router.get('/:jobId/status', async (req, res) => {
       let bytePercentage = totalBytes > 0 ? Math.min(100, Math.floor((transferred / totalBytes) * 100)) : 0;
       let filePercentage = totalFiles > 0 ? Math.min(100, Math.floor((processed / totalFiles) * 100)) : 0;
 
-      if (isTerminal) {
+      if (isSuccessTerminal) {
         bytePercentage = 100;
         filePercentage = 100;
       }
-      const percentage = isTerminal ? 100 : (totalBytes > 0 ? bytePercentage : filePercentage);
+      const percentage = isSuccessTerminal ? 100 : (totalBytes > 0 ? bytePercentage : filePercentage);
 
       // ── Stall detection ───────────────────────────────────────────────────────
       const isActive = ['COPYING', 'PREPARING'].includes(job.state);
@@ -585,6 +595,10 @@ router.get('/:jobId/status', async (req, res) => {
       const elapsed = job.startedAt ? Date.now() - job.startedAt.getTime() : 0;
       const failedItems = await getDetailedFailedItems(jobId, job.manifestId || undefined);
 
+      const failureReason = job.state === 'FAILED'
+        ? (logs.map(l => l.message).slice().reverse().find(l => l.includes('FAILED') || l.includes('Error')) || 'Migration encountered an error during execution.')
+        : null;
+
       res.write(`id: ${lastCheckedDate.getTime()}\n`);
       res.write(`data: ${JSON.stringify({
         status: computedStatus,
@@ -602,10 +616,11 @@ router.get('/:jobId/status', async (req, res) => {
         stalled,
         recovering,
         elapsed,
-        currentAction: isTerminal ? (computedStatus === 'completed_with_errors' ? 'Completed with Errors' : 'Completed') : job.currentAction,
-        currentFile: isTerminal ? 'Completed' : ((job as any).currentFile || ''),
-        currentFolder: isTerminal ? 'Completed' : ((job as any).currentFolder || ''),
+        currentAction: isSuccessTerminal ? (computedStatus === 'completed_with_errors' ? 'Completed with Errors' : 'Completed') : (job.state === 'FAILED' ? 'Migration Failed' : (job.state === 'CANCELLED' ? 'Migration Cancelled' : job.currentAction)),
+        currentFile: isSuccessTerminal ? 'Completed' : (job.state === 'FAILED' ? 'Failed' : (job.state === 'CANCELLED' ? 'Cancelled' : ((job as any).currentFile || ''))),
+        currentFolder: isSuccessTerminal ? 'Completed' : (job.state === 'FAILED' ? 'Failed' : (job.state === 'CANCELLED' ? 'Cancelled' : ((job as any).currentFolder || ''))),
         failedItems,
+        failureReason,
         logs: logs.map((l: any) => l.message)
       })}\n\n`);
 

@@ -43,15 +43,22 @@ export class DiscoveryService {
     await onProgress('SCAN_STARTED', { message: 'Initializing Discovery Phase...', googleRequests: 0 });
     
     let manifestBuffer: any[] = [];
-    const flusherLimit = pLimit(3);
+    const flusherLimit = pLimit(1); // Enforce sequential execution on single SQLite connection
     const flushPromises: Promise<void>[] = [];
+    let flushError: Error | null = null;
     let lastEventTime = Date.now();
 
     const enqueueChunkFlush = (chunk: any[]) => {
       const p = flusherLimit(async () => {
+        if (flushError) return;
         const flushStart = Date.now();
         await ManifestStorage.saveManifestChunk(chunk);
         console.log(`[DISCOVERY] Pipelined DB flush: ${chunk.length} items saved in ${Date.now() - flushStart}ms`);
+      }).catch((err) => {
+        if (!flushError) {
+          flushError = err instanceof Error ? err : new Error(String(err));
+          console.error(`[DISCOVERY FATAL] Manifest batch flush error: ${flushError.message}`);
+        }
       });
       flushPromises.push(p);
     };
@@ -216,16 +223,36 @@ export class DiscoveryService {
       googleRequests: engine.apiRequests 
     });
 
-    const flushResults = await Promise.allSettled(flushPromises);
-    const failedFlushes = flushResults.filter(r => r.status === 'rejected');
-    if (failedFlushes.length > 0) {
-      const firstError = (failedFlushes[0] as PromiseRejectedResult).reason;
-      const errorMsg = firstError instanceof Error ? firstError.message : String(firstError);
-      console.error(`[DISCOVERY FATAL] ${failedFlushes.length}/${flushPromises.length} manifest batch flushes failed. Failing discovery job fast: ${errorMsg}`);
+    await Promise.all(flushPromises);
+
+    if (flushError) {
+      const errorMsg = (flushError as Error).message;
+      console.error(`[DISCOVERY FATAL] Manifest batch flushes failed. Failing discovery job fast: ${errorMsg}`);
       await onProgress('SCAN_FAILED', { error: `Manifest persistence failed: ${errorMsg}` });
       throw new Error(`Manifest persistence failed: ${errorMsg}`);
     }
+
     console.log(`[DISCOVERY] All ${flushPromises.length} DB/file manifest chunk flushes completed successfully.`);
+
+    // STEP 9: Derive and verify final counts from the persisted SQLite database
+    console.log(`[DISCOVERY] Verifying persisted manifest counts in database for manifestId=${manifestId}...`);
+    const dbStats = await ManifestStorage.getSummaryStats(manifestId);
+    const dbTotalCount = await ManifestStorage.countItems(manifestId);
+    const expectedTotalCount = totalFolders + totalFiles;
+
+    console.log(`[DISCOVERY DB VERIFICATION] Persisted Items: ${dbTotalCount} (Folders: ${dbStats.totalFolders}, Files: ${dbStats.totalFiles}, Bytes: ${dbStats.totalBytes}) | Traversal Expected Items: ${expectedTotalCount}`);
+
+    if (dbTotalCount !== expectedTotalCount) {
+      const mismatchErr = `Persisted manifest count mismatch: SQLite database contains ${dbTotalCount} items, but traversal expected ${expectedTotalCount} items.`;
+      console.error(`[DISCOVERY FATAL] ${mismatchErr}`);
+      await onProgress('SCAN_FAILED', { error: mismatchErr });
+      throw new Error(mismatchErr);
+    }
+
+    // Use verified database stats
+    const finalFolders = dbStats.totalFolders;
+    const finalFiles = dbStats.totalFiles;
+    const finalBytes = dbStats.totalBytes;
 
     const totalElapsedSec = Math.max(0.1, (Date.now() - startTime) / 1000);
     const finalFoldersPerSec = Math.round((totalFolders / totalElapsedSec) * 10) / 10;
@@ -286,9 +313,9 @@ export class DiscoveryService {
         where: { manifestId },
         create: {
           manifestId,
-          totalFolders,
-          totalFiles,
-          totalBytes,
+          totalFolders: finalFolders,
+          totalFiles: finalFiles,
+          totalBytes: finalBytes,
           destinationStorageLimit: storageAnalysis.limit,
           destinationStorageUsed: storageAnalysis.used,
           estimatedTimeSeconds: storageAnalysis.estimatedTimeSeconds,
@@ -301,9 +328,9 @@ export class DiscoveryService {
           }
         },
         update: {
-          totalFolders,
-          totalFiles,
-          totalBytes,
+          totalFolders: finalFolders,
+          totalFiles: finalFiles,
+          totalBytes: finalBytes,
           destinationStorageLimit: storageAnalysis.limit,
           destinationStorageUsed: storageAnalysis.used,
           estimatedTimeSeconds: storageAnalysis.estimatedTimeSeconds,
@@ -325,9 +352,9 @@ export class DiscoveryService {
        scanStatus: 'Completed' as const,
        manifestId,
        jobId: manifestId,
-       totalFolders,
-       totalFiles,
-       totalBytes,
+       totalFolders: finalFolders,
+       totalFiles: finalFiles,
+       totalBytes: finalBytes,
        googleRequests: engine.apiRequests,
        elapsedSec: totalElapsedSec,
        foldersPerSec: finalFoldersPerSec,

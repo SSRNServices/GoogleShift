@@ -493,7 +493,7 @@ export class UploadWorker {
 
       const timeoutPromise = new Promise<never>((_, reject) => {
         const uploadPhaseTimeout = Math.max(
-          5 * 60 * 1000,
+          15 * 60 * 1000,
           computeTransferTimeout(item.size || 0)
         );
         setTimeout(() => {

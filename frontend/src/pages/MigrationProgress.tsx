@@ -3,6 +3,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { migrationApi } from '../api/migrationApi';
 import { XCircle, ArrowLeft, Loader2, CheckCircle, AlertCircle, AlertTriangle, RefreshCw, Zap } from 'lucide-react';
 import { API_URL } from '../config/api';
+import { useAuthStore } from '../store/useAuthStore';
 
 interface FailedItemReport {
   id: string;
@@ -36,6 +37,7 @@ interface MigrationStatus {
   retryCount?: number;
   logs: string[];
   failedItems?: FailedItemReport[];
+  failureReason?: string;
 }
 
 export default function MigrationProgress() {
@@ -71,6 +73,7 @@ export default function MigrationProgress() {
 
   const [loading, setLoading] = useState(true);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [connectionState, setConnectionState] = useState<'CONNECTED' | 'RECONNECTING' | 'DISCONNECTED'>('CONNECTED');
 
   const speedSamplesRef = useRef<number[]>([]);
   const [averageSpeed, setAverageSpeed] = useState(0);
@@ -129,7 +132,8 @@ export default function MigrationProgress() {
             recovering: false,
             retryCount: 0,
             logs: details.logs || [],
-            failedItems: details.failedItems || []
+            failedItems: details.failedItems || [],
+            failureReason: details.failureReason
           });
           if (details.progress.averageSpeed && details.progress.averageSpeed > 0) {
             setAverageSpeed(details.progress.averageSpeed);
@@ -160,6 +164,7 @@ export default function MigrationProgress() {
           if (details && details.progress) {
             setLoading(false);
             setConnectionError(null);
+            setConnectionState('CONNECTED');
             setStatus(prev => ({
               ...prev,
               status: details.status || prev.status,
@@ -178,32 +183,41 @@ export default function MigrationProgress() {
               speedBytesPerSecond: details.progress.speedBytesPerSecond || prev.speedBytesPerSecond,
               remainingSeconds: details.progress.remainingSeconds ?? prev.remainingSeconds,
               logs: details.logs || prev.logs,
-              failedItems: details.failedItems || prev.failedItems
+              failedItems: details.failedItems || prev.failedItems,
+              failureReason: details.failureReason || prev.failureReason
             }));
           }
         } catch (e) {
           console.warn('[MigrationProgress] Polling update warning:', e);
+          setConnectionState('RECONNECTING');
         }
       }, 3000);
     };
 
-    const eventSource = new EventSource(`${API_URL}/api/migrations/${jobId}/status`, {
+    const { accessToken } = useAuthStore.getState();
+    const tokenParam = accessToken ? `?token=${encodeURIComponent(accessToken)}` : '';
+    const sseUrl = `${API_URL}/api/migrations/${jobId}/status${tokenParam}`;
+
+    const eventSource = new EventSource(sseUrl, {
       withCredentials: true
     });
 
     const sseTimeout = setTimeout(() => {
       // If SSE takes >5s to emit data, fall back to HTTP polling without breaking UI
       setLoading(false);
+      setConnectionState('RECONNECTING');
       startPollingFallback();
     }, 5000);
 
     eventSource.onopen = () => {
       setLoading(false);
+      setConnectionState('CONNECTED');
     };
 
     eventSource.onerror = () => {
       console.warn('[MigrationProgress] SSE connection issue. Switching to HTTP polling fallback...');
       setLoading(false);
+      setConnectionState('RECONNECTING');
       eventSource.close();
       startPollingFallback();
     };
@@ -214,12 +228,12 @@ export default function MigrationProgress() {
         if (event.data === 'heartbeat') return;
 
         const data = JSON.parse(event.data);
-        if (data.error) {
+        if (data.error && data.error === 'Job not found') {
           console.error('SSE Error:', data.error);
           setConnectionError(data.error);
           setLoading(false);
           eventSource.close();
-          startPollingFallback();
+          if (pollingInterval) clearInterval(pollingInterval);
           return;
         }
 
@@ -249,11 +263,13 @@ export default function MigrationProgress() {
             ...data,
             remainingSeconds: data.remainingSeconds ?? null,
             logs: combinedLogs.slice(-100),
-            failedItems: data.failedItems || prev.failedItems || []
+            failedItems: data.failedItems || prev.failedItems || [],
+            failureReason: data.failureReason || prev.failureReason
           };
         });
 
         setLoading(false);
+        setConnectionState('CONNECTED');
         setConnectionError(null);
 
         if (['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(data.status)) {
@@ -318,7 +334,7 @@ export default function MigrationProgress() {
     );
   }
 
-  if (connectionError) {
+  if (connectionError && status.status === 'idle') {
     return (
       <div className="flex flex-col items-center justify-center min-h-[400px]">
         <AlertCircle className="w-12 h-12 text-red-500 mb-4" />
@@ -363,8 +379,8 @@ export default function MigrationProgress() {
   const isFailed = status.status === 'failed';
   const isFinishedSuccess = ['completed', 'completed_with_errors'].includes(status.status);
   const isCompleted = ['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(status.status);
-  const isActive = ['copying', 'preparing'].includes(status.status);
-  const lastErrorLog = status.logs?.slice().reverse().find(l => l.includes('FAILED') || l.includes('Error') || l.includes('not authenticated')) || 'Migration encountered an unrecoverable error.';
+  const isActive = ['copying', 'preparing', 'queued', 'scanning'].includes(status.status);
+  const lastErrorLog = status.failureReason || status.logs?.slice().reverse().find(l => l.includes('FAILED') || l.includes('Error') || l.includes('not authenticated')) || 'Migration encountered an error during execution.';
 
   const etaDisplay = (() => {
     if (status.status === 'completed' || status.status === 'completed_with_errors') return 'Completed';
@@ -376,14 +392,32 @@ export default function MigrationProgress() {
     return formatted ?? 'Calculating...';
   })();
 
-  const byteProgressPct = isFinishedSuccess ? 100 : Math.min(100, status.bytePercentage ?? status.percentage ?? 0);
-  const fileProgressPct = isFinishedSuccess ? 100 : Math.min(100, status.filePercentage ?? 0);
+  const byteProgressPct = isFinishedSuccess ? 100 : Math.min(99, status.bytePercentage ?? status.percentage ?? 0);
+  const fileProgressPct = isFinishedSuccess ? 100 : Math.min(99, status.filePercentage ?? 0);
 
-  const displayFolder = isCompleted ? (status.status === 'completed_with_errors' ? 'Completed with Errors' : 'Completed') : (status.currentFolder || status.currentAction || 'Active Migration');
-  const displayFile = isCompleted ? (status.status === 'completed_with_errors' ? 'Completed with Errors' : 'Completed') : (status.currentFile || status.currentAction || 'Transferring...');
+  const displayFolder = isCompleted
+    ? (status.status === 'completed_with_errors' ? 'Completed with Errors' : (isFailed ? (status.currentFolder || 'Failed') : 'Completed'))
+    : (status.currentFolder || status.currentAction || 'Active Migration');
+
+  const displayFile = isCompleted
+    ? (status.status === 'completed_with_errors' ? 'Completed with Errors' : (isFailed ? (status.currentFile || 'Failed') : 'Completed'))
+    : (status.currentFile || status.currentAction || 'Transferring...');
 
   return (
     <div className="max-w-5xl mx-auto py-8 space-y-6">
+
+      {/* Connection Interrupted Reconnection Banner */}
+      {connectionState === 'RECONNECTING' && !isCompleted && (
+        <div className="rounded-xl border p-4 flex items-center gap-3 bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-700">
+          <RefreshCw className="w-5 h-5 text-blue-600 dark:text-blue-400 animate-spin flex-shrink-0" />
+          <div>
+            <p className="font-medium text-sm text-blue-900 dark:text-blue-200">
+              Live connection temporarily interrupted — reconnecting...
+            </p>
+            <p className="text-xs text-gray-500 mt-0.5">Your migration is continuing safely on the backend server.</p>
+          </div>
+        </div>
+      )}
 
       {/* Header */}
       <div className="flex items-center justify-between">

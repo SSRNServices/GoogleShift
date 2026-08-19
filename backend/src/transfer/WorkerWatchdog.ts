@@ -120,8 +120,9 @@ export class WorkerWatchdog {
 
       const filesChanged = currentFiles !== snapshot.completedFiles;
       const bytesChanged = currentBytes !== snapshot.transferredBytes;
+      const handleProgressRecent = handle && (now - handle.lastProgressAt < INACTIVITY_STALL_MS);
 
-      if (filesChanged || bytesChanged) {
+      if (filesChanged || bytesChanged || handleProgressRecent) {
         snapshot.completedFiles = currentFiles;
         snapshot.transferredBytes = currentBytes;
         snapshot.lastChangeAt = now;

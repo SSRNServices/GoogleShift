@@ -309,7 +309,6 @@ export class MigrationStateManager {
           `non-terminal items (Pending: ${pending}, Queued: ${queued}, ` +
           `Uploading: ${uploading}, Verifying: ${verifying}).`;
         console.error(msg);
-        await updateJobStatus(this.jobId, 'failed');
         throw new Error(msg);
       }
 

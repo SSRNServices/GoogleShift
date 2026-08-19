@@ -25,6 +25,16 @@ export interface ManifestItem {
 
 export class ManifestStorage {
   private static dbCache: Map<string, Promise<Database>> = new Map();
+  private static writeQueues: Map<string, Promise<any>> = new Map();
+
+  private static async runWithLock<T>(manifestId: string, fn: () => Promise<T>): Promise<T> {
+    const current = this.writeQueues.get(manifestId) || Promise.resolve();
+    const next = current
+      .catch(() => {}) // preserve lock chain execution even if a previous operation failed
+      .then(fn);
+    this.writeQueues.set(manifestId, next);
+    return next;
+  }
 
   private static getDbFilePath(manifestId: string): string {
     const safeFilename = path.basename(`${manifestId}.db`);
@@ -77,6 +87,7 @@ export class ManifestStorage {
   }
 
   public static async closeDb(manifestId: string): Promise<void> {
+    this.writeQueues.delete(manifestId);
     if (this.dbCache.has(manifestId)) {
       try {
         const db = await this.dbCache.get(manifestId)!;
@@ -90,47 +101,72 @@ export class ManifestStorage {
     if (chunk.length === 0) return;
     const manifestId = chunk[0].jobId;
 
-    // 1. Append to NDJSON file stream for file-based stream consumers
-    await ManifestFileStorage.appendChunk(manifestId, chunk).catch(() => {});
+    return this.runWithLock(manifestId, async () => {
+      // 1. Append to NDJSON file stream for file-based stream consumers
+      await ManifestFileStorage.appendChunk(manifestId, chunk).catch(() => {});
 
-    // 2. Persist items to high-performance local SQLite database
-    const db = await this.getDb(manifestId);
-    await db.exec('BEGIN TRANSACTION;');
+      // 2. Persist items to high-performance local SQLite database
+      const db = await this.getDb(manifestId);
 
-    try {
-      const stmt = await db.prepare(`
-        INSERT OR REPLACE INTO manifest_items (
-          id, jobId, sourceId, sourceParentId, destParentId, createdDestId,
-          name, mimeType, size, originalId, originalMimeType, status, isFolder, depth, retryCount
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
+      const maxAttempts = 3;
+      let attempt = 0;
+      let lastErr: any = null;
 
-      for (const item of chunk) {
-        await stmt.run(
-          item.id,
-          item.jobId,
-          item.sourceId || null,
-          item.sourceParentId || null,
-          item.destParentId || null,
-          item.createdDestId || null,
-          item.name || null,
-          item.mimeType || null,
-          Number(item.size || 0),
-          item.originalId || null,
-          item.originalMimeType || null,
-          item.status || 'PENDING',
-          item.isFolder ? 1 : 0,
-          item.depth || 0,
-          item.retryCount || 0
-        );
+      while (attempt < maxAttempts) {
+        attempt++;
+        const startTime = Date.now();
+        try {
+          await db.exec('BEGIN TRANSACTION;');
+          const stmt = await db.prepare(`
+            INSERT OR REPLACE INTO manifest_items (
+              id, jobId, sourceId, sourceParentId, destParentId, createdDestId,
+              name, mimeType, size, originalId, originalMimeType, status, isFolder, depth, retryCount
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
+
+          for (const item of chunk) {
+            await stmt.run(
+              item.id,
+              item.jobId,
+              item.sourceId || null,
+              item.sourceParentId || null,
+              item.destParentId || null,
+              item.createdDestId || null,
+              item.name || null,
+              item.mimeType || null,
+              Number(item.size || 0),
+              item.originalId || null,
+              item.originalMimeType || null,
+              item.status || 'PENDING',
+              item.isFolder ? 1 : 0,
+              item.depth || 0,
+              item.retryCount || 0
+            );
+          }
+
+          await stmt.finalize();
+          await db.exec('COMMIT;');
+
+          const durationMs = Date.now() - startTime;
+          console.log(`[DISCOVERY][DB] jobId=${manifestId} manifestId=${manifestId} batchSize=${chunk.length} attempt=${attempt} status=SUCCESS durationMs=${durationMs}`);
+          return;
+        } catch (err: any) {
+          lastErr = err;
+          await db.exec('ROLLBACK;').catch((rbErr) => {
+            console.warn(`[DISCOVERY][DB] Rollback failed for manifestId=${manifestId}:`, rbErr.message);
+          });
+          const isBusyOrLocked = err.message && (err.message.includes('SQLITE_BUSY') || err.message.includes('SQLITE_LOCKED') || err.message.includes('locked'));
+          if (isBusyOrLocked && attempt < maxAttempts) {
+            console.warn(`[DISCOVERY][DB] Transient SQLite lock on attempt ${attempt}/${maxAttempts} for manifestId=${manifestId}. Retrying in ${attempt * 50}ms...`);
+            await new Promise(res => setTimeout(res, attempt * 50));
+          } else {
+            console.error(`[DISCOVERY][DB] Batch persistence failed for manifestId=${manifestId} on attempt ${attempt}/${maxAttempts}: ${err.message}`);
+            throw err;
+          }
+        }
       }
-
-      await stmt.finalize();
-      await db.exec('COMMIT;');
-    } catch (err) {
-      await db.exec('ROLLBACK;').catch(() => {});
-      throw err;
-    }
+      if (lastErr) throw lastErr;
+    });
   }
 
   public static async saveManifest(items: ManifestItem[]): Promise<void> {
