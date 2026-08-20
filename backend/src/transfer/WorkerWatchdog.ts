@@ -238,6 +238,41 @@ export class WorkerWatchdog {
           }
         }
 
+        if (snapshot.recoveryAttempts >= 2 && snapshot.recoveryAttempts <= 3) {
+          // Attempt automatic background job recovery/resume
+          if (job.manifestId) {
+            try {
+              const { ManifestStorage } = await import('../utils/ManifestStorage');
+              await ManifestStorage.updateManyStatus(
+                job.manifestId,
+                { isFolder: false, statusIn: ['UPLOADING', 'DOWNLOADING', 'VERIFYING'] },
+                'QUEUED'
+              );
+
+              const fullJob = await prisma.migrationJob.findUnique({
+                where: { id: job.id },
+                include: { session: true }
+              });
+
+              if (fullJob && fullJob.sessionId) {
+                console.log(`[WorkerWatchdog] RESTART_RECOVERY_RESUME | Re-triggering execution for orphaned job: ${job.id}`);
+                const { migrationWorker } = await import('../services/MigrationWorker');
+                const payload = {
+                  ...fullJob,
+                  jobId: fullJob.id,
+                  sessionId: fullJob.sessionId,
+                  options: { performance: { maxUploadWorkers: 32 } }
+                };
+                migrationWorker.executeMigration(payload as any).catch(err => {
+                  console.error(`[WorkerWatchdog] Recovery resume failed for ${job.id}:`, err);
+                });
+              }
+            } catch (recErr: any) {
+              console.error(`[WorkerWatchdog] Restart recovery error for ${job.id}: ${recErr.message}`);
+            }
+          }
+        }
+
         if (snapshot.recoveryAttempts >= MAX_RECOVERY_ATTEMPTS * 2) {
           // Orphaned job with no scheduler — mark failed after extended timeout
           console.error(

@@ -130,6 +130,22 @@ export class AuthController {
       : 'http://localhost:5173');
   }
 
+  private getCookieDomain(): string | undefined {
+    if (process.env.COOKIE_DOMAIN) return process.env.COOKIE_DOMAIN;
+    if (process.env.NODE_ENV !== 'production') return undefined;
+    const targetUrl = process.env.FRONTEND_URL || process.env.BACKEND_URL || '';
+    try {
+      const hostname = new URL(targetUrl).hostname;
+      const parts = hostname.split('.');
+      if (parts.length >= 2) {
+        return `.${parts.slice(-2).join('.')}`;
+      }
+      return hostname;
+    } catch (_) {
+      return undefined;
+    }
+  }
+
   private issueTokens(user: any, res: Response) {
     const payload = { userId: user.id, email: user.email, role: user.role };
     const accessToken = jwt.sign(payload, getJwtSecret(), { expiresIn: '1h' });
@@ -138,7 +154,7 @@ export class AuthController {
     // Omit passwordHash before sending
     const { passwordHash, ...userWithoutPassword } = user;
     
-    const domain = process.env.COOKIE_DOMAIN || (process.env.NODE_ENV === 'production' ? '.migration.ssrnservices.in' : undefined);
+    const domain = this.getCookieDomain();
 
     const cookieOptions = {
       httpOnly: true,
@@ -339,7 +355,7 @@ export class AuthController {
         const payload = { userId: user.id, email: user.email, role: user.role };
         const accessToken = jwt.sign(payload, getJwtSecret(), { expiresIn: '1h' });
         const refreshToken = jwt.sign(payload, getRefreshSecret(), { expiresIn: '7d' });
-        const domain = process.env.COOKIE_DOMAIN || (process.env.NODE_ENV === 'production' ? '.migration.ssrnservices.in' : undefined);
+        const domain = this.getCookieDomain();
 
         const cookieOptions = {
           httpOnly: true,

@@ -7,7 +7,23 @@ import { logger } from '../utils/logger';
 const PgStore = pgSession(session);
 const config = getConfig();
 
-const cookieDomain = config.COOKIE_DOMAIN || (config.NODE_ENV === 'production' ? '.googleshift.com' : undefined);
+const getDerivedCookieDomain = (): string | undefined => {
+  if (config.COOKIE_DOMAIN) return config.COOKIE_DOMAIN;
+  if (config.NODE_ENV !== 'production') return undefined;
+  const targetUrl = config.FRONTEND_URL || config.BACKEND_URL || '';
+  try {
+    const hostname = new URL(targetUrl).hostname;
+    const parts = hostname.split('.');
+    if (parts.length >= 2) {
+      return `.${parts.slice(-2).join('.')}`;
+    }
+    return hostname;
+  } catch (_) {
+    return undefined;
+  }
+};
+
+const cookieDomain = getDerivedCookieDomain();
 
 const cookieOptions: session.CookieOptions = {
   secure: config.NODE_ENV === 'production',

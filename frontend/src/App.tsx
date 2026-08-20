@@ -27,10 +27,18 @@ function AuthInit({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     console.log('[AuthInit] Initializing session check...');
     apiClient('/auth/me')
-      .then(data => {
+      .then(async data => {
         if (data.authenticated && data.user) {
           console.log('[AuthInit] User session active for:', data.user.email);
           setAuth(data.user);
+
+          // Check if user has an active migration running on backend
+          try {
+            const activeRes = await apiClient('/api/migrations/current');
+            if (activeRes && activeRes.jobId && activeRes.status !== 'idle') {
+              console.log(`[AuthInit] Active migration discovered: JobId ${activeRes.jobId} (Status: ${activeRes.status})`);
+            }
+          } catch (_) {}
         }
       })
       .catch(err => {

@@ -236,8 +236,9 @@ async function bootstrap() {
       }
 
       if (dbConnected) {
+        logger.info('[BACKEND_RESTART] Database connected. Initializing WorkerWatchdog and active job recovery check...');
         workerWatchdog.start();
-        logger.info('[WorkerWatchdog] Monitoring COPYING jobs every 60s.');
+        logger.info('[WorkerWatchdog] Monitoring COPYING/PREPARING jobs every 60s.');
       } else {
         logger.warn('⚠️ [Database Notice] Connection retries exhausted. Background reconnect active.');
       }

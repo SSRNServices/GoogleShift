@@ -7,7 +7,7 @@ type FetchOptions = RequestInit & {
 
 export const apiClient = async (endpoint: string, options: FetchOptions = {}) => {
   options.credentials = options.credentials || 'include';
-  const { accessToken, refreshToken, setAuth, logout } = useAuthStore.getState();
+  const { accessToken, refreshToken, setAuth } = useAuthStore.getState();
   const headers = new Headers(options.headers || {});
   
   if (accessToken) {
@@ -27,45 +27,41 @@ export const apiClient = async (endpoint: string, options: FetchOptions = {}) =>
   let response = await fetch(url, { ...options, headers });
 
   if (response.status === 401 && !endpoint.includes('/auth/login') && !endpoint.includes('/auth/refresh')) {
-    const hasTokens = !!accessToken || !!refreshToken || document.cookie.includes('refresh_token') || document.cookie.includes('access_token');
-
-    // If an unauthenticated user receives 401 on initial /auth/me check with no tokens, return quietly without refresh attempt
-    if (!hasTokens && endpoint.includes('/auth/me')) {
+    // If /auth/me returns 401, return unauthenticated state quietly
+    if (endpoint.includes('/auth/me')) {
       return response.json().catch(() => ({ authenticated: false }));
     }
 
-    if (hasTokens) {
-      console.warn(`[apiClient 401] Received 401 Unauthorized for ${endpoint}. Attempting automatic token refresh...`);
-      try {
-        const refreshPayload = refreshToken ? JSON.stringify({ refreshToken }) : undefined;
-        const refreshRes = await fetch(`${API_URL}/auth/refresh`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          ...(refreshPayload ? { body: refreshPayload } : {})
-        });
+    console.warn(`[apiClient 401] Received 401 Unauthorized for ${endpoint}. Attempting automatic token refresh...`);
+    try {
+      const refreshPayload = refreshToken ? JSON.stringify({ refreshToken }) : undefined;
+      const refreshRes = await fetch(`${API_URL}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        ...(refreshPayload ? { body: refreshPayload } : {})
+      });
 
-        if (refreshRes.ok) {
-          const data = await refreshRes.json();
-          console.log('[apiClient 200] Token refresh succeeded. Retrying original request to:', endpoint);
-          setAuth(data.user, data.accessToken, data.refreshToken);
+      if (refreshRes.ok) {
+        const data = await refreshRes.json();
+        console.log('[apiClient 200] Token refresh succeeded. Retrying original request to:', endpoint);
+        setAuth(data.user, data.accessToken, data.refreshToken);
 
-          // Retry original request with refreshed access token
-          if (data.accessToken) {
-            headers.set('Authorization', `Bearer ${data.accessToken}`);
-          }
-          response = await fetch(url, { ...options, headers });
-        } else {
-          console.warn('[apiClient] Refresh endpoint rejected with status:', refreshRes.status);
-          logout('Session expired. Please log in again.');
+        // Retry original request with refreshed access token
+        if (data.accessToken) {
+          headers.set('Authorization', `Bearer ${data.accessToken}`);
         }
-      } catch (err: unknown) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        console.error('[apiClient] Exception during token refresh attempt:', errMsg);
-        logout('Network or auth exception during token refresh.');
+        response = await fetch(url, { ...options, headers });
+      } else {
+        console.warn('[apiClient] Refresh endpoint rejected with status:', refreshRes.status);
+        // Do NOT call logout() here — throw error so calling view can handle gracefully
+        throw new Error('SESSION_EXPIRED: Session expired. Please log in again.');
       }
-    } else {
-      logout();
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (errMsg.includes('SESSION_EXPIRED')) throw err;
+      console.error('[apiClient] Exception during token refresh attempt:', errMsg);
+      throw new Error(`AUTH_ERROR: ${errMsg}`);
     }
   }
 
