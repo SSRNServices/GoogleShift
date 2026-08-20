@@ -460,9 +460,27 @@ export class FileScheduler implements ISchedulerHandle {
           } else {
             deadlockTimer += TICK_MS;
 
-            if (deadlockTimer === TICK_MS || deadlockTimer % 10_000 === 0) {
-              const unresolvedItems = await ManifestStorage.getUnresolvedItems(this.manifestId, 100);
+            if (deadlockTimer === TICK_MS || deadlockTimer % 5000 === 0) {
+              console.warn(
+                `[FileScheduler] Idle queue with ${unresolvedCount} unresolved items. Triggering MigrationReconciler...`
+              );
+              const { MigrationReconciler } = await import('../services/MigrationReconciler');
+              const recReport = await MigrationReconciler.reconcileSchedulerState(
+                this.manifestId,
+                this.destDrive,
+                this.folderCache.get('root') || 'root'
+              );
 
+              if (recReport.foldersRecovered > 0 || recReport.filesQueued > 0 || recReport.itemsResolved > 0) {
+                console.log(
+                  `[FileScheduler] MigrationReconciler recovered ${recReport.filesQueued} files / ${recReport.foldersRecovered} folders. Resetting deadlock timer.`
+                );
+                deadlockTimer = 0;
+                this.lastProgressAt = Date.now();
+                continue;
+              }
+
+              const unresolvedItems = await ManifestStorage.getUnresolvedItems(this.manifestId, 100);
               console.warn(
                 `[FileScheduler] DEADLOCK_AUDIT | UnresolvedCount: ${unresolvedCount} | ` +
                 `Timer: ${deadlockTimer}ms | JobId: ${this.jobId}`
@@ -471,7 +489,8 @@ export class FileScheduler implements ISchedulerHandle {
                 console.warn(
                   `  - ID: ${item.id} | Name: ${item.name} | ` +
                   `isFolder: ${item.isFolder} | Status: ${item.status} | ` +
-                  `ParentId: ${item.sourceParentId}`
+                  `ParentSourceId: ${item.sourceParentId} | DestParentId: ${item.destParentId || 'null'} | ` +
+                  `CreatedDestId: ${item.createdDestId || 'null'}`
                 );
               }
 

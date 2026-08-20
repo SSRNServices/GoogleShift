@@ -215,11 +215,15 @@ export class MigrationStateManager {
       const totalFiles = summaryStats.totalFiles;
       const totalBytes = BigInt(summaryStats.totalBytes);
 
-      // Use in-flight bytes only as an upper-bound hint — never less than DB bytes
-      const transferredBytes =
+      // Use in-flight bytes only as an upper-bound hint — never less than DB bytes and capped at totalBytes
+      let rawTransferred =
         this.activeTransferredBytes > dbTransferredBytes
           ? this.activeTransferredBytes
           : dbTransferredBytes;
+
+      const transferredBytes = totalBytes > BigInt(0) && rawTransferred > totalBytes
+        ? totalBytes
+        : rawTransferred;
 
       // ── Speed and ETA calculation ─────────────────────────────────────────────
       const now = Date.now();

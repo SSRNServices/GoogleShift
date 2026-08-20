@@ -68,37 +68,46 @@ export class FolderScheduler {
         lastDiagTime = now;
       }
 
-      // 5-second Deadlock Detector
+      // 15-second Deadlock / Stall Detector
       if (readyCount !== prevReady || activeCount !== prevActive) {
          lastProgressTime = now;
          prevReady = readyCount;
          prevActive = activeCount;
       }
-      if (now - lastProgressTime >= 30000) {
-         console.error(`\n[FATAL] FolderScheduler Deadlock Detected! No state changes in 30 seconds.`);
-         console.error(`[Scheduler Status] Workers Running: ${activeCount} | Ready Queue: ${readyCount}`);
-         this.dag.dumpDAG();
-         
-         // Final check: did all folders succeed anyway?
+      if (now - lastProgressTime >= 15000) {
+         console.warn(`[FolderScheduler] 15s stall detected. Triggering MigrationReconciler...`);
+         const { MigrationReconciler } = await import('../services/MigrationReconciler');
+         await MigrationReconciler.reconcileSchedulerState(this.manifestId, this.destDrive, this.dag.getDestParentId('root') || 'root');
+
          const pendingFolders = await ManifestStorage.getPendingFoldersByDepth(this.manifestId);
          if (pendingFolders.length === 0) {
-            console.log(`[FolderScheduler] Deadlock detector overriding fatal error: No pending folders remain. Exiting cleanly.`);
+            console.log(`[FolderScheduler] Reconciliation complete: No pending folders remain in DB. Exiting cleanly.`);
             break;
          }
-         
-         const resolved = this.dag.resolveStuckNodes();
-         if (resolved > 0) {
-            console.log(`[FolderScheduler] Resolved ${resolved} stuck nodes. Continuing completion check.`);
-         } else {
-            throw new Error('FolderScheduler Deadlock');
-         }
+
+         this.dag.rebuildFromDB(pendingFolders);
+         lastProgressTime = now;
       }
 
-      // If nothing is ready and nothing is active, resolve remaining stuck nodes and exit
+      // If nothing is ready and nothing is active, run final DB reconciliation
       if (readyCount === 0 && activeCount === 0) {
-         const resolved = this.dag.resolveStuckNodes();
-         console.warn(`[FolderScheduler] Folder DAG processing finished. Auto-resolved ${resolved} stuck/unreachable nodes.`);
-         break;
+         console.log(`[FolderScheduler] Queue & workers idle. Running final DB reconciliation...`);
+         const { MigrationReconciler } = await import('../services/MigrationReconciler');
+         await MigrationReconciler.reconcileSchedulerState(this.manifestId, this.destDrive, this.dag.getDestParentId('root') || 'root');
+
+         const remainingFolders = await ManifestStorage.getPendingFoldersByDepth(this.manifestId);
+         if (remainingFolders.length === 0) {
+            console.log(`[FolderScheduler] All folders successfully created or reconciled.`);
+            break;
+         } else {
+            console.warn(`[FolderScheduler] ${remainingFolders.length} folders still pending after reconciliation. Rebuilding DAG...`);
+            this.dag.rebuildFromDB(remainingFolders);
+            if (this.dag.getReadyCount() === 0 && this.dag.getActiveCount() === 0) {
+               console.error(`[FolderScheduler] Unable to advance DAG for ${remainingFolders.length} unresolved folders.`);
+               this.dag.dumpDAG();
+               break;
+            }
+         }
       }
 
       const availableConcurrency = Math.max(0, this.rateLimiter.getConcurrency() - activeCount);

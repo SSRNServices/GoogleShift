@@ -254,12 +254,15 @@ export class ManifestStorage {
 
   public static async getFolderCache(manifestId: string): Promise<Map<string, string>> {
     const db = await this.getDb(manifestId);
-    const rows = await db.all<Array<{ id: string; createdDestId: string | null }>>(
-      `SELECT id, createdDestId FROM manifest_items WHERE isFolder = 1 AND createdDestId IS NOT NULL`
+    const rows = await db.all<Array<{ id: string; sourceId: string; createdDestId: string | null }>>(
+      `SELECT id, sourceId, createdDestId FROM manifest_items WHERE isFolder = 1 AND createdDestId IS NOT NULL`
     );
     const cache = new Map<string, string>();
     for (const r of rows) {
-      if (r.createdDestId) cache.set(r.id, r.createdDestId);
+      if (r.createdDestId) {
+        if (r.id) cache.set(r.id, r.createdDestId);
+        if (r.sourceId) cache.set(r.sourceId, r.createdDestId);
+      }
     }
     return cache;
   }

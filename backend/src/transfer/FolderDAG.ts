@@ -132,16 +132,11 @@ export class FolderDAG {
     return true;
   }
 
-  public resolveStuckNodes(): number {
-    let resolved = 0;
-    for (const node of this.nodes.values()) {
-      if (node.status === 'WAITING' || node.status === 'CREATING') {
-        console.warn(`[FolderDAG] Auto-failing stuck node ${node.name} (${node.id}) with status ${node.status}`);
-        node.status = 'FAILED';
-        resolved++;
-      }
-    }
-    return resolved;
+  public rebuildFromDB(manifestFolders: ManifestItem[]) {
+    console.log(`[FolderDAG] Rebuilding DAG from ${manifestFolders.length} DB manifest folders...`);
+    this.nodes.clear();
+    this.readyQueue = [];
+    this.build(manifestFolders);
   }
 
   public getActiveCount(): number {
