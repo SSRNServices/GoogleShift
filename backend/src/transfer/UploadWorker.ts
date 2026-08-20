@@ -18,6 +18,13 @@ import {
 import { MigrationConfig } from './types';
 import { prisma } from '../utils/database';
 
+import {
+  toNodeReadable,
+  assertNodeReadable,
+  logBodyDiagnostics,
+  UploadStreamTypeError
+} from '../utils/StreamNormalizer';
+
 export class ProgressTransform extends Transform {
   private onChunk: (chunkLength: number) => void;
 
@@ -47,6 +54,9 @@ function computeTransferTimeout(fileSizeBytes: number): number {
 
 function classifyErrorDetails(e: any): string {
   const msg = e?.message || '';
+  if (msg.includes('pipe is not a function') || msg.includes('UPLOAD_STREAM_TYPE_ERROR') || e?.name === 'UploadStreamTypeError' || e instanceof UploadStreamTypeError) {
+    return 'Upload Stream Type Error';
+  }
   if (msg.includes('push() after EOF') || msg.includes('ERR_STREAM_PUSH_AFTER_EOF') || e?.name === 'StreamLifecycleError' || e instanceof StreamLifecycleError) {
     return 'Stream Lifecycle Error';
   }
@@ -346,6 +356,9 @@ export class UploadWorker {
         this.lastActivity = Date.now();
         this.lastProgressAt = Date.now();
 
+        const uploadStream = toNodeReadable(buffer);
+        assertNodeReadable(uploadStream, `TINY upload for ${item.name}`);
+
         let createRes: any;
         try {
           createRes = await this.destDrive.files.create(
@@ -357,7 +370,7 @@ export class UploadWorker {
               },
               media: {
                 mimeType: targetMimeType,
-                body: buffer
+                body: uploadStream
               },
               fields: 'id'
             },
@@ -366,7 +379,7 @@ export class UploadWorker {
         } catch (e: any) {
           throw new UploadError(
             `UPLOAD_TINY failed for file "${item.name}" (${item.sourceId}): ${e.message}`,
-            { isRetryable: true }
+            { isRetryable: classifyError(e) === 'retryable' }
           );
         }
 
@@ -525,6 +538,9 @@ export class UploadWorker {
     let uploadedFileId: string;
 
     try {
+      const normalizedUploadStream = toNodeReadable(progressPT);
+      assertNodeReadable(normalizedUploadStream, item.name);
+
       const uploadPromise = this.destDrive.files.create(
         {
           requestBody: {
@@ -534,7 +550,7 @@ export class UploadWorker {
           },
           media: {
             mimeType: targetMimeType,
-            body: progressPT
+            body: normalizedUploadStream
           },
           fields: 'id'
         },

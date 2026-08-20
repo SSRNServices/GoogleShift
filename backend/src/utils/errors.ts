@@ -240,7 +240,10 @@ export function classifyError(e: any): 'retryable' | 'permanent' | 'unknown' {
     msg.includes('push() after EOF') ||
     msg.includes('ERR_STREAM_PUSH_AFTER_EOF') ||
     code === 'ERR_STREAM_PUSH_AFTER_EOF' ||
-    e?.name === 'StreamLifecycleError'
+    e?.name === 'StreamLifecycleError' ||
+    e?.name === 'UploadStreamTypeError' ||
+    msg.includes('pipe is not a function') ||
+    msg.includes('UPLOAD_STREAM_TYPE_ERROR')
   ) {
     return 'permanent';
   }
