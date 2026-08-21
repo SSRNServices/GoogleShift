@@ -230,6 +230,7 @@ export default function Migration() {
   };
 
   const [discoveryCompleted, setDiscoveryCompleted] = useState(false);
+  const [activeDiscoveryStatus, setActiveDiscoveryStatus] = useState<string>('QUEUED');
 
   const handleDiscoveryComplete = useCallback((summary: { manifestId?: string; totalFolders?: number; totalFiles?: number; totalBytes?: number }) => {
     console.log('[MigrationWizard] handleDiscoveryComplete invoked with summary:', summary);
@@ -237,6 +238,7 @@ export default function Migration() {
       setManifestId(summary.manifestId);
     }
     setDiscoveryCompleted(true);
+    setActiveDiscoveryStatus('COMPLETED');
     if (sessionId) {
       fetchSession(sessionId).catch(console.error);
     }
@@ -245,6 +247,7 @@ export default function Migration() {
 
   const handleDiscoveryError = useCallback((err: string) => {
     setDiscoveryCompleted(false);
+    setActiveDiscoveryStatus('FAILED');
     toast.error(err);
   }, []);
 
@@ -259,7 +262,12 @@ export default function Migration() {
     return true;
   };
 
-  const isDiscoveryFinished = sessionData?.discoveryStatus === 'COMPLETED' || discoveryCompleted;
+  const isDiscoveryFinished = 
+    (activeDiscoveryStatus === 'COMPLETED' || discoveryCompleted || sessionData?.discoveryStatus === 'COMPLETED') &&
+    activeDiscoveryStatus !== 'SCANNING' &&
+    activeDiscoveryStatus !== 'FINALIZING' &&
+    activeDiscoveryStatus !== 'FAILED' &&
+    activeDiscoveryStatus !== 'CANCELLED';
 
   return (
     <div className="max-w-4xl mx-auto py-8">
@@ -384,6 +392,7 @@ export default function Migration() {
                 sessionId={sessionId}
                 onComplete={handleDiscoveryComplete}
                 onError={handleDiscoveryError}
+                onStatusChange={setActiveDiscoveryStatus}
               />
             )}
           </div>

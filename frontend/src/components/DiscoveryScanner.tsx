@@ -19,7 +19,19 @@ interface DiscoveryScannerProps {
   sessionId: string;
   onComplete: (summary: SummaryResult) => void;
   onError: (error: string) => void;
+  onStatusChange?: (status: string) => void;
 }
+
+const normalizeStatus = (statusStr: string): string => {
+  const s = (statusStr || 'QUEUED').toUpperCase();
+  if (s === 'COMPLETE' || s === 'COMPLETED' || s === 'SCAN_COMPLETED') return 'COMPLETED';
+  if (s === 'FINALIZING' || s === 'MANIFEST_UPDATED') return 'FINALIZING';
+  if (s === 'DISCOVERING' || s === 'SCANNING') return 'SCANNING';
+  if (s === 'CONNECTING' || s === 'PREPARING') return 'CONNECTING';
+  if (s === 'FAILED') return 'FAILED';
+  if (s === 'CANCELLED') return 'CANCELLED';
+  return s;
+};
 
 const formatBytes = (bytes: number) => {
   if (!bytes || bytes === 0) return '0 B';
@@ -43,7 +55,7 @@ export interface DiscoveryStats {
   elapsed: number;
 }
 
-export function DiscoveryScanner({ sourceId, itemsParam, sessionId, onComplete, onError }: DiscoveryScannerProps) {
+export function DiscoveryScanner({ sourceId, itemsParam, sessionId, onComplete, onError, onStatusChange }: DiscoveryScannerProps) {
   const [jobId, setJobId] = useState<string | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
   const [stats, setStats] = useState<DiscoveryStats>({
@@ -66,11 +78,13 @@ export function DiscoveryScanner({ sourceId, itemsParam, sessionId, onComplete, 
   const abortControllerRef = useRef<AbortController | null>(null);
   const onCompleteRef = useRef(onComplete);
   const onErrorRef = useRef(onError);
+  const onStatusChangeRef = useRef(onStatusChange);
 
   useEffect(() => {
     onCompleteRef.current = onComplete;
     onErrorRef.current = onError;
-  }, [onComplete, onError]);
+    onStatusChangeRef.current = onStatusChange;
+  }, [onComplete, onError, onStatusChange]);
 
   const processIncomingData = useCallback((data: Record<string, unknown>): boolean => {
     if (!data) return false;
@@ -78,9 +92,14 @@ export function DiscoveryScanner({ sourceId, itemsParam, sessionId, onComplete, 
     console.log('[DiscoveryScanner] Ingestion Payload:', data);
 
     const rawStatus = String(data.status || data.phase || data.state || 'QUEUED').toUpperCase();
-    console.log('[DiscoveryScanner] Current Normalized Status:', rawStatus);
+    const canonicalStatus = normalizeStatus(rawStatus);
+    console.log(`[DiscoveryScanner] Status raw='${rawStatus}', canonical='${canonicalStatus}'`);
 
-    if (rawStatus === 'FAILED' || data.error) {
+    if (onStatusChangeRef.current) {
+      onStatusChangeRef.current(canonicalStatus);
+    }
+
+    if (canonicalStatus === 'FAILED' || data.error) {
       const errMsg = String(data.error || data.message || 'Discovery job failed during execution.');
       console.error('[DiscoveryScanner] Failure/Error state received:', errMsg);
       setInitError(errMsg);
@@ -88,14 +107,14 @@ export function DiscoveryScanner({ sourceId, itemsParam, sessionId, onComplete, 
       return true;
     }
 
-    if (rawStatus === 'CANCELLED') {
+    if (canonicalStatus === 'CANCELLED') {
       const errMsg = 'Discovery job was cancelled.';
       setInitError(errMsg);
       onErrorRef.current(errMsg);
       return true;
     }
 
-    const isCompletedState = rawStatus === 'COMPLETED' || data.completed === true || data.event === 'SCAN_COMPLETED';
+    const isCompletedState = canonicalStatus === 'COMPLETED' || data.completed === true || data.event === 'SCAN_COMPLETED';
 
     const newFolders = Number(data.foldersFound ?? data.totalFolders ?? data.folders ?? 0);
     const newFiles = Number(data.filesFound ?? data.totalFiles ?? data.files ?? 0);
@@ -127,6 +146,9 @@ export function DiscoveryScanner({ sourceId, itemsParam, sessionId, onComplete, 
         elapsed: elapsedMs || prev.elapsed,
         message: 'Discovery complete!'
       }));
+      if (onStatusChangeRef.current) {
+        onStatusChangeRef.current('COMPLETED');
+      }
       onCompleteRef.current(summaryObj);
       return true;
     }
@@ -140,8 +162,8 @@ export function DiscoveryScanner({ sourceId, itemsParam, sessionId, onComplete, 
         : prev.googleRequests;
 
       let messageStr = 'Scanning Google Drive...';
-      if (rawStatus === 'FINALIZING') {
-        messageStr = typeof data.currentFolder === 'string' && data.currentFolder ? data.currentFolder : 'Finalizing discovery & saving manifest to database...';
+      if (canonicalStatus === 'FINALIZING') {
+        messageStr = typeof data.currentFolder === 'string' && data.currentFolder ? data.currentFolder : 'Analyzing destination storage & building summary...';
       } else if (data.currentFolder) {
         messageStr = `Scanning folder: ${data.currentFolder}`;
       } else if (data.currentFile) {
@@ -149,7 +171,7 @@ export function DiscoveryScanner({ sourceId, itemsParam, sessionId, onComplete, 
       }
 
       return {
-        status: rawStatus,
+        status: canonicalStatus,
         folders: updatedFolders,
         files: updatedFiles,
         bytes: updatedBytes,

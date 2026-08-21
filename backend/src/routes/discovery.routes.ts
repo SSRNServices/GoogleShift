@@ -549,6 +549,8 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
         return;
       }
 
+      job = await autoHealFinalizingJob(job);
+
       // Watchdog Staleness Detection: Fail job ONLY if lastHeartbeat is older than 5 minutes (300,000ms)
       const lastHeartbeatMs = job.lastHeartbeat ? job.lastHeartbeat.getTime() : (job.startedAt ? job.startedAt.getTime() : Date.now());
       const heartbeatAgeMs = Date.now() - lastHeartbeatMs;

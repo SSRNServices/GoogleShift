@@ -52,8 +52,37 @@ export class DiscoveryWorker {
       }, 5000);
 
       const onProgress = async (event: string, data: any) => {
+        if (event === 'SCAN_COMPLETED') {
+          console.log("[DISCOVERY FINALIZE] SCAN_COMPLETED event received in onProgress. Updating DB state to COMPLETED...");
+          const totalFolders = data?.totalFolders || 0;
+          const totalFiles = data?.totalFiles || 0;
+          const totalBytes = data?.totalBytes || 0;
+          const googleRequests = data?.googleRequests || 0;
+
+          await prisma.discoveryJob.update({
+            where: { id: job.id },
+            data: {
+              state: 'COMPLETED',
+              completedAt: new Date(),
+              foldersFound: totalFolders,
+              filesFound: totalFiles,
+              bytesFound: totalBytes ? BigInt(totalBytes) : BigInt(0),
+              checkpointData: JSON.stringify({ googleRequests })
+            }
+          }).catch(err => console.error(`[DISCOVERY FINALIZE] Error updating DiscoveryJob state to COMPLETED:`, err.message));
+
+          if (job.sessionId) {
+            await prisma.migrationSession.update({
+              where: { id: job.sessionId },
+              data: { discoveryStatus: 'COMPLETED', manifestId: job.manifestId }
+            }).catch(err => console.error(`[DISCOVERY FINALIZE] Error updating MigrationSession discoveryStatus to COMPLETED:`, err.message));
+          }
+          console.log("[DISCOVERY FINALIZE] DB state successfully set to COMPLETED.");
+          return;
+        }
+
         if (event === 'MANIFEST_UPDATED' || event === 'FINALIZING') {
-          console.log("DISCOVERY STATUS FINALIZING");
+          console.log("[DISCOVERY FINALIZE] DISCOVERY STATUS FINALIZING");
           await prisma.discoveryJob.update({
             where: { id: job.id },
             data: { 
