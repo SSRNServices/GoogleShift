@@ -427,6 +427,7 @@ export class UploadWorker {
       `[Worker ${this.id}] DOWNLOAD_START | File: ${item.name} | FileId: ${item.sourceId} | ` +
       `Size: ${item.size} | TargetMIME: ${targetMimeType} | ExportMIME: ${exportMimeType || 'none'}`
     );
+    this.stateManager?.reportWorkerAction?.(item, `Downloading ${item.name}`);
 
     // ── FIRST-BYTE TIMEOUT PROTECTION ───────────────────────────────────────────
     let firstByteReceived = false;
@@ -569,6 +570,7 @@ export class UploadWorker {
     }, UPLOAD_STALL_CHECK_INTERVAL_MS);
 
     await this.stateManager.updateState(item.id, 'UPLOADING');
+    this.stateManager?.reportWorkerAction?.(item, `Uploading ${item.name}`);
 
     console.log(
       `[Worker ${this.id}] UPLOAD_START | File: ${item.name} | FileId: ${item.sourceId} | ` +
@@ -619,12 +621,13 @@ export class UploadWorker {
         return createRes.data?.id;
       })();
 
+      let timerId: NodeJS.Timeout | undefined;
       const timeoutPromise = new Promise<never>((_, reject) => {
         const uploadPhaseTimeout = Math.max(
           15 * 60 * 1000,
           computeTransferTimeout(item.size || 0)
         );
-        setTimeout(() => {
+        timerId = setTimeout(() => {
           if (!controller.signal.aborted) {
             console.error(
               `[Worker ${this.id}] UPLOAD_PHASE_TIMEOUT | File: ${item.name} | ` +
@@ -640,7 +643,11 @@ export class UploadWorker {
         }, uploadPhaseTimeout);
       });
 
-      uploadedFileId = await Promise.race([uploadPromise, timeoutPromise]);
+      try {
+        uploadedFileId = await Promise.race([uploadPromise, timeoutPromise]);
+      } finally {
+        if (timerId) clearTimeout(timerId);
+      }
 
       if (!uploadedFileId) {
         throw new UploadError(

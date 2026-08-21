@@ -52,8 +52,11 @@ export class MigrationStateManager {
   private zeroSpeedCount: number = 0;
 
   // ── Active item tracking ──────────────────────────────────────────────────────
+  // ── Active item & sequence tracking ──────────────────────────────────────────
   public activeFileName: string = '';
   public activeFolderName: string = '';
+  public currentAction: string = 'Copying files...';
+  public sequenceNumber: number = 0;
 
   // ── Stall flag (read by FileScheduler / WorkerWatchdog) ──────────────────────
   public isStalled: boolean = false;
@@ -75,6 +78,14 @@ export class MigrationStateManager {
         }
       }
     }, PROGRESS_EMIT_INTERVAL_MS);
+  }
+
+  public reportWorkerAction(item: ManifestItem, action: string, activeWorkers?: number): void {
+    if (item && item.name) {
+      this.activeFileName = item.name;
+    }
+    const workerText = activeWorkers && activeWorkers > 0 ? ` (${activeWorkers} active workers)` : '';
+    this.currentAction = `${action}${workerText}`;
   }
 
   // ── Pending write count (FileScheduler uses this to wait for quiescence) ──────
@@ -108,15 +119,19 @@ export class MigrationStateManager {
    * Mark a file as SUCCESS. Parallel with other commitSuccess calls.
    */
   public async commitSuccess(item: ManifestItem): Promise<void> {
-    return this.timedWrite(`commitSuccess(${item.id})`, async () => {
+    this.sequenceNumber++;
+    await this.timedWrite(`commitSuccess(${item.id})`, async () => {
       await ManifestStorage.updateItemStatus(this.manifestId, item.id, 'SUCCESS');
     });
+    // Instant sync to MigrationJob DB without blocking worker
+    this.emitProgress().catch(() => {});
   }
 
   /**
    * Mark a folder as created in the destination. Must be awaited before queueChildren.
    */
   public async commitFolderSuccess(sourceId: string, destId: string): Promise<void> {
+    this.sequenceNumber++;
     return this.timedWrite(`commitFolderSuccess(${sourceId})`, async () => {
       try {
         await ManifestStorage.updateCreatedDestId(this.manifestId, sourceId, destId);
@@ -131,6 +146,7 @@ export class MigrationStateManager {
   }
 
   public async commitFolderError(sourceId: string): Promise<void> {
+    this.sequenceNumber++;
     return this.timedWrite(`commitFolderError(${sourceId})`, async () => {
       await ManifestStorage.updateItemStatus(this.manifestId, sourceId, 'FAILED');
     });
@@ -156,9 +172,13 @@ export class MigrationStateManager {
    * Uses ManifestStorage which guards against backwards transitions (SUCCESS → anything else).
    */
   public async updateState(itemId: string, status: ManifestItem['status']): Promise<void> {
-    return this.timedWrite(`updateState(${itemId}, ${status})`, async () => {
+    this.sequenceNumber++;
+    await this.timedWrite(`updateState(${itemId}, ${status})`, async () => {
       await ManifestStorage.updateItemStatus(this.manifestId, itemId, status);
     });
+    if (status === 'FAILED' || status === 'SUCCESS') {
+      this.emitProgress().catch(() => {});
+    }
   }
 
   /**
@@ -166,6 +186,7 @@ export class MigrationStateManager {
    * Used by the watchdog and retry path to rescue stuck UPLOADING items.
    */
   public async resetToQueued(itemId: string): Promise<void> {
+    this.sequenceNumber++;
     return this.timedWrite(`resetToQueued(${itemId})`, async () => {
       const item = await ManifestStorage.getItem(this.manifestId, itemId);
       if (item && ['UPLOADING', 'DOWNLOADING', 'VERIFYING', 'QUEUED'].includes(item.status)) {
@@ -202,7 +223,7 @@ export class MigrationStateManager {
 
   // ── Progress emission ─────────────────────────────────────────────────────────
 
-  private async emitProgress(): Promise<void> {
+  public async emitProgress(): Promise<void> {
     if (this.isFinalized) return;
 
     try {
@@ -231,13 +252,13 @@ export class MigrationStateManager {
       let speed = 0;
       let eta: number | null = null;
 
-      if (elapsedSec >= 1.0 || this.lastEmitTime === 0) {
+      if (elapsedSec >= 0.5 || this.lastEmitTime === 0) {
         const bytesDiff = Number(transferredBytes - this.lastTransferredBytes);
 
         if (bytesDiff > 0) {
           // Progress is being made
           this.zeroSpeedCount = 0;
-          speed = bytesDiff / elapsedSec;
+          speed = bytesDiff / (elapsedSec || 1);
 
           // Rolling average over last 10 samples
           this.speedSamples.push(speed);
@@ -269,6 +290,7 @@ export class MigrationStateManager {
       // ── Current active file / folder (in-memory tracking) ─────────────────────
       const activeFileName = this.activeFileName || '';
       const activeFolderName = this.activeFolderName || '';
+      const currentActionText = this.currentAction || 'Copying files...';
 
       const totalElapsedSec = (now - this.startTime) / 1000;
       const averageSpeed = totalElapsedSec > 0 ? Number(transferredBytes) / totalElapsedSec : 0;
@@ -284,6 +306,7 @@ export class MigrationStateManager {
         speed,
         averageSpeed,
         eta: eta ?? 0, // DB stores 0 for null/unknown — UI interprets 0 as "Calculating..."
+        currentAction: currentActionText,
         currentFile: activeFileName,
         currentFolder: activeFolderName,
         pendingDBWrites: this.pendingWrites

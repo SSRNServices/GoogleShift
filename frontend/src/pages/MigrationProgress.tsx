@@ -77,6 +77,12 @@ export default function MigrationProgress() {
 
   const speedSamplesRef = useRef<number[]>([]);
   const [averageSpeed, setAverageSpeed] = useState(0);
+  const lastSequenceRef = useRef<number>(0);
+  const currentJobIdRef = useRef<string | null>(jobId);
+
+  useEffect(() => {
+    currentJobIdRef.current = jobId;
+  }, [jobId]);
 
   const fetchCurrentJob = useCallback(async () => {
     try {
@@ -112,6 +118,9 @@ export default function MigrationProgress() {
         setConnectionError(null);
         const details = await migrationApi.getJobDetails(jobId);
         if (details && details.progress) {
+          if (details.sequenceNumber && details.sequenceNumber > lastSequenceRef.current) {
+            lastSequenceRef.current = details.sequenceNumber;
+          }
           setStatus({
             status: details.status || 'idle',
             percentage: details.progress.percentage || 0,
@@ -153,46 +162,43 @@ export default function MigrationProgress() {
   useEffect(() => {
     if (!jobId) return;
 
-    let pollingInterval: ReturnType<typeof setInterval> | null = null;
-
-    const startPollingFallback = () => {
-      if (pollingInterval) return;
-      console.log('[MigrationProgress] Using HTTP polling for progress updates...');
-      pollingInterval = setInterval(async () => {
-        try {
-          const details = await migrationApi.getJobDetails(jobId);
-          if (details && details.progress) {
-            setLoading(false);
-            setConnectionError(null);
-            setConnectionState('CONNECTED');
-            setStatus(prev => ({
-              ...prev,
-              status: details.status || prev.status,
-              percentage: details.progress.percentage || prev.percentage,
-              bytePercentage: details.progress.bytePercentage || prev.bytePercentage,
-              filePercentage: details.progress.filePercentage || prev.filePercentage,
-              totalFolders: details.progress.totalFolders || prev.totalFolders,
-              totalFiles: details.progress.totalFiles || prev.totalFiles,
-              completedFiles: details.progress.completedFiles || prev.completedFiles,
-              failedFiles: details.progress.failedFiles || prev.failedFiles,
-              totalBytes: Number(details.progress.totalBytes || prev.totalBytes),
-              transferredBytes: Number(details.progress.transferredBytes || prev.transferredBytes),
-              currentFile: details.progress.currentFile || prev.currentFile,
-              currentFolder: details.progress.currentFolder || prev.currentFolder,
-              currentAction: details.progress.currentAction || prev.currentAction,
-              speedBytesPerSecond: details.progress.speedBytesPerSecond || prev.speedBytesPerSecond,
-              remainingSeconds: details.progress.remainingSeconds ?? prev.remainingSeconds,
-              logs: details.logs || prev.logs,
-              failedItems: details.failedItems || prev.failedItems,
-              failureReason: details.failureReason || prev.failureReason
-            }));
+    // Periodic HTTP reconciliation poll to guarantee state sync with backend
+    const reconciliationInterval = setInterval(async () => {
+      try {
+        const details = await migrationApi.getJobDetails(jobId);
+        if (details && details.progress) {
+          if (details.sequenceNumber && details.sequenceNumber < lastSequenceRef.current) {
+            return; // Ignore older snapshot
           }
-        } catch (e) {
-          console.warn('[MigrationProgress] Polling update warning:', e);
-          setConnectionState('RECONNECTING');
+          if (details.sequenceNumber) {
+            lastSequenceRef.current = details.sequenceNumber;
+          }
+          setStatus(prev => ({
+            ...prev,
+            status: details.status || prev.status,
+            percentage: details.progress.percentage || prev.percentage,
+            bytePercentage: details.progress.bytePercentage || prev.bytePercentage,
+            filePercentage: details.progress.filePercentage || prev.filePercentage,
+            totalFolders: details.progress.totalFolders || prev.totalFolders,
+            totalFiles: details.progress.totalFiles || prev.totalFiles,
+            completedFiles: details.progress.completedFiles || prev.completedFiles,
+            failedFiles: details.progress.failedFiles || prev.failedFiles,
+            totalBytes: Number(details.progress.totalBytes || prev.totalBytes),
+            transferredBytes: Number(details.progress.transferredBytes || prev.transferredBytes),
+            currentFile: details.progress.currentFile || prev.currentFile,
+            currentFolder: details.progress.currentFolder || prev.currentFolder,
+            currentAction: details.progress.currentAction || prev.currentAction,
+            speedBytesPerSecond: details.progress.speedBytesPerSecond || prev.speedBytesPerSecond,
+            remainingSeconds: details.progress.remainingSeconds ?? prev.remainingSeconds,
+            logs: details.logs || prev.logs,
+            failedItems: details.failedItems || prev.failedItems,
+            failureReason: details.failureReason || prev.failureReason
+          }));
         }
-      }, 3000);
-    };
+      } catch (e) {
+        console.warn('[MigrationProgress] Reconciliation warning:', e);
+      }
+    }, 3000);
 
     const { accessToken } = useAuthStore.getState();
     const tokenParam = accessToken ? `?token=${encodeURIComponent(accessToken)}` : '';
@@ -203,10 +209,8 @@ export default function MigrationProgress() {
     });
 
     const sseTimeout = setTimeout(() => {
-      // If SSE takes >5s to emit data, fall back to HTTP polling without breaking UI
       setLoading(false);
-      setConnectionState('RECONNECTING');
-      startPollingFallback();
+      setConnectionState('CONNECTED');
     }, 5000);
 
     eventSource.onopen = () => {
@@ -215,11 +219,9 @@ export default function MigrationProgress() {
     };
 
     eventSource.onerror = () => {
-      console.warn('[MigrationProgress] SSE connection issue. Switching to HTTP polling fallback...');
+      console.warn('[MigrationProgress] SSE connection reconnecting...');
       setLoading(false);
       setConnectionState('RECONNECTING');
-      eventSource.close();
-      startPollingFallback();
     };
 
     eventSource.onmessage = (event) => {
@@ -233,9 +235,14 @@ export default function MigrationProgress() {
           setConnectionError(data.error);
           setLoading(false);
           eventSource.close();
-          if (pollingInterval) clearInterval(pollingInterval);
+          clearInterval(reconciliationInterval);
           return;
         }
+
+        // Validate jobId & sequenceNumber to prevent stale or out-of-order state overwrites
+        if (data.jobId && data.jobId !== currentJobIdRef.current) return;
+        if (data.sequenceNumber && data.sequenceNumber < lastSequenceRef.current) return;
+        if (data.sequenceNumber) lastSequenceRef.current = data.sequenceNumber;
 
         if (data.averageSpeed && data.averageSpeed > 0) {
           setAverageSpeed(data.averageSpeed);
@@ -274,7 +281,7 @@ export default function MigrationProgress() {
 
         if (['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(data.status)) {
           eventSource.close();
-          if (pollingInterval) clearInterval(pollingInterval);
+          clearInterval(reconciliationInterval);
         }
       } catch (e) {
         console.error('Failed to parse SSE data', e);
@@ -284,7 +291,7 @@ export default function MigrationProgress() {
     return () => {
       clearTimeout(sseTimeout);
       eventSource.close();
-      if (pollingInterval) clearInterval(pollingInterval);
+      clearInterval(reconciliationInterval);
     };
   }, [jobId]);
 

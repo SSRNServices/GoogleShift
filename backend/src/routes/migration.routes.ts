@@ -4,6 +4,7 @@ import { prisma } from "../utils/database";
 import { requireBothAuth, requireUserAuth } from '../auth/auth.middleware';
 import { StartMigrationPayload } from '../transfer/types';
 import { jobRegistry } from '../transfer/JobRegistry';
+import { ManifestStorage } from '../utils/ManifestStorage';
 
 const router = Router();
 
@@ -161,29 +162,46 @@ router.get('/:jobId', requireUserAuth, async (req, res) => {
       return res.status(404).json({ error: 'Migration job not found' });
     }
 
+    const manifestId = job.manifestId || job.id;
+    let summaryStats: any = null;
+    try {
+      summaryStats = await ManifestStorage.getSummaryStats(manifestId);
+    } catch (_) {}
+
+    const completedFiles = summaryStats ? summaryStats.completedFiles : job.completedFiles;
+    const failedFiles = summaryStats ? summaryStats.failedFiles : job.failedFiles;
+    const totalFiles = summaryStats ? summaryStats.totalFiles : job.totalFiles;
+    const pendingFiles = summaryStats ? summaryStats.pendingFiles : 0;
+    const processingFiles = summaryStats ? summaryStats.processingFiles : 0;
+    const totalBytes = summaryStats ? BigInt(summaryStats.totalBytes) : job.totalBytes;
+    const transferredBytes = summaryStats ? BigInt(summaryStats.transferredBytes) : job.transferredBytes;
+
     const logs = job.logs.map(l => l.message);
     const isSuccessTerminal = job.state === 'COMPLETED';
     const isTerminal = ['COMPLETED', 'FAILED', 'CANCELLED'].includes(job.state);
     let computedStatus = job.state.toLowerCase();
     if (job.state === 'COMPLETED') {
-      computedStatus = job.failedFiles > 0 ? 'completed_with_errors' : 'completed';
+      computedStatus = failedFiles > 0 ? 'completed_with_errors' : 'completed';
     }
 
-    const processed = job.completedFiles + job.failedFiles;
-    let filePercentage = job.totalFiles > 0 ? Math.min(100, Math.floor((processed / job.totalFiles) * 100)) : 0;
-    let bytePercentage = job.totalBytes > BigInt(0) ? Math.min(100, Math.floor((Number(job.transferredBytes) / Number(job.totalBytes)) * 100)) : 0;
+    const processed = completedFiles + failedFiles;
+    let filePercentage = totalFiles > 0 ? Math.min(100, Math.floor((processed / totalFiles) * 100)) : 0;
+    let bytePercentage = totalBytes > BigInt(0) ? Math.min(100, Math.floor((Number(transferredBytes) / Number(totalBytes)) * 100)) : 0;
 
     if (isSuccessTerminal) {
       filePercentage = 100;
       bytePercentage = 100;
     }
-    const percentage = isSuccessTerminal ? 100 : (job.totalBytes > BigInt(0) ? bytePercentage : filePercentage);
+    const percentage = isSuccessTerminal ? 100 : (totalBytes > BigInt(0) ? bytePercentage : filePercentage);
 
     const failedItems = await getDetailedFailedItems(jobId, job.manifestId || undefined);
 
     const failureReason = job.state === 'FAILED'
       ? (logs.slice().reverse().find(l => l.includes('FAILED') || l.includes('Error')) || 'Migration encountered an error during execution.')
       : null;
+
+    const handle = jobRegistry.get(jobId);
+    const activeWorkers = handle ? handle.busyWorkerCount : 0;
 
     res.json(serializeBigInt({
       jobId: job.id,
@@ -195,18 +213,24 @@ router.get('/:jobId', requireUserAuth, async (req, res) => {
       destinationEmail: job.session?.destinationEmail,
       failedItems,
       failureReason,
+      sequenceNumber: Date.now(),
+      timestamp: new Date().toISOString(),
+      activeWorkers,
       progress: {
+        jobId: job.id,
         status: computedStatus,
         percentage,
         bytePercentage,
         filePercentage,
-        totalFiles: job.totalFiles,
-        completedFiles: job.completedFiles,
-        failedFiles: job.failedFiles,
+        totalFiles,
+        completedFiles,
+        failedFiles,
+        pendingFiles,
+        processingFiles,
         totalFolders: job.totalFolders,
         completedFolders: (job as any).completedFolders || 0,
-        totalBytes: job.totalBytes,
-        transferredBytes: job.transferredBytes,
+        totalBytes,
+        transferredBytes,
         speedBytesPerSecond: job.speed,
         averageSpeed: (job as any).averageSpeed || 0,
         remainingSeconds: isTerminal ? null : job.eta,
@@ -244,11 +268,19 @@ router.get('/:jobId/live', requireUserAuth, async (req, res) => {
       return res.status(404).json({ error: 'Migration job not found' });
     }
 
-    const transferred = Number(job.transferredBytes);
-    const totalBytes = Number(job.totalBytes);
-    const completed = job.completedFiles;
-    const totalFiles = job.totalFiles;
-    const failed = job.failedFiles;
+    const manifestId = job.manifestId || job.id;
+    let summaryStats: any = null;
+    try {
+      summaryStats = await ManifestStorage.getSummaryStats(manifestId);
+    } catch (_) {}
+
+    const completed = summaryStats ? summaryStats.completedFiles : job.completedFiles;
+    const failed = summaryStats ? summaryStats.failedFiles : job.failedFiles;
+    const totalFiles = summaryStats ? summaryStats.totalFiles : job.totalFiles;
+    const pendingFiles = summaryStats ? summaryStats.pendingFiles : 0;
+    const processingFiles = summaryStats ? summaryStats.processingFiles : 0;
+    const totalBytes = summaryStats ? summaryStats.totalBytes : Number(job.totalBytes);
+    const transferred = summaryStats ? summaryStats.transferredBytes : Number(job.transferredBytes);
     const processed = completed + failed;
 
     const isSuccessTerminal = job.state === 'COMPLETED';
@@ -269,18 +301,27 @@ router.get('/:jobId/live', requireUserAuth, async (req, res) => {
 
     const elapsed = job.startedAt ? Date.now() - job.startedAt.getTime() : 0;
     const failedItems = await getDetailedFailedItems(jobId, job.manifestId || undefined);
+    const handle = jobRegistry.get(jobId);
+    const activeWorkers = handle ? handle.busyWorkerCount : 0;
 
     res.json(serializeBigInt({
+      jobId: job.id,
       status: computedStatus,
+      sequenceNumber: Date.now(),
+      timestamp: new Date().toISOString(),
+      activeWorkers,
       percentage: Math.min(percentage, 100),
       totalFolders: job.totalFolders,
       completedFolders: (job as any).completedFolders || 0,
       totalFiles,
       completedFiles: completed,
       failedFiles: failed,
+      pendingFiles,
+      processingFiles,
       totalBytes,
       transferredBytes: transferred,
       speedBytesPerSecond: job.speed,
+      averageSpeed: (job as any).averageSpeed || 0,
       remainingSeconds: isTerminal ? null : job.eta,
       elapsed,
       currentAction: isSuccessTerminal ? (computedStatus === 'completed_with_errors' ? 'Completed with Errors' : 'Completed') : (job.state === 'FAILED' ? 'Migration Failed' : (job.state === 'CANCELLED' ? 'Migration Cancelled' : job.currentAction)),
@@ -292,6 +333,46 @@ router.get('/:jobId/live', requireUserAuth, async (req, res) => {
   } catch (error: any) {
     if (res.headersSent) return;
     res.status(500).json({ error: error.message || 'Failed to fetch live migration state' });
+  }
+});
+
+// Debug Endpoint: Compare Database, Scheduler, and Manifest state
+router.get('/:jobId/debug', requireUserAuth, async (req, res) => {
+  try {
+    const jobId = req.params.jobId as string;
+    const job = await prisma.migrationJob.findUnique({ where: { id: jobId } });
+    if (!job) return res.status(404).json({ error: 'Migration job not found' });
+
+    const manifestId = job.manifestId || jobId;
+    let summaryStats = null;
+    try {
+      summaryStats = await ManifestStorage.getSummaryStats(manifestId);
+    } catch (_) {}
+
+    const handle = jobRegistry.get(jobId);
+
+    res.json(serializeBigInt({
+      jobId,
+      manifestId,
+      databaseCounts: {
+        totalFiles: job.totalFiles,
+        completedFiles: job.completedFiles,
+        failedFiles: job.failedFiles,
+        transferredBytes: job.transferredBytes,
+        totalBytes: job.totalBytes,
+        state: job.state
+      },
+      manifestCounts: summaryStats,
+      scheduler: handle ? {
+        isRunning: handle.isRunning,
+        busyWorkerCount: handle.busyWorkerCount,
+        lastProgressAt: handle.lastProgressAt
+      } : null,
+      timestamp: new Date().toISOString()
+    }));
+  } catch (error: any) {
+    if (res.headersSent) return;
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -546,6 +627,12 @@ router.get('/:jobId/status', async (req, res) => {
         return;
       }
 
+      const manifestId = job.manifestId || jobId;
+      let summaryStats: any = null;
+      try {
+        summaryStats = await ManifestStorage.getSummaryStats(manifestId);
+      } catch (_) {}
+
       const logs = await prisma.migrationLog.findMany({
         where: { jobId, createdAt: { gt: lastCheckedDate } },
         orderBy: { createdAt: 'asc' }
@@ -554,11 +641,13 @@ router.get('/:jobId/status', async (req, res) => {
         lastCheckedDate = logs[logs.length - 1].createdAt;
       }
 
-      const transferred = Number(job.transferredBytes);
-      const totalBytes = Number(job.totalBytes);
-      const completed = job.completedFiles;
-      const totalFiles = job.totalFiles;
-      const failed = job.failedFiles;
+      const completed = summaryStats ? summaryStats.completedFiles : job.completedFiles;
+      const failed = summaryStats ? summaryStats.failedFiles : job.failedFiles;
+      const totalFiles = summaryStats ? summaryStats.totalFiles : job.totalFiles;
+      const pendingFiles = summaryStats ? summaryStats.pendingFiles : 0;
+      const processingFiles = summaryStats ? summaryStats.processingFiles : 0;
+      const totalBytes = summaryStats ? summaryStats.totalBytes : Number(job.totalBytes);
+      const transferred = summaryStats ? summaryStats.transferredBytes : Number(job.transferredBytes);
       const processed = completed + failed;
 
       const isSuccessTerminal = job.state === 'COMPLETED';
@@ -577,10 +666,12 @@ router.get('/:jobId/status', async (req, res) => {
       }
       const percentage = isSuccessTerminal ? 100 : (totalBytes > 0 ? bytePercentage : filePercentage);
 
-      // ── Stall detection ───────────────────────────────────────────────────────
+      // ── Stall detection & worker state ─────────────────────────────────────────
       const isActive = ['COPYING', 'PREPARING'].includes(job.state);
       let stalled = false;
       let recovering = false;
+      const handle = jobRegistry.get(jobId);
+      const activeWorkers = handle ? handle.busyWorkerCount : 0;
 
       if (isActive) {
         if (transferred === prevTransferred && completed === prevCompleted) {
@@ -591,7 +682,6 @@ router.get('/:jobId/status', async (req, res) => {
           prevCompleted = completed;
         }
         stalled = stallTickCount >= STALL_TICK_THRESHOLD;
-        const handle = jobRegistry.get(jobId);
         recovering = stalled && !!handle;
       }
 
@@ -606,6 +696,10 @@ router.get('/:jobId/status', async (req, res) => {
 
       res.write(`id: ${lastCheckedDate.getTime()}\n`);
       res.write(`data: ${JSON.stringify({
+        jobId: job.id,
+        sequenceNumber: Date.now(),
+        timestamp: new Date().toISOString(),
+        activeWorkers,
         status: computedStatus,
         percentage: Math.min(percentage, 100),
         bytePercentage,
@@ -614,9 +708,12 @@ router.get('/:jobId/status', async (req, res) => {
         totalFiles,
         completedFiles: completed,
         failedFiles: failed,
+        pendingFiles,
+        processingFiles,
         totalBytes,
         transferredBytes: transferred,
         speedBytesPerSecond: speed,
+        averageSpeed: (job as any).averageSpeed || 0,
         remainingSeconds,
         stalled,
         recovering,

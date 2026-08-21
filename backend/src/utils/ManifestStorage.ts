@@ -379,7 +379,7 @@ export class ManifestStorage {
 
   public static async resetAllStatus(manifestId: string, newStatus: string = 'PENDING'): Promise<{ count: number }> {
     const db = await this.getDb(manifestId);
-    const result = await db.run('UPDATE manifest_items SET status = ?, createdDestId = NULL', [newStatus]);
+    const result = await db.run('UPDATE manifest_items SET status = ?, createdDestId = NULL WHERE status != "SUCCESS"', [newStatus]);
     return { count: result.changes || 0 };
   }
 
@@ -389,6 +389,9 @@ export class ManifestStorage {
     totalBytes: number;
     completedFiles: number;
     failedFiles: number;
+    pendingFiles: number;
+    queuedFiles: number;
+    processingFiles: number;
     transferredBytes: number;
   }> {
     const db = await this.getDb(manifestId);
@@ -407,6 +410,9 @@ export class ManifestStorage {
     let totalBytes = 0;
     let completedFiles = 0;
     let failedFiles = 0;
+    let pendingFiles = 0;
+    let queuedFiles = 0;
+    let processingFiles = 0;
     let transferredBytes = 0;
 
     for (const r of rows) {
@@ -424,6 +430,12 @@ export class ManifestStorage {
           transferredBytes += sz;
         } else if (r.status === 'FAILED') {
           failedFiles += cnt;
+        } else if (r.status === 'PENDING') {
+          pendingFiles += cnt;
+        } else if (r.status === 'QUEUED') {
+          queuedFiles += cnt;
+        } else if (['DOWNLOADING', 'UPLOADING', 'VERIFYING'].includes(r.status)) {
+          processingFiles += cnt;
         }
       }
     }
@@ -434,6 +446,9 @@ export class ManifestStorage {
       totalBytes,
       completedFiles,
       failedFiles,
+      pendingFiles,
+      queuedFiles,
+      processingFiles,
       transferredBytes
     };
   }

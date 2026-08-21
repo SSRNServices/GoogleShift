@@ -53,6 +53,10 @@ export const migrationApi = {
     return apiClient(`/api/migrations/${jobId}/cancel`, {
       method: 'POST'
     });
+  },
+
+  async getJobDebug(jobId: string) {
+    return apiClient(`/api/migrations/${jobId}/debug`);
   }
 };
 
