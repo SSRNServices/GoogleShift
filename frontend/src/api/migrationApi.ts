@@ -9,17 +9,27 @@ export const migrationApi = {
     });
   },
 
-  async startDiscovery(sourceId: string, sessionId: string) {
+  async startDiscovery(sourceIdOrItemsParam: string, sessionId: string) {
+    const itemsParam = sourceIdOrItemsParam.includes(':')
+      ? sourceIdOrItemsParam
+      : (sourceIdOrItemsParam.includes(',')
+        ? sourceIdOrItemsParam.split(',').map(id => `${id.trim()}:folder`).join(',')
+        : `${sourceIdOrItemsParam}:folder`);
     return apiClient('/api/discovery/start', {
       method: 'POST',
-      body: JSON.stringify({ itemsParam: `${sourceId}:folder`, sessionId })
+      body: JSON.stringify({ itemsParam, sessionId })
     });
   },
 
-  async retryDiscovery(sourceId: string, sessionId: string) {
+  async retryDiscovery(sourceIdOrItemsParam: string, sessionId: string) {
+    const itemsParam = sourceIdOrItemsParam.includes(':')
+      ? sourceIdOrItemsParam
+      : (sourceIdOrItemsParam.includes(',')
+        ? sourceIdOrItemsParam.split(',').map(id => `${id.trim()}:folder`).join(',')
+        : `${sourceIdOrItemsParam}:folder`);
     return apiClient('/api/discovery/retry', {
       method: 'POST',
-      body: JSON.stringify({ itemsParam: `${sourceId}:folder`, sessionId })
+      body: JSON.stringify({ itemsParam, sessionId })
     });
   },
 

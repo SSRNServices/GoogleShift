@@ -5,6 +5,7 @@ import { API_URL } from '../config/api';
 import { Check, ChevronRight, Folder, Loader2, ArrowLeft, Cloud, HardDrive, Settings, Play, RefreshCw } from 'lucide-react';
 import { migrationApi } from '../api/migrationApi';
 import { DiscoveryScanner } from '../components/DiscoveryScanner';
+import { SourceFolderSelector } from '../components/SourceFolderSelector';
 import { useMigrationSessionStore } from '../store/useMigrationSessionStore';
 import type { TransferOptionsState } from '../types/transfer';
 import type { DriveItem } from '../types/drive';
@@ -101,7 +102,7 @@ export default function Migration() {
   
   const { sessionId, sessionData, createSession, fetchSession } = useMigrationSessionStore();
 
-  const [sourceSelected, setSourceSelected] = useState<DriveItem | null>(null);
+  const [sourceSelectedItems, setSourceSelectedItems] = useState<DriveItem[]>([]);
   const [destSelected, setDestSelected] = useState<DriveItem | null>(null);
   
   const [options, setOptions] = useState<TransferOptionsState>({
@@ -164,7 +165,7 @@ export default function Migration() {
     console.log('[MigrationWizard] User chose to DISCARD previous session.');
     const { discardSession } = useMigrationSessionStore.getState();
     await discardSession().catch(console.error);
-    setSourceSelected(null);
+    setSourceSelectedItems([]);
     setDestSelected(null);
     setManifestId(null);
     setStep(1);
@@ -176,11 +177,12 @@ export default function Migration() {
     // When moving to summary (step 5 to 6), ALWAYS create a brand-new session for current folder selections
     if (step === 5) {
       try {
-        console.log('[Frontend Wizard] Creating new MigrationSession for source folder:', sourceSelected?.name, sourceSelected?.id);
+        console.log('[Frontend Wizard] Creating new MigrationSession for source folders:', sourceSelectedItems.map(i => i.name));
         await createSession({
           sourceEmail: sourceProfile?.profile?.email || '',
           destinationEmail: destProfile?.profile?.email || '',
-          sourceFolderId: sourceSelected?.id || '',
+          sourceFolderId: sourceSelectedItems[0]?.id || '',
+          sourceFolderIds: sourceSelectedItems.map(i => i.id),
           destinationFolderId: destSelected?.id || ''
         });
       } catch (err) {
@@ -248,7 +250,7 @@ export default function Migration() {
   const canProceed = () => {
     if (step === 1) return isSourceConnected;
     if (step === 2) return isDestConnected;
-    if (step === 3) return !!sourceSelected;
+    if (step === 3) return sourceSelectedItems.length > 0;
     if (step === 4) return !!destSelected;
     return true;
   };
@@ -326,13 +328,12 @@ export default function Migration() {
 
         {step === 3 && (
           <div>
-            <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-white">Choose Source Folder</h2>
-            <FolderTree type="source" onSelect={setSourceSelected} selectedId={sourceSelected?.id} />
-            {sourceSelected && (
-              <div className="mt-4 p-3 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-800 dark:text-indigo-300 rounded border border-indigo-200 dark:border-indigo-800">
-                Selected: <span className="font-semibold">{sourceSelected.name}</span>
-              </div>
-            )}
+            <h2 className="text-xl font-semibold mb-1 text-gray-900 dark:text-white">Choose Source Folders</h2>
+            <p className="text-sm text-gray-500 mb-4">Select one or more folders from your source Google Drive to migrate.</p>
+            <SourceFolderSelector 
+              selectedItems={sourceSelectedItems} 
+              onChange={setSourceSelectedItems} 
+            />
           </div>
         )}
 
@@ -373,9 +374,9 @@ export default function Migration() {
         {step === 6 && (
           <div>
             <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-white">Summary</h2>
-            {sourceSelected && sessionId && (
+            {sourceSelectedItems.length > 0 && sessionId && (
               <DiscoveryScanner 
-                sourceId={sourceSelected.id}
+                itemsParam={sourceSelectedItems.map(i => `${i.id}:folder`).join(',')}
                 sessionId={sessionId}
                 onComplete={handleDiscoveryComplete}
                 onError={handleDiscoveryError}

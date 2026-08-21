@@ -14,7 +14,8 @@ interface SummaryResult {
 }
 
 interface DiscoveryScannerProps {
-  sourceId: string;
+  sourceId?: string;
+  itemsParam?: string;
   sessionId: string;
   onComplete: (summary: SummaryResult) => void;
   onError: (error: string) => void;
@@ -42,7 +43,7 @@ export interface DiscoveryStats {
   elapsed: number;
 }
 
-export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: DiscoveryScannerProps) {
+export function DiscoveryScanner({ sourceId, itemsParam, sessionId, onComplete, onError }: DiscoveryScannerProps) {
   const [jobId, setJobId] = useState<string | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
   const [stats, setStats] = useState<DiscoveryStats>({
@@ -166,8 +167,9 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
     setInitError(null);
 
     try {
-      console.log(`[DiscoveryScanner] Requesting start for sourceId=${sourceId}, sessionId=${sessionId}`);
-      const job = await migrationApi.startDiscovery(sourceId, sessionId);
+      const targetParam = itemsParam || sourceId || 'root:folder';
+      console.log(`[DiscoveryScanner] Requesting start for targetParam=${targetParam}, sessionId=${sessionId}`);
+      const job = await migrationApi.startDiscovery(targetParam, sessionId);
       console.log('[DiscoveryScanner] Start Discovery API Response:', job);
 
       const activeJobId = job.jobId || job.id;
@@ -203,8 +205,9 @@ export function DiscoveryScanner({ sourceId, sessionId, onComplete, onError }: D
     });
 
     try {
-      console.log(`[DiscoveryScanner] Requesting RETRY for sourceId=${sourceId}, sessionId=${sessionId}`);
-      const job = await migrationApi.retryDiscovery(sourceId, sessionId);
+      const targetParam = itemsParam || sourceId || 'root:folder';
+      console.log(`[DiscoveryScanner] Requesting RETRY for targetParam=${targetParam}, sessionId=${sessionId}`);
+      const job = await migrationApi.retryDiscovery(targetParam, sessionId);
       console.log('[DiscoveryScanner] Retry Discovery API Response:', job);
 
       const activeJobId = job.jobId || job.id;

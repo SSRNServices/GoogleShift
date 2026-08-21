@@ -16,9 +16,15 @@ const serializeBigInt = (obj: any) => {
 router.post('/', requireUserAuth, async (req, res) => {
   try {
     const userId = (req as any).user.id;
-    const { sourceEmail, destinationEmail, sourceFolderId, destinationFolderId } = req.body;
+    const { sourceEmail, destinationEmail, sourceFolderId, sourceFolderIds, destinationFolderId } = req.body;
 
-    if (!sourceEmail || !destinationEmail || !sourceFolderId || !destinationFolderId) {
+    const ids: string[] = Array.isArray(sourceFolderIds) && sourceFolderIds.length > 0
+      ? sourceFolderIds
+      : (sourceFolderId ? [sourceFolderId] : []);
+
+    const primarySourceFolderId = ids[0] || sourceFolderId;
+
+    if (!sourceEmail || !destinationEmail || !primarySourceFolderId || !destinationFolderId) {
       return res.status(400).json({ success: false, error: 'Missing required fields for session creation', code: 'INVALID_REQUEST', details: {} });
     }
 
@@ -38,14 +44,15 @@ router.post('/', requireUserAuth, async (req, res) => {
         destinationEmail,
         sourceAccountId: sourceAccount?.id || null,
         destinationAccountId: destAccount?.id || null,
-        sourceFolderId,
+        sourceFolderId: primarySourceFolderId,
         destinationFolderId,
         discoveryStatus: 'PENDING',
-        migrationStatus: 'PENDING'
+        migrationStatus: 'PENDING',
+        statistics: { sourceFolderIds: ids }
       }
     });
 
-    console.log(`[SESSION CREATED] Session ID: ${session.id} | User: ${userId} | sourceFolderId: ${sourceFolderId} | destinationFolderId: ${destinationFolderId}`);
+    console.log(`[SESSION CREATED] Session ID: ${session.id} | User: ${userId} | sourceFolderIds: ${ids.join(',')} | destinationFolderId: ${destinationFolderId}`);
 
     res.status(200).json({ success: true, session });
   } catch (error: any) {

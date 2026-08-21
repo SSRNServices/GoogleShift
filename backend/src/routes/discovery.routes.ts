@@ -294,20 +294,22 @@ router.post('/retry', requireUserAuth, async (req: Request, res: Response) => {
 router.post('/start', requireUserAuth, async (req: Request, res: Response) => {
   const startTime = Date.now();
   const userId = (req as any).user?.id || 'unknown';
-  const { itemsParam, sessionId, sourceFolderId, destinationFolderId } = req.body || {};
+  const { sessionId, sourceFolderId, sourceFolderIds, destinationFolderId } = req.body || {};
+  let { itemsParam } = req.body || {};
 
   formatAuditLog('DISCOVERY_REQUEST_RECEIVED', {
     userId,
     sessionId,
     itemsParam,
     sourceFolderId,
+    sourceFolderIds,
     destinationFolderId
   });
 
   try {
-    if (!itemsParam || !sessionId) {
-      formatAuditLog('ERROR', { code: 'INVALID_REQUEST', message: 'Missing itemsParam or sessionId', userId, sessionId });
-      return res.status(400).json({ code: 'INVALID_REQUEST', message: 'Missing itemsParam or sessionId' });
+    if (!sessionId) {
+      formatAuditLog('ERROR', { code: 'INVALID_REQUEST', message: 'Missing sessionId', userId, sessionId });
+      return res.status(400).json({ code: 'INVALID_REQUEST', message: 'Missing sessionId' });
     }
 
     formatAuditLog('VALIDATE_SESSION', { userId, sessionId });
@@ -318,6 +320,23 @@ router.post('/start', requireUserAuth, async (req: Request, res: Response) => {
     if (!session) {
       formatAuditLog('ERROR', { code: 'INVALID_SESSION', message: 'Migration session not found', userId, sessionId });
       return res.status(404).json({ code: 'INVALID_SESSION', message: 'Migration session not found' });
+    }
+
+    if (!itemsParam) {
+      const ids: string[] = Array.isArray(sourceFolderIds) && sourceFolderIds.length > 0
+        ? sourceFolderIds
+        : (Array.isArray((session.statistics as any)?.sourceFolderIds) && (session.statistics as any).sourceFolderIds.length > 0
+          ? (session.statistics as any).sourceFolderIds
+          : (sourceFolderId || session.sourceFolderId ? [sourceFolderId || session.sourceFolderId!] : []));
+
+      if (ids.length > 0) {
+        itemsParam = ids.map(id => `${id}:folder`).join(',');
+      }
+    }
+
+    if (!itemsParam) {
+      formatAuditLog('ERROR', { code: 'INVALID_REQUEST', message: 'Missing itemsParam or sourceFolderId', userId, sessionId });
+      return res.status(400).json({ code: 'INVALID_REQUEST', message: 'Missing itemsParam or sourceFolderId' });
     }
 
     // Validate Accounts

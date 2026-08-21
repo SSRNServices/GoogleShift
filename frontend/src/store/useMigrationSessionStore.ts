@@ -11,7 +11,8 @@ interface MigrationSessionState {
   createSession: (payload: {
     sourceEmail: string;
     destinationEmail: string;
-    sourceFolderId: string;
+    sourceFolderId?: string;
+    sourceFolderIds?: string[];
     destinationFolderId: string;
   }) => Promise<void>;
   
