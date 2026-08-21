@@ -45,6 +45,7 @@ router.get('/current', requireUserAuth, async (req, res) => {
       res.json({ status: 'idle' });
     }
   } catch (error: any) {
+    if (res.headersSent) return;
     res.status(500).json({ error: error.message });
   }
 });
@@ -85,6 +86,7 @@ router.get('/history', requireUserAuth, async (req, res) => {
     res.json(serializeBigInt({ migrations: mappedHistory }));
   } catch (error: any) {
     console.error('Error fetching history:', error);
+    if (res.headersSent) return;
     res.status(500).json({ error: 'Failed to fetch migration history' });
   }
 });
@@ -217,6 +219,7 @@ router.get('/:jobId', requireUserAuth, async (req, res) => {
     }));
   } catch (error: any) {
     console.error('Error fetching migration details:', error);
+    if (res.headersSent) return;
     res.status(500).json({ error: error.message || 'Failed to fetch migration details' });
   }
 });
@@ -287,6 +290,7 @@ router.get('/:jobId/live', requireUserAuth, async (req, res) => {
       logs: job.logs.map(l => l.message).reverse()
     }));
   } catch (error: any) {
+    if (res.headersSent) return;
     res.status(500).json({ error: error.message || 'Failed to fetch live migration state' });
   }
 });
@@ -631,9 +635,11 @@ router.get('/:jobId/status', async (req, res) => {
       }
     } catch (e: any) {
       console.error('SSE Error:', e);
-      res.write(`data: ${JSON.stringify({ error: 'Internal server error while fetching job status' })}\n\n`);
-      if (interval) clearInterval(interval);
-      res.end();
+      if (!res.writableEnded && !res.headersSent) {
+        res.write(`data: ${JSON.stringify({ error: 'Internal server error while fetching job status' })}\n\n`);
+        if (interval) clearInterval(interval);
+        res.end();
+      }
     }
   };
 

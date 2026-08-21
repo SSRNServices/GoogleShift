@@ -13,7 +13,8 @@ import {
   UploadStallError,
   GoogleApiError,
   StreamLifecycleError,
-  classifyError
+  classifyError,
+  formatDetailedError
 } from '../utils/errors';
 import { MigrationConfig } from './types';
 import { prisma } from '../utils/database';
@@ -44,8 +45,10 @@ export class ProgressTransform extends Transform {
 const MIN_EXPECTED_SPEED_BYTES_PER_SEC = 512 * 1024; // 512 KB/s
 const MIN_FILE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_FILE_TIMEOUT_MS = 8 * 60 * 60 * 1000; // 8 hours
-const UPLOAD_STALL_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
-const UPLOAD_STALL_CHECK_INTERVAL_MS = 15_000; // 15 seconds
+const FIRST_BYTE_TIMEOUT_MS = 60_000; // 60 seconds for first byte
+const UPLOAD_STALL_TIMEOUT_MS = 60_000; // 60 seconds of zero bytes progress
+const UPLOAD_STALL_CHECK_INTERVAL_MS = 10_000; // 10 seconds check interval
+const RESUMABLE_UPLOAD_THRESHOLD_BYTES = 8 * 1024 * 1024; // 8 MB
 
 function computeTransferTimeout(fileSizeBytes: number): number {
   const sizeBasedTimeout = (fileSizeBytes / MIN_EXPECTED_SPEED_BYTES_PER_SEC) * 1000;
@@ -67,7 +70,7 @@ function classifyErrorDetails(e: any): string {
     return 'Network Stall Error';
   }
   if (e?.name === 'GoogleApiError' || e?.response?.status || msg.includes('Google Drive API')) {
-    return 'Google API Error';
+    return `Google API Error (${e?.response?.status || e?.status || 'N/A'})`;
   }
   if (msg.includes('ECONNRESET') || msg.includes('ETIMEDOUT') || msg.includes('socket hang up')) {
     return 'Network Connection Error';
@@ -224,9 +227,10 @@ export class UploadWorker {
         e.type === 'aborted' ||
         e.message?.includes('Aborted');
 
+      const detailedMsg = formatDetailedError(e);
       const classification = classifyErrorDetails(e);
       const generalClass = classifyError(e);
-      const formattedErrorMsg = `${e.message || 'Transfer failed'} | Classification: ${classification}`;
+      const formattedErrorMsg = `${detailedMsg} | Classification: ${classification}`;
 
       if (isAbort) {
         console.warn(
@@ -236,7 +240,7 @@ export class UploadWorker {
       } else {
         console.error(
           `[Worker ${this.id}] FILE_FAILED | File: ${item.name} | FileId: ${item.sourceId} | ` +
-          `Error: ${e.message} | Classification: ${classification} | BytesMoved: ${this.uploadBytesTracked}`
+          `Details: ${detailedMsg} | Classification: ${classification} | BytesMoved: ${this.uploadBytesTracked}`
         );
         if (e.response && e.response.status === 429) this.rateLimiter.reportRateLimit();
       }
@@ -255,7 +259,7 @@ export class UploadWorker {
       if (generalClass === 'permanent') {
         console.warn(
           `[Worker ${this.id}] NON_RETRIABLE_ERROR | File: ${item.name} | FileId: ${item.sourceId} | ` +
-          `Error: ${e.message} | Classification: ${classification}`
+          `Error: ${detailedMsg} | Classification: ${classification}`
         );
         await this.stateManager.updateState(item.id, 'FAILED').catch(() => {});
       } else {
@@ -284,6 +288,24 @@ export class UploadWorker {
           `Parent mapping missing in cache for sourceParentId: ${item.sourceParentId} | File: ${item.name}`
         );
       }
+    }
+
+    // ── IDEMPOTENCY / DUPLICATE CHECK ───────────────────────────────────────────
+    if (item.createdDestId) {
+      try {
+        const existing = await this.destDrive.files.get({
+          fileId: item.createdDestId,
+          fields: 'id, trashed'
+        }, { signal: controller.signal });
+        if (existing.data && !existing.data.trashed) {
+          console.log(
+            `[Worker ${this.id}] FILE_ALREADY_MIGRATED | File: ${item.name} | ` +
+            `DestFileId: ${item.createdDestId}`
+          );
+          await this.stateManager.commitSuccess(item);
+          return;
+        }
+      } catch (_) {}
     }
 
     this.lastActivity = Date.now();
@@ -333,7 +355,7 @@ export class UploadWorker {
         );
       } catch (e: any) {
         throw new DownloadError(
-          `DOWNLOAD_TINY failed for file "${item.name}" (${item.sourceId}): ${e.message}`,
+          `DOWNLOAD_TINY failed for file "${item.name}" (${item.sourceId}): ${formatDetailedError(e)}`,
           { isRetryable: true }
         );
       }
@@ -345,7 +367,6 @@ export class UploadWorker {
         );
       }
 
-      // Check if data is a Buffer / ArrayBuffer or if it returned a stream (e.g. in stream lifecycle tests or legacy mocks)
       const data = downloadRes.data;
       const isBufferData = Buffer.isBuffer(data) || data instanceof ArrayBuffer || (data && typeof data.pipe !== 'function');
 
@@ -378,7 +399,7 @@ export class UploadWorker {
           );
         } catch (e: any) {
           throw new UploadError(
-            `UPLOAD_TINY failed for file "${item.name}" (${item.sourceId}): ${e.message}`,
+            `UPLOAD_TINY failed for file "${item.name}" (${item.sourceId}): ${formatDetailedError(e)}`,
             { isRetryable: classifyError(e) === 'retryable' }
           );
         }
@@ -407,6 +428,19 @@ export class UploadWorker {
       `Size: ${item.size} | TargetMIME: ${targetMimeType} | ExportMIME: ${exportMimeType || 'none'}`
     );
 
+    // ── FIRST-BYTE TIMEOUT PROTECTION ───────────────────────────────────────────
+    let firstByteReceived = false;
+    const firstByteTimer = setTimeout(() => {
+      if (!firstByteReceived && !controller.signal.aborted) {
+        console.error(
+          `[Worker ${this.id}] FIRST_BYTE_TIMEOUT | File: ${item.name} | FileId: ${item.sourceId} | ` +
+          `No data received within ${FIRST_BYTE_TIMEOUT_MS / 1000}s of DOWNLOAD_START. Aborting.`
+        );
+        this.isDead = true;
+        this.abort('first byte timeout');
+      }
+    }, FIRST_BYTE_TIMEOUT_MS);
+
     let downloadRes: any;
     try {
       if (exportMimeType) {
@@ -421,13 +455,15 @@ export class UploadWorker {
         );
       }
     } catch (e: any) {
+      clearTimeout(firstByteTimer);
       throw new DownloadError(
-        `DOWNLOAD_START failed for file "${item.name}" (${item.sourceId}): ${e.message}`,
+        `DOWNLOAD_START failed for file "${item.name}" (${item.sourceId}): ${formatDetailedError(e)}`,
         { isRetryable: true }
       );
     }
 
     if (!downloadRes || !downloadRes.data) {
+      clearTimeout(firstByteTimer);
       throw new DownloadError(
         `Failed to obtain download stream for file: ${item.name} (${item.sourceId})`,
         { isRetryable: true }
@@ -444,6 +480,10 @@ export class UploadWorker {
 
     const progressPT = new ProgressTransform(
       (chunkLength: number) => {
+        if (!firstByteReceived) {
+          firstByteReceived = true;
+          clearTimeout(firstByteTimer);
+        }
         this.lastActivity = Date.now();
         this.lastProgressAt = Date.now();
         this.uploadBytesTracked += chunkLength;
@@ -476,15 +516,14 @@ export class UploadWorker {
     });
 
     const abortHandler = () => {
+      clearTimeout(firstByteTimer);
       console.warn(`[Worker ${this.id}] ABORT_SIGNAL | File: ${item.name} | Cleaning streams.`);
       this.cleanupActiveStreams(true);
     };
     controller.signal.addEventListener('abort', abortHandler, { once: true });
 
-    // Stream lifecycle managed automatically by Node.js streams via pipe
     srcStream.pipe(progressPT);
 
-    // PRE-UPLOAD STREAM STATE VALIDATION
     if (
       srcStream.readableEnded ||
       srcStream.destroyed ||
@@ -493,6 +532,7 @@ export class UploadWorker {
       progressPT.destroyed ||
       progressPT.closed
     ) {
+      clearTimeout(firstByteTimer);
       this.cleanupActiveStreams(true);
       throw new DownloadError(
         `Download stream for file "${item.name}" reached EOF or was destroyed before upload creation.`,
@@ -541,21 +581,43 @@ export class UploadWorker {
       const normalizedUploadStream = toNodeReadable(progressPT);
       assertNodeReadable(normalizedUploadStream, item.name);
 
-      const uploadPromise = this.destDrive.files.create(
-        {
-          requestBody: {
-            name: item.name,
-            parents: [destParentId!],
-            mimeType: targetMimeType
+      const uploadPromise = (async () => {
+        // Use resumable upload for large files >= 8 MB
+        const useResumable = (item.size || 0) >= RESUMABLE_UPLOAD_THRESHOLD_BYTES && !exportMimeType;
+        if (useResumable) {
+          try {
+            return await this.uploadFileResumable(
+              item,
+              destParentId!,
+              targetMimeType,
+              normalizedUploadStream,
+              controller
+            );
+          } catch (resumableErr) {
+            console.warn(
+              `[Worker ${this.id}] RESUMABLE_UPLOAD_FALLBACK | File: ${item.name} | ` +
+              `Error: ${formatDetailedError(resumableErr)} | Falling back to standard create.`
+            );
+          }
+        }
+
+        const createRes = await this.destDrive.files.create(
+          {
+            requestBody: {
+              name: item.name,
+              parents: [destParentId!],
+              mimeType: targetMimeType
+            },
+            media: {
+              mimeType: targetMimeType,
+              body: normalizedUploadStream
+            },
+            fields: 'id'
           },
-          media: {
-            mimeType: targetMimeType,
-            body: normalizedUploadStream
-          },
-          fields: 'id'
-        },
-        { signal: controller.signal }
-      );
+          { signal: controller.signal }
+        );
+        return createRes.data?.id;
+      })();
 
       const timeoutPromise = new Promise<never>((_, reject) => {
         const uploadPhaseTimeout = Math.max(
@@ -578,20 +640,20 @@ export class UploadWorker {
         }, uploadPhaseTimeout);
       });
 
-      const createRes = await Promise.race([uploadPromise, timeoutPromise]);
+      uploadedFileId = await Promise.race([uploadPromise, timeoutPromise]);
 
-      if (!createRes.data || !createRes.data.id) {
+      if (!uploadedFileId) {
         throw new UploadError(
           `No file ID returned from Google Drive API for ${item.name} (${item.sourceId})`
         );
       }
 
-      uploadedFileId = createRes.data.id;
       this.logStreamDiagnostics('POST_UPLOAD', item, progressPT);
     } catch (err) {
       this.cleanupActiveStreams(true);
       throw err;
     } finally {
+      clearTimeout(firstByteTimer);
       clearInterval(uploadStallTimer);
       controller.signal.removeEventListener('abort', abortHandler);
     }
@@ -613,5 +675,87 @@ export class UploadWorker {
       `DestFileId: ${uploadedFileId} | Size: ${item.size} | DurationMs: ${totalDurationMs} | Speed: ${mbps} MB/s`
     );
   }
+
+  /**
+   * Resumable upload implementation for large files >= 8 MB.
+   * Initiates a Google Drive resumable session and streams data.
+   */
+  private async uploadFileResumable(
+    item: ManifestItem,
+    destParentId: string,
+    targetMimeType: string,
+    uploadStream: NodeJS.ReadableStream,
+    controller: AbortController
+  ): Promise<string> {
+    const authClient = (this.destDrive as any).context?._options?.auth;
+    let token: string | null = null;
+    if (authClient) {
+      if (typeof authClient.getAccessToken === 'function') {
+        const tokenRes = await authClient.getAccessToken();
+        token = typeof tokenRes === 'string' ? tokenRes : tokenRes?.token;
+      }
+      if (!token && typeof authClient.getRequestHeaders === 'function') {
+        const headers = await authClient.getRequestHeaders();
+        token = headers?.Authorization || headers?.authorization;
+        if (token && token.startsWith('Bearer ')) token = token.substring(7);
+      }
+    }
+
+    if (!token) {
+      throw new Error('Resumable upload failed: unable to extract destination access token.');
+    }
+
+    // Step 1: Initiate session
+    const initRes = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json; charset=UTF-8',
+        'X-Upload-Content-Type': targetMimeType,
+        'X-Upload-Content-Length': String(item.size || 0)
+      },
+      body: JSON.stringify({
+        name: item.name,
+        parents: [destParentId],
+        mimeType: targetMimeType
+      }),
+      signal: controller.signal
+    });
+
+    if (!initRes.ok) {
+      throw new UploadError(`Resumable session init failed with status ${initRes.status}`, {
+        httpStatus: initRes.status,
+        isRetryable: initRes.status === 429 || initRes.status >= 500
+      });
+    }
+
+    const sessionUri = initRes.headers.get('location');
+    if (!sessionUri) {
+      throw new UploadError('Resumable session init did not return Location header.');
+    }
+
+    // Step 2: Stream content to sessionUri
+    const putRes = await fetch(sessionUri, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': targetMimeType
+      },
+      body: uploadStream as any,
+      signal: controller.signal,
+      // @ts-ignore
+      duplex: 'half'
+    });
+
+    if (!putRes.ok && putRes.status !== 308) {
+      throw new UploadError(`Resumable upload stream failed with status ${putRes.status}`, {
+        httpStatus: putRes.status,
+        isRetryable: putRes.status === 429 || putRes.status >= 500
+      });
+    }
+
+    const bodyData = await putRes.json();
+    return bodyData.id;
+  }
 }
+
 

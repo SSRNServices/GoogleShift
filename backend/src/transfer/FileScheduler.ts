@@ -350,7 +350,10 @@ export class FileScheduler implements ISchedulerHandle {
         const total = this.rateLimiter.getConcurrency();
         if (bucket === 'HUGE') return Math.max(1, Math.min(2, total));
         if (bucket === 'LARGE') return Math.max(2, Math.min(4, total));
-        return Math.max(1, total);
+        if (bucket === 'MEDIUM') return Math.max(2, Math.min(8, total));
+        if (bucket === 'SMALL') return Math.max(4, Math.min(12, total));
+        if (bucket === 'TINY') return Math.max(4, Math.min(16, total));
+        return Math.max(1, Math.min(16, total));
       };
 
       while (!this.isDone && !this.isCancelled) {
@@ -366,7 +369,7 @@ export class FileScheduler implements ISchedulerHandle {
         // ── Per-worker stall check ─────────────────────────────────────────────
         this.checkWorkerStalls();
 
-        // ── Reap dead workers, spawn replacements ─────────────────────────────
+        // ── Reap dead workers & excess idle workers ────────────────────────────
         const deadWorkers = this.workers.filter(w => w.isDead);
         if (deadWorkers.length > 0) {
           console.warn(
@@ -374,6 +377,20 @@ export class FileScheduler implements ISchedulerHandle {
             `JobId: ${this.jobId}`
           );
           this.workers = this.workers.filter(w => !w.isDead);
+        }
+
+        // Reap excess idle workers if concurrency target scaled down
+        const initialBusyCount = this.workers.filter(w => w.isBusy && !w.isDead).length;
+        const maxWorkersAllowed = this.rateLimiter.getConcurrency();
+        if (this.workers.length > maxWorkersAllowed) {
+          let excessToRemove = this.workers.length - maxWorkersAllowed;
+          this.workers = this.workers.filter(w => {
+            if (w.isIdle && excessToRemove > 0) {
+              excessToRemove--;
+              return false;
+            }
+            return true;
+          });
         }
 
         // ── Replenish bucket from DB ───────────────────────────────────────────
@@ -395,13 +412,23 @@ export class FileScheduler implements ISchedulerHandle {
         // ── Assign work to idle workers ────────────────────────────────────────
         const idleWorkers = this.workers.filter(w => w.isIdle);
         for (const worker of idleWorkers) {
-          let selectedItem = this.buckets[worker.affinity]?.shift();
+          // Check bucket concurrency before assigning
+          const activeInAffinity = this.workers.filter(w => w.isBusy && !w.isDead && w.affinity === worker.affinity).length;
+          let selectedItem: ManifestItem | undefined;
+
+          if (activeInAffinity < getLimit(worker.affinity)) {
+            selectedItem = this.buckets[worker.affinity]?.shift();
+          }
+
           if (!selectedItem) {
             for (const key of ['TINY', 'SMALL', 'MEDIUM', 'LARGE', 'HUGE']) {
-              selectedItem = this.buckets[key]?.shift();
-              if (selectedItem) {
-                worker.affinity = key;
-                break;
+              const activeInKey = this.workers.filter(w => w.isBusy && !w.isDead && w.affinity === key).length;
+              if (activeInKey < getLimit(key)) {
+                selectedItem = this.buckets[key]?.shift();
+                if (selectedItem) {
+                  worker.affinity = key;
+                  break;
+                }
               }
             }
           }

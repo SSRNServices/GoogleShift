@@ -288,3 +288,29 @@ export function classifyError(e: any): 'retryable' | 'permanent' | 'unknown' {
 
   return 'unknown';
 }
+
+/**
+ * Formats an error into a comprehensive diagnostic string.
+ * Handles Axios/Gaxios errors where message might be "request to ... failed, reason:"
+ */
+export function formatDetailedError(e: any): string {
+  if (!e) return 'Unknown error';
+  const name = e.name || 'Error';
+  const status = e.response?.status || e.status || '';
+  const statusText = e.response?.statusText || '';
+  const apiReason = e.response?.data?.error?.errors?.[0]?.reason || e.response?.data?.error?.message || e.cause?.message || '';
+  const code = e.code || e.cause?.code || '';
+  let msg = e.message || 'Operation failed';
+
+  if (msg.trim().endsWith('reason:') && apiReason) {
+    msg = `${msg} ${apiReason}`;
+  }
+
+  const parts: string[] = [`[${name}] ${msg}`];
+  if (status) parts.push(`Status: ${status}${statusText ? ' ' + statusText : ''}`);
+  if (code) parts.push(`Code: ${code}`);
+  if (apiReason && !msg.includes(apiReason)) parts.push(`API Reason: ${apiReason}`);
+
+  return parts.join(' | ');
+}
+
