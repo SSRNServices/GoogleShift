@@ -132,9 +132,13 @@ export class DiscoveryService {
         const hash = `${file.name}-${file.size}-${file.mimeType}`;
         if (fileHashes.has(hash)) {
           mimeStats.duplicates++;
-          warnings.push({ type: 'DUPLICATE_NAME', message: `Duplicate file detected: ${file.name}`, fileId: file.id, fileName: file.name });
+          if (warnings.length < 500) {
+            warnings.push({ type: 'DUPLICATE_NAME', message: `Duplicate file detected: ${file.name}`, fileId: file.id, fileName: file.name });
+          }
         } else {
-          fileHashes.add(hash);
+          if (fileHashes.size < 100000) {
+            fileHashes.add(hash);
+          }
         }
 
         pushItemAndCheckFlush({
@@ -214,6 +218,10 @@ export class DiscoveryService {
       manifestBuffer = [];
     }
 
+    // ── STRUCTURED FINALIZATION PIPELINE ──────────────────────────────────────────
+    const finalizeStartMs = Date.now();
+    console.log(`[DISCOVERY FINALIZE] 1. Entering finalization | jobId=${manifestId} userId=${userId} elapsedMs=${finalizeStartMs - startTime}`);
+
     console.log(`[DISCOVERY] Awaiting remaining pipelined DB flushes (${flushPromises.length} batches)...`);
     await onProgress('FINALIZING', { 
       message: `Finalizing discovery scan and saving ${flushPromises.length} manifest batches to database...`, 
@@ -227,20 +235,20 @@ export class DiscoveryService {
 
     if (flushError) {
       const errorMsg = (flushError as Error).message;
-      console.error(`[DISCOVERY FATAL] Manifest batch flushes failed. Failing discovery job fast: ${errorMsg}`);
+      console.error(`[DISCOVERY FATAL] Manifest batch flushes failed: ${errorMsg}`);
       await onProgress('SCAN_FAILED', { error: `Manifest persistence failed: ${errorMsg}` });
       throw new Error(`Manifest persistence failed: ${errorMsg}`);
     }
 
-    console.log(`[DISCOVERY] All ${flushPromises.length} DB/file manifest chunk flushes completed successfully.`);
+    console.log(`[DISCOVERY FINALIZE] 2. All DB flushes awaited | flushPromises=${flushPromises.length} durationMs=${Date.now() - finalizeStartMs}`);
 
     // STEP 9: Derive and verify final counts from the persisted SQLite database
-    console.log(`[DISCOVERY] Verifying persisted manifest counts in database for manifestId=${manifestId}...`);
+    console.log(`[DISCOVERY FINALIZE] 3. Manifest verification started | manifestId=${manifestId}`);
     const dbStats = await ManifestStorage.getSummaryStats(manifestId);
     const dbTotalCount = await ManifestStorage.countItems(manifestId);
     const expectedTotalCount = totalFolders + totalFiles;
 
-    console.log(`[DISCOVERY DB VERIFICATION] Persisted Items: ${dbTotalCount} (Folders: ${dbStats.totalFolders}, Files: ${dbStats.totalFiles}, Bytes: ${dbStats.totalBytes}) | Traversal Expected Items: ${expectedTotalCount}`);
+    console.log(`[DISCOVERY FINALIZE] 4. Manifest verification completed | dbItems=${dbTotalCount} (Folders: ${dbStats.totalFolders}, Files: ${dbStats.totalFiles}, Bytes: ${dbStats.totalBytes}) expected=${expectedTotalCount}`);
 
     if (dbTotalCount !== expectedTotalCount) {
       const mismatchErr = `Persisted manifest count mismatch: SQLite database contains ${dbTotalCount} items, but traversal expected ${expectedTotalCount} items.`;
@@ -281,8 +289,8 @@ export class DiscoveryService {
       estimatedTimeSeconds: Math.ceil(totalBytes / (25 * 1024 * 1024))
     };
 
+    console.log(`[DISCOVERY FINALIZE] 5. StorageAnalyzer started | userId=${userId}`);
     try {
-      console.log(`[DISCOVERY] Executing StorageAnalyzer for userId=${userId}...`);
       const res = await StorageAnalyzer.analyzeStorage(userId, totalBytes);
       storageAnalysis = {
         limit: res.limit || 0,
@@ -295,21 +303,17 @@ export class DiscoveryService {
       if (!storageAnalysis.sufficient) {
         warnings.push(...storageAnalysis.warnings.map(w => ({ type: 'STORAGE_EXHAUSTION', message: w })));
       }
-      console.log(`[DISCOVERY] Storage analysis complete.`);
+      console.log(`[DISCOVERY FINALIZE] 6. StorageAnalyzer completed | limit=${storageAnalysis.limit} used=${storageAnalysis.used} sufficient=${storageAnalysis.sufficient}`);
     } catch (storageErr: any) {
-      console.warn(`[DISCOVERY] StorageAnalyzer error (non-fatal):`, storageErr.message);
+      console.warn(`[DISCOVERY FINALIZE] StorageAnalyzer error (non-fatal):`, storageErr.message);
     }
 
-    try {
-      console.log(`[DISCOVERY] Persisting ScanSummary to DB for manifestId=${manifestId}...`);
-      // Delete existing relations to avoid P2002 relation constraint conflicts on upsert
-      const existingSummary = await prisma.scanSummary.findUnique({ where: { manifestId } });
-      if (existingSummary) {
-        await prisma.mimeStats.deleteMany({ where: { summaryId: existingSummary.id } }).catch(() => {});
-        await prisma.scanWarning.deleteMany({ where: { summaryId: existingSummary.id } }).catch(() => {});
-      }
+    const cappedWarnings = warnings.slice(0, 100);
+    console.log(`[DISCOVERY FINALIZE] 7. ScanSummary persistence started | manifestId=${manifestId} totalWarnings=${warnings.length} cappedWarnings=${cappedWarnings.length}`);
 
-      await prisma.scanSummary.upsert({
+    try {
+      // 1. Upsert core ScanSummary record
+      const summaryRecord = await prisma.scanSummary.upsert({
         where: { manifestId },
         create: {
           manifestId,
@@ -319,13 +323,7 @@ export class DiscoveryService {
           destinationStorageLimit: storageAnalysis.limit,
           destinationStorageUsed: storageAnalysis.used,
           estimatedTimeSeconds: storageAnalysis.estimatedTimeSeconds,
-          largestFile,
-          mimeStats: {
-            create: mimeStats
-          },
-          warnings: {
-            create: warnings
-          }
+          largestFile
         },
         update: {
           totalFolders: finalFolders,
@@ -334,18 +332,34 @@ export class DiscoveryService {
           destinationStorageLimit: storageAnalysis.limit,
           destinationStorageUsed: storageAnalysis.used,
           estimatedTimeSeconds: storageAnalysis.estimatedTimeSeconds,
-          largestFile,
-          mimeStats: {
-            create: mimeStats
-          },
-          warnings: {
-            create: warnings
-          }
+          largestFile
         }
       });
-      console.log(`[DISCOVERY] ScanSummary persisted successfully.`);
+
+      // 2. Upsert MimeStats record
+      await prisma.mimeStats.upsert({
+        where: { summaryId: summaryRecord.id },
+        create: { summaryId: summaryRecord.id, ...mimeStats },
+        update: { ...mimeStats }
+      }).catch(err => console.warn(`[DISCOVERY FINALIZE] MimeStats save warning:`, err.message));
+
+      // 3. Recreate capped warnings (max 100 items to prevent parameter overflow)
+      await prisma.scanWarning.deleteMany({ where: { summaryId: summaryRecord.id } }).catch(() => {});
+      if (cappedWarnings.length > 0) {
+        await prisma.scanWarning.createMany({
+          data: cappedWarnings.map(w => ({
+            summaryId: summaryRecord.id,
+            type: w.type,
+            message: w.message,
+            fileId: w.fileId || null,
+            fileName: w.fileName || null
+          }))
+        }).catch(err => console.warn(`[DISCOVERY FINALIZE] ScanWarning save warning:`, err.message));
+      }
+
+      console.log(`[DISCOVERY FINALIZE] 8. ScanSummary persistence completed | summaryId=${summaryRecord.id}`);
     } catch (summaryErr: any) {
-      console.error(`[DISCOVERY] Error persisting ScanSummary to DB (non-fatal):`, summaryErr.message);
+      console.error(`[DISCOVERY FINALIZE ERROR] Error persisting ScanSummary to DB (non-fatal):`, summaryErr.message);
     }
 
     const finalSummary = {
@@ -361,12 +375,13 @@ export class DiscoveryService {
        filesPerSec: finalFilesPerSec,
        storageAnalysis,
        mimeStats,
-       warnings,
+       warnings: cappedWarnings,
        largestFile
     };
 
-    console.log(`[DISCOVERY] Discovery Finished successfully for manifestId=${manifestId}. Emitting SCAN_COMPLETED...`);
+    console.log(`[DISCOVERY FINALIZE] 13. Emitting SCAN_COMPLETED | manifestId=${manifestId}`);
     await onProgress('SCAN_COMPLETED', finalSummary);
+    console.log(`[DISCOVERY FINALIZE] 14. Finalization completed successfully | manifestId=${manifestId} totalElapsedSec=${totalElapsedSec.toFixed(2)}s`);
     return finalSummary;
   }
 }

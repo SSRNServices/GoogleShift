@@ -175,6 +175,7 @@ export class DiscoveryWorker {
         elapsed: Date.now() - startTime
       });
       
+      console.log(`[DISCOVERY FINALIZE] 9. DiscoveryJob status update started | jobId=${job.id}`);
       await prisma.discoveryJob.update({
          where: { id: job.id },
          data: {
@@ -186,13 +187,15 @@ export class DiscoveryWorker {
             checkpointData: JSON.stringify({ googleRequests })
          }
       });
+      console.log(`[DISCOVERY FINALIZE] 10. DiscoveryJob status update completed | jobId=${job.id}`);
       
       if (job.sessionId) {
-        console.log(`[DISCOVERY] Updating MigrationSession ${job.sessionId} with discoveryStatus=COMPLETED and manifestId=${job.manifestId}...`);
+        console.log(`[DISCOVERY FINALIZE] 11. MigrationSession update started | sessionId=${job.sessionId}`);
         await prisma.migrationSession.update({
           where: { id: job.sessionId },
           data: { discoveryStatus: 'COMPLETED', manifestId: job.manifestId }
-        }).catch(err => console.error(`[DISCOVERY] Failed to update session discoveryStatus to COMPLETED:`, err.message));
+        }).catch(err => console.error(`[DISCOVERY FINALIZE ERROR] Failed to update session discoveryStatus to COMPLETED:`, err.message));
+        console.log(`[DISCOVERY FINALIZE] 12. MigrationSession update completed | sessionId=${job.sessionId}`);
       }
       
     } catch (e: any) {
