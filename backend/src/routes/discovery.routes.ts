@@ -37,6 +37,16 @@ const formatDiscoveryResponse = (job: any, extraMessage?: string) => {
   const filesCount = job.filesFound || 0;
   const bytesCount = job.bytesFound || BigInt(0);
 
+  let googleRequests = typeof job.googleRequests === 'number' ? job.googleRequests : 0;
+  if (!googleRequests && job.checkpointData) {
+    try {
+      const parsed = typeof job.checkpointData === 'string' ? JSON.parse(job.checkpointData) : job.checkpointData;
+      if (typeof parsed?.googleRequests === 'number') {
+        googleRequests = parsed.googleRequests;
+      }
+    } catch (_) {}
+  }
+
   const calcElapsed = job.elapsed 
     || (job.completedAt && job.startedAt ? new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime() : 0)
     || (job.startedAt ? Date.now() - new Date(job.startedAt).getTime() : 0);
@@ -57,6 +67,7 @@ const formatDiscoveryResponse = (job: any, extraMessage?: string) => {
     foldersFound: foldersCount,
     filesFound: filesCount,
     bytesFound: bytesCount,
+    googleRequests,
     folders: foldersCount,
     files: filesCount,
     bytes: bytesCount,
@@ -512,8 +523,9 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
   }
 
   let heartbeatCount = 0;
+  let interval: NodeJS.Timeout | null = null;
 
-  const interval = setInterval(async () => {
+  const sendDiscoveryTick = async () => {
     try {
       heartbeatCount++;
       // Send SSE ping comment every 10 seconds to prevent proxy dropouts
@@ -529,7 +541,10 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
       if (!job) {
         formatAuditLog('JOB_NOT_FOUND', { jobId, userId });
         res.write(`data: ${JSON.stringify({ code: 'JOB_NOT_FOUND', error: 'Discovery job does not exist.' })}\n\n`);
-        clearInterval(interval);
+        if (interval) {
+          clearInterval(interval);
+          interval = null;
+        }
         res.end();
         return;
       }
@@ -554,7 +569,10 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
          }
 
          res.write(`data: ${JSON.stringify({ error: `Discovery job timed out after ${Math.round(TIMEOUT_THRESHOLD / 60000)} minutes of inactivity.` })}\n\n`);
-         clearInterval(interval);
+         if (interval) {
+           clearInterval(interval);
+           interval = null;
+         }
          res.end();
          return;
       }
@@ -582,20 +600,35 @@ router.get('/:jobId/status', requireUserAuth, async (req: Request, res: Response
         } else if (job.state === 'FAILED') {
            res.write(`data: ${JSON.stringify({ error: 'Discovery job failed during execution.' })}\n\n`);
         }
-        clearInterval(interval);
+        if (interval) {
+          clearInterval(interval);
+          interval = null;
+        }
         res.end();
       }
 
     } catch (e: any) {
       formatAuditLog('ERROR', { code: 'DATABASE_ERROR', message: e.message, stack: e.stack, jobId, userId });
       res.write(`data: ${JSON.stringify({ code: 'DATABASE_ERROR', error: e.message || 'Database error while fetching job status' })}\n\n`);
-      clearInterval(interval);
+      if (interval) {
+        clearInterval(interval);
+        interval = null;
+      }
       res.end();
     }
-  }, 1000);
+  };
+
+  // Immediate initial tick
+  await sendDiscoveryTick();
+
+  // Recurring tick
+  interval = setInterval(sendDiscoveryTick, 1000);
 
   req.on('close', () => {
-    clearInterval(interval);
+    if (interval) {
+      clearInterval(interval);
+      interval = null;
+    }
   });
 });
 

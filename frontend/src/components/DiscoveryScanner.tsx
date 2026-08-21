@@ -107,6 +107,7 @@ export function DiscoveryScanner({ sourceId, itemsParam, sessionId, onComplete, 
         totalFolders: newFolders,
         totalFiles: newFiles,
         totalBytes: newBytes,
+        googleRequests: typeof data.googleRequests === 'number' ? data.googleRequests : undefined,
         manifestId: String(data.manifestId || '')
       };
 
@@ -115,10 +116,10 @@ export function DiscoveryScanner({ sourceId, itemsParam, sessionId, onComplete, 
       setFinalSummary(summaryObj);
       setStats(prev => ({
         status: 'COMPLETED',
-        folders: Math.max(prev.folders, summaryObj.totalFolders || 0),
-        files: Math.max(prev.files, summaryObj.totalFiles || 0),
-        bytes: Math.max(prev.bytes, summaryObj.totalBytes || 0),
-        googleRequests: Number(data.googleRequests) || Math.max(prev.googleRequests, newFolders || 1),
+        folders: Math.max(prev.folders, summaryObj.totalFolders || newFolders || 0),
+        files: Math.max(prev.files, summaryObj.totalFiles || newFiles || 0),
+        bytes: Math.max(prev.bytes, summaryObj.totalBytes || newBytes || 0),
+        googleRequests: typeof data.googleRequests === 'number' && !isNaN(data.googleRequests) ? data.googleRequests : prev.googleRequests,
         foldersPerSec: 0,
         filesPerSec: 0,
         queueDepth: 0,
@@ -134,7 +135,9 @@ export function DiscoveryScanner({ sourceId, itemsParam, sessionId, onComplete, 
       const updatedFolders = Math.max(prev.folders, newFolders);
       const updatedFiles = Math.max(prev.files, newFiles);
       const updatedBytes = Math.max(prev.bytes, newBytes);
-      const updatedGoogle = Number(data.googleRequests) || Math.max(prev.googleRequests, updatedFolders ? updatedFolders + 1 : 1);
+      const updatedGoogle = typeof data.googleRequests === 'number' && !isNaN(data.googleRequests)
+        ? data.googleRequests
+        : prev.googleRequests;
 
       let messageStr = 'Scanning Google Drive...';
       if (rawStatus === 'FINALIZING') {
@@ -376,6 +379,10 @@ export function DiscoveryScanner({ sourceId, itemsParam, sessionId, onComplete, 
   }
 
   if (completed && finalSummary) {
+    const finalGoogleRequests = typeof (finalSummary as any).googleRequests === 'number' && !isNaN((finalSummary as any).googleRequests)
+      ? (finalSummary as any).googleRequests
+      : stats.googleRequests;
+
     return (
       <div className="bg-white dark:bg-gray-800 p-6 rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm">
         <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 pb-4 mb-6">
@@ -391,7 +398,7 @@ export function DiscoveryScanner({ sourceId, itemsParam, sessionId, onComplete, 
            </span>
         </div>
         
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
            <div className="bg-gray-50 dark:bg-gray-900 p-4 rounded text-center border border-gray-100 dark:border-gray-700">
               <FolderOpen className="w-6 h-6 mx-auto mb-2 text-indigo-500" />
               <div className="text-2xl font-bold text-gray-900 dark:text-white">{(finalSummary.totalFolders || stats.folders || 0).toLocaleString()}</div>
@@ -406,6 +413,11 @@ export function DiscoveryScanner({ sourceId, itemsParam, sessionId, onComplete, 
               <span className="block text-2xl mb-2">💾</span>
               <div className="text-2xl font-bold text-gray-900 dark:text-white">{formatBytes(finalSummary.totalBytes || stats.bytes || 0)}</div>
               <div className="text-sm text-gray-500">Total Size</div>
+           </div>
+           <div className="bg-gray-50 dark:bg-gray-900 p-4 rounded text-center border border-gray-100 dark:border-gray-700">
+              <span className="block text-2xl mb-2">⚡</span>
+              <div className="text-2xl font-bold text-indigo-600 dark:text-indigo-400">{finalGoogleRequests.toLocaleString()}</div>
+              <div className="text-sm text-gray-500">Google API Requests</div>
            </div>
            <div className="bg-gray-50 dark:bg-gray-900 p-4 rounded text-center border border-gray-100 dark:border-gray-700">
               <AlertTriangle className="w-6 h-6 mx-auto mb-2 text-yellow-500" />
@@ -437,6 +449,10 @@ export function DiscoveryScanner({ sourceId, itemsParam, sessionId, onComplete, 
 
   const formattedElapsed = `${Math.floor(stats.elapsed / 60000).toString().padStart(2, '0')}:${Math.floor((stats.elapsed % 60000) / 1000).toString().padStart(2, '0')}`;
 
+  const headerTitle = stats.status === 'FINALIZING'
+    ? 'Finalizing Scan'
+    : (stats.status === 'CONNECTING' ? 'Connecting to Drive...' : 'Discovering Drive Contents');
+
   return (
     <div className="bg-gray-50 dark:bg-gray-800 p-8 rounded-lg border border-indigo-100 dark:border-indigo-900/30 text-center relative overflow-hidden shadow-sm">
       <div className="absolute top-0 left-0 right-0 h-1.5 bg-indigo-100 overflow-hidden">
@@ -445,7 +461,7 @@ export function DiscoveryScanner({ sourceId, itemsParam, sessionId, onComplete, 
 
       <div className="flex justify-between items-center mb-4">
         <div className="text-left">
-           <h3 className="text-xl font-bold text-gray-900 dark:text-white">Discovering Drive Contents</h3>
+           <h3 className="text-xl font-bold text-gray-900 dark:text-white">{headerTitle}</h3>
            <p className="text-xs text-gray-500 dark:text-gray-400 font-mono mt-0.5">{stats.message}</p>
         </div>
         {getStatusBadge(stats.status)}
@@ -478,8 +494,7 @@ export function DiscoveryScanner({ sourceId, itemsParam, sessionId, onComplete, 
         </div>
         <div className="bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
           <div className="text-2xl font-bold text-gray-900 dark:text-white">{formattedElapsed}</div>
-          <div className="text-xs text-gray-400 font-medium mt-0.5">Live Stopwatch</div>
-          <div className="text-xs text-gray-500 mt-1">Elapsed Time</div>
+          <div className="text-xs text-gray-400 font-medium mt-0.5">Stopwatch</div>
         </div>
       </div>
     </div>

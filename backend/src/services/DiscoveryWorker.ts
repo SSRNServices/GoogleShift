@@ -101,6 +101,7 @@ export class DiscoveryWorker {
                    bytesFound: data.totalBytes ? BigInt(data.totalBytes) : BigInt(0),
                    currentFolder: data.folderName || data.currentFolder || null,
                    currentFile: data.currentFile || null,
+                   checkpointData: JSON.stringify({ googleRequests: data.googleRequests || 0 }),
                    lastHeartbeat: new Date()
                  }
                }),
@@ -129,10 +130,11 @@ export class DiscoveryWorker {
       const totalFolders = summary?.totalFolders || 0;
       const totalFiles = summary?.totalFiles || 0;
       const totalBytes = summary?.totalBytes || 0;
+      const googleRequests = summary?.googleRequests || 0;
 
       console.log("DISCOVERY STATUS COMPLETE");
       console.log("DISCOVERY COMPLETE");
-      console.log(`[DISCOVERY] Discovery Finished for jobId=${job.id}. Totals -> Folders: ${totalFolders}, Files: ${totalFiles}, Bytes: ${totalBytes}`);
+      console.log(`[DISCOVERY] Discovery Finished for jobId=${job.id}. Totals -> Folders: ${totalFolders}, Files: ${totalFiles}, Bytes: ${totalBytes}, Google Requests: ${googleRequests}`);
       formatAuditLog('DISCOVERY_COMPLETED', {
         jobId: job.id,
         sessionId: job.sessionId,
@@ -140,6 +142,7 @@ export class DiscoveryWorker {
         foldersFound: totalFolders,
         filesFound: totalFiles,
         bytesFound: totalBytes,
+        googleRequests,
         elapsed: Date.now() - startTime
       });
       
@@ -150,7 +153,8 @@ export class DiscoveryWorker {
             completedAt: new Date(),
             foldersFound: totalFolders,
             filesFound: totalFiles,
-            bytesFound: totalBytes ? BigInt(totalBytes) : BigInt(0)
+            bytesFound: totalBytes ? BigInt(totalBytes) : BigInt(0),
+            checkpointData: JSON.stringify({ googleRequests })
          }
       });
       

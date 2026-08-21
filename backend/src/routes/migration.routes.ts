@@ -614,6 +614,8 @@ router.get('/:jobId/status', async (req, res) => {
   let stallTickCount = 0;
   const STALL_TICK_THRESHOLD = 3; // 3 ticks × 2s = 6 seconds without change → stalled
 
+  let interval: NodeJS.Timeout | null = null;
+
   const sendSseTick = async () => {
     try {
       res.write(':\n\n'); // SSE comment heartbeat
@@ -622,7 +624,10 @@ router.get('/:jobId/status', async (req, res) => {
 
       if (!job) {
         res.write(`data: ${JSON.stringify({ error: 'Job not found' })}\n\n`);
-        if (interval) clearInterval(interval);
+        if (interval) {
+          clearInterval(interval);
+          interval = null;
+        }
         res.end();
         return;
       }
@@ -727,14 +732,20 @@ router.get('/:jobId/status', async (req, res) => {
       })}\n\n`);
 
       if (isTerminal) {
-        if (interval) clearInterval(interval);
+        if (interval) {
+          clearInterval(interval);
+          interval = null;
+        }
         res.end();
       }
     } catch (e: any) {
       console.error('SSE Error:', e);
       if (!res.writableEnded && !res.headersSent) {
         res.write(`data: ${JSON.stringify({ error: 'Internal server error while fetching job status' })}\n\n`);
-        if (interval) clearInterval(interval);
+        if (interval) {
+          clearInterval(interval);
+          interval = null;
+        }
         res.end();
       }
     }
@@ -744,7 +755,7 @@ router.get('/:jobId/status', async (req, res) => {
   await sendSseTick();
 
   // 2. Set recurring tick interval
-  let interval: NodeJS.Timeout | null = setInterval(sendSseTick, 2000);
+  interval = setInterval(sendSseTick, 2000);
 
   req.on('close', () => {
     if (interval) {

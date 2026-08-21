@@ -229,11 +229,14 @@ export default function Migration() {
     }
   };
 
+  const [discoveryCompleted, setDiscoveryCompleted] = useState(false);
+
   const handleDiscoveryComplete = useCallback((summary: { manifestId?: string; totalFolders?: number; totalFiles?: number; totalBytes?: number }) => {
     console.log('[MigrationWizard] handleDiscoveryComplete invoked with summary:', summary);
     if (summary.manifestId) {
       setManifestId(summary.manifestId);
     }
+    setDiscoveryCompleted(true);
     if (sessionId) {
       fetchSession(sessionId).catch(console.error);
     }
@@ -241,6 +244,7 @@ export default function Migration() {
   }, [sessionId, fetchSession]);
 
   const handleDiscoveryError = useCallback((err: string) => {
+    setDiscoveryCompleted(false);
     toast.error(err);
   }, []);
 
@@ -255,7 +259,7 @@ export default function Migration() {
     return true;
   };
 
-  const isDiscoveryFinished = sessionData?.discoveryStatus === 'COMPLETED' || !!manifestId || !!sessionData?.manifestId;
+  const isDiscoveryFinished = sessionData?.discoveryStatus === 'COMPLETED' || discoveryCompleted;
 
   return (
     <div className="max-w-4xl mx-auto py-8">
