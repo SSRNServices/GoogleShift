@@ -163,19 +163,63 @@ export class FolderScheduler {
 
       // Create new
       if (!folderExists) {
+        let activeDestParentId = destParentId;
         await RetryHelper.withRetry('Create Folder', async () => {
+          try {
             const createRes = await this.destDrive.files.create({
-                requestBody: {
-                    name: node.name,
-                    mimeType: 'application/vnd.google-apps.folder',
-                    parents: [destParentId]
-                },
-                fields: 'id, name, parents'
+              requestBody: {
+                name: node.name,
+                mimeType: 'application/vnd.google-apps.folder',
+                parents: [activeDestParentId]
+              },
+              fields: 'id, name, parents'
             }, { timeout: 30000 });
             if (!createRes.data.id) {
-                throw new Error(`Google Drive API created folder but returned no ID for ${node.name}`);
+              throw new Error(`Google Drive API created folder but returned no ID for ${node.name}`);
             }
             newDestFolderId = createRes.data.id;
+          } catch (createErr: any) {
+            const { GoogleDriveErrorClassifier } = await import('../utils/GoogleDriveErrorClassifier');
+            const { destinationShardManager } = await import('./DestinationShardManager');
+            const classified = GoogleDriveErrorClassifier.classify(createErr, {
+              operation: 'files.createFolder',
+              sourceFolderId: node.id,
+              destinationFolderId: activeDestParentId
+            });
+
+            if (classified.classification === 'DESTINATION_FOLDER_CHILD_LIMIT') {
+              console.warn(
+                `[FolderScheduler] Parent folder ${activeDestParentId} full when creating "${node.name}". ` +
+                `Creating destination shard...`
+              );
+              const shard = await destinationShardManager.getOrCreateShard(
+                this.jobId,
+                this.manifestId,
+                this.destDrive,
+                {
+                  sourceFolderId: node.sourceParentId,
+                  sourceFolderName: node.name,
+                  originalDestinationFolderId: activeDestParentId,
+                  parentDestinationFolderId: 'root'
+                }
+              );
+              activeDestParentId = shard.shardDestinationFolderId;
+              const retryRes = await this.destDrive.files.create({
+                requestBody: {
+                  name: node.name,
+                  mimeType: 'application/vnd.google-apps.folder',
+                  parents: [activeDestParentId]
+                },
+                fields: 'id, name, parents'
+              }, { timeout: 30000 });
+              if (!retryRes.data.id) {
+                throw new Error(`Google Drive API created folder in shard but returned no ID for ${node.name}`);
+              }
+              newDestFolderId = retryRes.data.id;
+            } else {
+              throw createErr;
+            }
+          }
         }, (msg) => {}, () => this.rateLimiter.reportRateLimit());
         this.rateLimiter.reportSuccess();
       }

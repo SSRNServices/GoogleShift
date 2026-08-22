@@ -96,6 +96,7 @@ async function getDetailedFailedItems(jobId: string, manifestId?: string) {
   try {
     const targetId = manifestId || jobId;
     const { ManifestStorage } = await import('../utils/ManifestStorage');
+    const { GoogleDriveErrorClassifier } = await import('../utils/GoogleDriveErrorClassifier');
     const failedManifestItems = await ManifestStorage.getFailedItems(targetId);
 
     const failedItems = await prisma.migrationItem.findMany({
@@ -107,22 +108,35 @@ async function getDetailedFailedItems(jobId: string, manifestId?: string) {
     }
 
     return failedManifestItems.map((item: any) => {
-      const rawError = errMap.get(item.id) || 'Transfer retries exhausted';
-      let errorMsg = rawError;
-      let classification = 'Stream Lifecycle Error';
+      const rawError = errMap.get(item.id) || item.error || 'Transfer error';
+      const classified = GoogleDriveErrorClassifier.classify({ message: rawError }, { sourceFileId: item.sourceId });
 
-      if (rawError.includes('Classification:')) {
-        const parts = rawError.split('Classification:');
-        errorMsg = parts[0].trim().replace(/\|$/, '').trim();
-        classification = parts[1].trim();
-      } else if (rawError.toLowerCase().includes('timeout')) {
-        classification = 'Timeout Error';
-      } else if (rawError.toLowerCase().includes('stall')) {
-        classification = 'Network Stall Error';
-      } else if (rawError.toLowerCase().includes('rate')) {
-        classification = 'Rate Limit Error';
-      } else if (rawError.toLowerCase().includes('google api')) {
-        classification = 'Google API Error';
+      let classificationName = 'Transfer Error';
+      switch (classified.classification) {
+        case 'DESTINATION_FOLDER_CHILD_LIMIT':
+          classificationName = 'Destination Folder Limit Exceeded';
+          break;
+        case 'RATE_LIMIT':
+          classificationName = 'Rate Limit Exceeded';
+          break;
+        case 'STORAGE_LIMIT':
+          classificationName = 'Storage Limit Exceeded';
+          break;
+        case 'PERMISSION_DENIED':
+          classificationName = 'Permission Denied';
+          break;
+        case 'INVALID_PARENT':
+          classificationName = 'Invalid Destination Parent';
+          break;
+        case 'STREAM_INTERRUPTED':
+          classificationName = 'Stream Interrupted';
+          break;
+        case 'NETWORK_ERROR':
+          classificationName = 'Network Error';
+          break;
+        case 'AUTHENTICATION_FAILURE':
+          classificationName = 'Authentication Failure';
+          break;
       }
 
       return {
@@ -130,10 +144,14 @@ async function getDetailedFailedItems(jobId: string, manifestId?: string) {
         name: item.name || 'Unknown File',
         mimeType: item.mimeType || 'application/octet-stream',
         size: Number(item.size || 0),
-        retryCount: item.retryCount || 5,
-        error: errorMsg,
-        classification,
-        retryExhausted: true
+        retryCount: item.retryCount || 0,
+        error: classified.message || rawError,
+        classification: classificationName,
+        googleReason: classified.googleReason || 'N/A',
+        httpStatus: classified.httpStatus || 403,
+        retryable: classified.retryable,
+        retryExhausted: true,
+        actionRequired: classified.classification === 'DESTINATION_FOLDER_CHILD_LIMIT' ? 'Destination folder sharding required' : 'None'
       };
     });
   } catch (e) {
@@ -572,6 +590,20 @@ router.post('/:jobId/resume', requireUserAuth, async (req, res) => {
     res.json({ success: true, status: 'starting' });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/:jobId/repair', requireUserAuth, async (req, res) => {
+  try {
+    const userId = (req as any).user.id;
+    const jobId = req.params.jobId as string;
+    const { MigrationRepairService } = await import('../services/MigrationRepairService');
+
+    const report = await MigrationRepairService.repairMigration(jobId, userId);
+    res.json({ success: true, report });
+  } catch (error: any) {
+    console.error(`[migration.routes] REPAIR_ERROR | ${error.message}`);
+    res.status(500).json({ error: error.message || 'Failed to repair migration' });
   }
 });
 

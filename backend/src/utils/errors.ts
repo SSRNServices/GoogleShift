@@ -52,8 +52,20 @@ export class DownloadStallError extends DownloadError {
 
 export class UploadError extends MigrationError {
   constructor(message: string, opts?: { isRetryable?: boolean; isPermanent?: boolean; httpStatus?: number }) {
-    super(message, { isRetryable: true, ...opts });
+    const isPermanent = opts?.isPermanent ?? (opts?.isRetryable === false);
+    const isRetryable = opts?.isRetryable ?? !isPermanent;
+    super(message, { isRetryable, isPermanent, httpStatus: opts?.httpStatus });
     this.name = 'UploadError';
+  }
+}
+
+export class DestinationFolderChildLimitError extends UploadError {
+  public readonly destinationFolderId?: string;
+  public readonly googleReason: string = 'numChildrenInNonRootLimitExceeded';
+  constructor(message: string, destinationFolderId?: string) {
+    super(message, { isPermanent: true, isRetryable: false, httpStatus: 403 });
+    this.name = 'DestinationFolderChildLimitError';
+    this.destinationFolderId = destinationFolderId;
   }
 }
 
@@ -242,6 +254,8 @@ export function classifyError(e: any): 'retryable' | 'permanent' | 'unknown' {
     code === 'ERR_STREAM_PUSH_AFTER_EOF' ||
     e?.name === 'StreamLifecycleError' ||
     e?.name === 'UploadStreamTypeError' ||
+    e?.name === 'DestinationFolderChildLimitError' ||
+    msg.includes('numChildrenInNonRootLimitExceeded') ||
     msg.includes('pipe is not a function') ||
     msg.includes('UPLOAD_STREAM_TYPE_ERROR')
   ) {

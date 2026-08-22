@@ -106,9 +106,24 @@ model MigrationJob {
   owner               User              @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   session             MigrationSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   logs                MigrationLog[]
+  shards              DestinationShard[]
 
   @@index([ownerId])
   @@index([state])
+}
+
+model DestinationShard {
+  id                        String       @id @default(uuid())
+  jobId                     String
+  sourceFolderId           String
+  originalDestinationFolderId String
+  shardNumber               Int
+  shardDestinationFolderId  String
+  createdAt                 DateTime     @default(now())
+  job                       MigrationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, sourceFolderId, shardNumber])
+  @@index([jobId, sourceFolderId])
 }
 
 model MigrationItem {

@@ -77,6 +77,19 @@ export class ManifestStorage {
         CREATE INDEX IF NOT EXISTS idx_sourceParentId ON manifest_items(sourceParentId);
         CREATE INDEX IF NOT EXISTS idx_isFolder_status_depth ON manifest_items(isFolder, status, depth);
         CREATE INDEX IF NOT EXISTS idx_status ON manifest_items(status);
+
+        CREATE TABLE IF NOT EXISTS folder_shards (
+          id TEXT PRIMARY KEY,
+          jobId TEXT NOT NULL,
+          sourceFolderId TEXT NOT NULL,
+          originalDestinationFolderId TEXT NOT NULL,
+          shardNumber INTEGER NOT NULL,
+          shardDestinationFolderId TEXT NOT NULL,
+          shardName TEXT,
+          createdAt INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_shards_source ON folder_shards(sourceFolderId);
+        CREATE INDEX IF NOT EXISTS idx_shards_orig_dest ON folder_shards(originalDestinationFolderId);
       `);
 
       return db;
@@ -451,6 +464,70 @@ export class ManifestStorage {
       processingFiles,
       transferredBytes
     };
+  }
+
+  public static async saveFolderShard(
+    manifestId: string,
+    shard: {
+      jobId: string;
+      sourceFolderId: string;
+      originalDestinationFolderId: string;
+      shardNumber: number;
+      shardDestinationFolderId: string;
+      shardName?: string;
+    }
+  ): Promise<void> {
+    const db = await this.getDb(manifestId);
+    const id = `${shard.sourceFolderId}_shard_${shard.shardNumber}`;
+    await db.run(
+      `INSERT OR REPLACE INTO folder_shards (
+        id, jobId, sourceFolderId, originalDestinationFolderId, shardNumber, shardDestinationFolderId, shardName, createdAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        shard.jobId,
+        shard.sourceFolderId,
+        shard.originalDestinationFolderId,
+        shard.shardNumber,
+        shard.shardDestinationFolderId,
+        shard.shardName || null,
+        Date.now()
+      ]
+    );
+  }
+
+  public static async getFolderShards(manifestId: string): Promise<any[]> {
+    const db = await this.getDb(manifestId);
+    const rows = await db.all<any[]>('SELECT * FROM folder_shards ORDER BY sourceFolderId, shardNumber ASC');
+    return rows;
+  }
+
+  public static async reroutePendingItemsToShard(
+    manifestId: string,
+    originalDestId: string,
+    shardDestId: string
+  ): Promise<number> {
+    const db = await this.getDb(manifestId);
+    const result = await db.run(
+      `UPDATE manifest_items SET destParentId = ? WHERE destParentId = ? AND status IN ('PENDING', 'QUEUED')`,
+      [shardDestId, originalDestId]
+    );
+    return result.changes || 0;
+  }
+
+  public static async resetFailedItemsForResharding(
+    manifestId: string,
+    itemIds: string[],
+    newDestId: string
+  ): Promise<number> {
+    if (itemIds.length === 0) return 0;
+    const db = await this.getDb(manifestId);
+    const placeholders = itemIds.map(() => '?').join(',');
+    const result = await db.run(
+      `UPDATE manifest_items SET status = 'QUEUED', destParentId = ?, retryCount = 0 WHERE id IN (${placeholders})`,
+      [newDestId, ...itemIds]
+    );
+    return result.changes || 0;
   }
 
   public static async hasManifest(manifestId: string): Promise<boolean> {

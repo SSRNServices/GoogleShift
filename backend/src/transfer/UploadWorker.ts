@@ -13,9 +13,12 @@ import {
   UploadStallError,
   GoogleApiError,
   StreamLifecycleError,
+  DestinationFolderChildLimitError,
   classifyError,
   formatDetailedError
 } from '../utils/errors';
+import { GoogleDriveErrorClassifier } from '../utils/GoogleDriveErrorClassifier';
+import { destinationShardManager } from './DestinationShardManager';
 import { MigrationConfig } from './types';
 import { prisma } from '../utils/database';
 
@@ -56,29 +59,27 @@ function computeTransferTimeout(fileSizeBytes: number): number {
 }
 
 function classifyErrorDetails(e: any): string {
-  const msg = e?.message || '';
-  if (msg.includes('pipe is not a function') || msg.includes('UPLOAD_STREAM_TYPE_ERROR') || e?.name === 'UploadStreamTypeError' || e instanceof UploadStreamTypeError) {
-    return 'Upload Stream Type Error';
+  const classified = GoogleDriveErrorClassifier.classify(e);
+  switch (classified.classification) {
+    case 'DESTINATION_FOLDER_CHILD_LIMIT':
+      return 'Destination Folder Limit Exceeded';
+    case 'RATE_LIMIT':
+      return 'Rate Limit Exceeded';
+    case 'STORAGE_LIMIT':
+      return 'Storage Limit Exceeded';
+    case 'PERMISSION_DENIED':
+      return 'Permission Denied';
+    case 'INVALID_PARENT':
+      return 'Invalid Parent Folder';
+    case 'AUTHENTICATION_FAILURE':
+      return 'Authentication Failure';
+    case 'STREAM_INTERRUPTED':
+      return 'Stream Lifecycle Error';
+    case 'NETWORK_ERROR':
+      return 'Retryable Network Error';
+    default:
+      return 'Transfer Error';
   }
-  if (msg.includes('push() after EOF') || msg.includes('ERR_STREAM_PUSH_AFTER_EOF') || e?.name === 'StreamLifecycleError' || e instanceof StreamLifecycleError) {
-    return 'Stream Lifecycle Error';
-  }
-  if (e?.name === 'DownloadTimeoutError' || e?.name === 'UploadTimeoutError' || msg.includes('timeout')) {
-    return 'Timeout Error';
-  }
-  if (e?.name === 'DownloadStallError' || e?.name === 'UploadStallError' || msg.includes('stall')) {
-    return 'Network Stall Error';
-  }
-  if (e?.name === 'GoogleApiError' || e?.response?.status || msg.includes('Google Drive API')) {
-    return `Google API Error (${e?.response?.status || e?.status || 'N/A'})`;
-  }
-  if (msg.includes('ECONNRESET') || msg.includes('ETIMEDOUT') || msg.includes('socket hang up')) {
-    return 'Network Connection Error';
-  }
-  const generalClass = classifyError(e);
-  if (generalClass === 'permanent') return 'Permanent Error';
-  if (generalClass === 'retryable') return 'Retryable Network Error';
-  return 'Transfer Error';
 }
 
 export class UploadWorker {
@@ -221,6 +222,12 @@ export class UploadWorker {
     try {
       await this.uploadFile(item, this.controller);
     } catch (e: any) {
+      const classified = GoogleDriveErrorClassifier.classify(e, {
+        operation: 'processFile',
+        sourceFileId: item.sourceId,
+        destinationFolderId: item.destParentId || undefined
+      });
+
       const isAbort =
         e.name === 'AbortError' ||
         e.message === 'The operation was aborted' ||
@@ -229,7 +236,6 @@ export class UploadWorker {
 
       const detailedMsg = formatDetailedError(e);
       const classification = classifyErrorDetails(e);
-      const generalClass = classifyError(e);
       const formattedErrorMsg = `${detailedMsg} | Classification: ${classification}`;
 
       if (isAbort) {
@@ -242,7 +248,7 @@ export class UploadWorker {
           `[Worker ${this.id}] FILE_FAILED | File: ${item.name} | FileId: ${item.sourceId} | ` +
           `Details: ${detailedMsg} | Classification: ${classification} | BytesMoved: ${this.uploadBytesTracked}`
         );
-        if (e.response && e.response.status === 429) this.rateLimiter.reportRateLimit();
+        if (classified.classification === 'RATE_LIMIT') this.rateLimiter.reportRateLimit();
       }
 
       // Persist failure details in checkpoint
@@ -256,12 +262,14 @@ export class UploadWorker {
         });
       } catch (_) {}
 
-      if (generalClass === 'permanent') {
+      if (!classified.retryable) {
         console.warn(
           `[Worker ${this.id}] NON_RETRIABLE_ERROR | File: ${item.name} | FileId: ${item.sourceId} | ` +
           `Error: ${detailedMsg} | Classification: ${classification}`
         );
-        await this.stateManager.updateState(item.id, 'FAILED').catch(() => {});
+        if (this.stateManager?.updateState) {
+          await Promise.resolve(this.stateManager.updateState(item.id, 'FAILED')).catch(() => {});
+        }
       } else {
         await retryJob(item);
       }
@@ -288,6 +296,15 @@ export class UploadWorker {
           `Parent mapping missing in cache for sourceParentId: ${item.sourceParentId} | File: ${item.name}`
         );
       }
+    }
+
+    // Resolve active shard if folder is sharded
+    if (item.sourceParentId) {
+      destParentId = destinationShardManager.resolveActiveDestinationFolderId(
+        this.jobId,
+        item.sourceParentId,
+        destParentId
+      );
     }
 
     // ── IDEMPOTENCY / DUPLICATE CHECK ───────────────────────────────────────────
@@ -398,10 +415,55 @@ export class UploadWorker {
             { signal: controller.signal }
           );
         } catch (e: any) {
-          throw new UploadError(
-            `UPLOAD_TINY failed for file "${item.name}" (${item.sourceId}): ${formatDetailedError(e)}`,
-            { isRetryable: classifyError(e) === 'retryable' }
-          );
+          const classified = GoogleDriveErrorClassifier.classify(e, {
+            operation: 'files.create',
+            sourceFileId: item.sourceId,
+            sourceFolderId: item.sourceParentId,
+            destinationFolderId: destParentId
+          });
+
+          if (classified.classification === 'DESTINATION_FOLDER_CHILD_LIMIT') {
+            console.warn(
+              `[Worker ${this.id}] DESTINATION_FOLDER_CHILD_LIMIT in TINY upload | ` +
+              `File: ${item.name} (${item.sourceId}) | Folder: ${destParentId}. Creating shard...`
+            );
+            const shard = await destinationShardManager.getOrCreateShard(
+              this.jobId,
+              this.manifestId,
+              this.destDrive,
+              {
+                sourceFolderId: item.sourceParentId,
+                sourceFolderName: (item as any).sourceParentName || item.name,
+                originalDestinationFolderId: destParentId,
+                parentDestinationFolderId: this.folderCache.get('root_dest') || 'root'
+              }
+            );
+
+            destParentId = shard.shardDestinationFolderId;
+            item.destParentId = shard.shardDestinationFolderId;
+
+            const retryStream = toNodeReadable(buffer);
+            createRes = await this.destDrive.files.create(
+              {
+                requestBody: {
+                  name: item.name,
+                  parents: [destParentId!],
+                  mimeType: targetMimeType
+                },
+                media: {
+                  mimeType: targetMimeType,
+                  body: retryStream
+                },
+                fields: 'id'
+              },
+              { signal: controller.signal }
+            );
+          } else {
+            throw new UploadError(
+              `UPLOAD_TINY failed for file "${item.name}" (${item.sourceId}): ${formatDetailedError(e)}`,
+              { isRetryable: classified.retryable }
+            );
+          }
         }
 
         if (!createRes.data || !createRes.data.id) {

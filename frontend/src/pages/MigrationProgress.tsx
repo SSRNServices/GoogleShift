@@ -13,6 +13,10 @@ interface FailedItemReport {
   retryCount: number;
   error: string;
   classification: string;
+  googleReason?: string;
+  httpStatus?: number;
+  retryable?: boolean;
+  actionRequired?: string;
   retryExhausted: boolean;
 }
 
@@ -626,17 +630,19 @@ export default function MigrationProgress() {
         </div>
       </div>
 
-      {/* Detailed Error Report Card (Issue 8) */}
+      {/* Detailed Error Report Card */}
       {(status.failedFiles > 0 || (status.failedItems && status.failedItems.length > 0)) && (
         <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-red-200 dark:border-red-900 p-6">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
             <h3 className="font-semibold text-red-900 dark:text-red-300 flex items-center gap-2">
               <AlertCircle className="w-5 h-5 text-red-500" />
               Failed Items Report ({status.failedFiles} file{status.failedFiles > 1 ? 's' : ''})
             </h3>
-            <span className="text-xs px-2.5 py-1 rounded-full bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300 font-medium">
-              Retry Exhausted
-            </span>
+            <div className="flex gap-2">
+              <span className="text-xs px-2.5 py-1 rounded-full bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300 font-medium">
+                Analysis Complete
+              </span>
+            </div>
           </div>
 
           <div className="space-y-3 max-h-80 overflow-y-auto">
@@ -650,14 +656,19 @@ export default function MigrationProgress() {
                     </span>
                   </div>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-gray-600 dark:text-gray-400 mb-2 font-sans">
-                    <div><span className="text-gray-400">Type:</span> {item.mimeType}</div>
-                    <div><span className="text-gray-400">Size:</span> {formatBytes(item.size)}</div>
-                    <div><span className="text-gray-400">Attempts:</span> {item.retryCount} retries</div>
-                    <div><span className="text-gray-400">Status:</span> Retry Exhausted</div>
+                    <div><span className="text-gray-400">HTTP Status:</span> {item.httpStatus || 403}</div>
+                    <div><span className="text-gray-400">API Reason:</span> {item.googleReason || 'N/A'}</div>
+                    <div><span className="text-gray-400">Retryable:</span> {item.retryable ? 'Yes' : 'No'}</div>
+                    <div><span className="text-gray-400">Attempts:</span> {item.retryCount}</div>
                   </div>
-                  <div className="bg-white dark:bg-gray-900 p-2.5 rounded border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 break-words">
+                  <div className="bg-white dark:bg-gray-900 p-2.5 rounded border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 break-words mb-2">
                     <span className="font-semibold text-gray-500 dark:text-gray-400">Actual Error:</span> {item.error}
                   </div>
+                  {item.actionRequired && item.actionRequired !== 'None' && (
+                    <div className="bg-amber-50 dark:bg-amber-950/40 p-2 rounded border border-amber-200 dark:border-amber-900 text-amber-800 dark:text-amber-300 font-sans text-2xs">
+                      <span className="font-semibold">Engine Action:</span> {item.actionRequired}
+                    </div>
+                  )}
                 </div>
               ))
             ) : (
