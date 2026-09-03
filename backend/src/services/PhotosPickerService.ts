@@ -55,11 +55,17 @@ export class PhotosPickerService {
 
     const targetManifestId = manifestId || `photos-manifest-${Date.now()}`;
 
+    const requestPayload = {
+      pickingConfig: {
+        maxItemCount: 2000
+      }
+    };
+
     try {
-      console.log(`[PhotosPicker] Creating picker session (maxItemCount: 2000) for userId=${userId}, manifestId=${targetManifestId}...`);
+      console.log(`[PhotosPicker] Creating picker session for userId=${userId}, manifestId=${targetManifestId}, payload=${JSON.stringify(requestPayload)}...`);
       const response = await axios.post(
         `${this.pickerApiBase}/sessions`,
-        { maxItemCount: 2000 },
+        requestPayload,
         {
           headers: {
             Authorization: `Bearer ${accessToken}`,
