@@ -227,6 +227,11 @@ const EXPECTED_SCHEMA: Record<string, string[]> = {
     'id', 'manifestId', 'totalFolders', 'totalFiles', 'totalBytes', 
     'destinationStorageLimit', 'destinationStorageUsed', 
     'estimatedTimeSeconds', 'largestFile', 'createdAt'
+  ],
+  PhotosPickerSession: [
+    'id', 'pickerSessionId', 'pickerUri', 'userId', 'sourceAccountId', 
+    'migrationJobId', 'manifestId', 'status', 'mediaItemsSet', 'selectedCount', 
+    'photosCount', 'videosCount', 'totalBytes', 'expiresAt', 'createdAt', 'updatedAt'
   ]
 };
 
@@ -300,6 +305,13 @@ export async function validateDatabaseSchema(): Promise<void> {
           WHERE table_name = 'MigrationSession' AND column_name = 'serviceType'
         ) THEN
           ALTER TABLE "MigrationSession" ADD COLUMN "serviceType" "ServiceType" NOT NULL DEFAULT 'DRIVE';
+        END IF;
+
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'PhotosPickerSession') AND NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'PhotosPickerSession' AND column_name = 'manifestId'
+        ) THEN
+          ALTER TABLE "PhotosPickerSession" ADD COLUMN "manifestId" TEXT;
         END IF;
       END $$;
     `);

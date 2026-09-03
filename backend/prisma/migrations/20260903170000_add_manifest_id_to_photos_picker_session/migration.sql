@@ -1,2 +1,2 @@
 -- AlterTable
-ALTER TABLE "PhotosPickerSession" ADD COLUMN "manifestId" TEXT;
+ALTER TABLE "PhotosPickerSession" ADD COLUMN IF NOT EXISTS "manifestId" TEXT;
