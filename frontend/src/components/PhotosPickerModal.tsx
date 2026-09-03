@@ -27,6 +27,7 @@ export function PhotosPickerModal({ isOpen, onClose, onSelectionComplete }: Phot
 
   const popupRef = useRef<Window | null>(null);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isEnumeratingRef = useRef(false);
 
   const cleanupPolling = () => {
     if (pollIntervalRef.current) {
@@ -37,6 +38,7 @@ export function PhotosPickerModal({ isOpen, onClose, onSelectionComplete }: Phot
 
   const startPickerFlow = async () => {
     try {
+      isEnumeratingRef.current = false;
       setErrorMsg(null);
       setStage('INITIALIZING');
       setStatusText('Creating Google Photos Picker session...');
@@ -118,6 +120,12 @@ export function PhotosPickerModal({ isOpen, onClose, onSelectionComplete }: Phot
   };
 
   const handleEnumeration = async (sId: string) => {
+    if (isEnumeratingRef.current) {
+      console.log(`[PhotosPickerModal] Enumeration already in progress for session ${sId}. Guarding against duplicate request.`);
+      return;
+    }
+    isEnumeratingRef.current = true;
+
     try {
       setStage('ENUMERATING');
       setStatusText('Retrieving selected media items...');

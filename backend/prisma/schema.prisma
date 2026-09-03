@@ -314,6 +314,7 @@ model PhotosPickerSession {
   userId          String
   sourceAccountId String?
   migrationJobId  String?  @unique
+  manifestId      String?
   status          String   @default("CREATED")
   mediaItemsSet   Boolean  @default(false)
   selectedCount   Int      @default(0)

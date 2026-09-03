@@ -2,6 +2,7 @@ export enum PhotosErrorCode {
   PHOTOS_API_DISABLED = 'PHOTOS_API_DISABLED',
   PHOTOS_AUTH_REQUIRED = 'PHOTOS_AUTH_REQUIRED',
   PHOTOS_TOKEN_EXPIRED = 'PHOTOS_TOKEN_EXPIRED',
+  PHOTOS_PICKER_SESSION_NOT_FOUND = 'PHOTOS_PICKER_SESSION_NOT_FOUND',
   PHOTOS_PERMISSION_DENIED = 'PHOTOS_PERMISSION_DENIED',
   PHOTOS_RATE_LIMITED = 'PHOTOS_RATE_LIMITED',
   PHOTOS_GOOGLE_API_ERROR = 'PHOTOS_GOOGLE_API_ERROR',
@@ -134,7 +135,19 @@ export class GoogleApiErrorClassifier {
       };
     }
 
-    // 5. PERMISSION DENIED
+    // 5. PICKER SESSION NOT FOUND (404)
+    if (status === 404 || messageLower.includes('does not exist') || messageLower.includes('not found')) {
+      return {
+        code: PhotosErrorCode.PHOTOS_PICKER_SESSION_NOT_FOUND,
+        statusCode: 404,
+        message: rawMessage,
+        userMessage: 'The requested Google Photos selection session was not found or has expired.',
+        projectId,
+        rawReason: reason || 'NOT_FOUND'
+      };
+    }
+
+    // 6. PERMISSION DENIED
     if (status === 403) {
       return {
         code: PhotosErrorCode.PHOTOS_PERMISSION_DENIED,

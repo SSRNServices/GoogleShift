@@ -38,11 +38,28 @@ export class PhotosMigrationService {
       throw new Error('Google Photos Picker session not found.');
     }
 
-    const jobId = `photos-migration-${Date.now()}`;
-    const manifestId = jobId;
+    let summary: { selectedCount: number; photosCount: number; videosCount: number; totalBytes: number; manifestId?: string };
+    let manifestId: string;
 
-    // Enumerate selected media items from Google Photos Picker API into SQLite manifest
-    const summary = await photosPickerService.enumerateAndPersistSelectedItems(userId, pickerSession.pickerSessionId, manifestId);
+    // Reuse existing manifest if selection enumeration has already completed for this session
+    if ((pickerSession.status === 'SELECTION_COMPLETE' || pickerSession.status === 'CLEANED_UP') && pickerSession.manifestId) {
+      manifestId = pickerSession.manifestId;
+      console.log(`[PhotosMigrationService] Reusing completed selection for session ${pickerSession.pickerSessionId} with manifest ${manifestId}`);
+      const stats = await PhotosManifestStorage.getSummaryStats(manifestId).catch(() => null);
+      summary = {
+        selectedCount: stats?.totalItems || pickerSession.selectedCount,
+        photosCount: stats?.photosCount || pickerSession.photosCount,
+        videosCount: stats?.videosCount || pickerSession.videosCount,
+        totalBytes: stats?.totalBytes || Number(pickerSession.totalBytes),
+        manifestId
+      };
+    } else {
+      const jobId = `photos-migration-${Date.now()}`;
+      manifestId = jobId;
+      summary = await photosPickerService.enumerateAndPersistSelectedItems(userId, pickerSession.pickerSessionId, manifestId);
+    }
+
+    const jobId = `photos-job-${Date.now()}`;
 
     if (summary.selectedCount === 0) {
       throw new Error('No photos or videos selected. Please select at least one item.');
