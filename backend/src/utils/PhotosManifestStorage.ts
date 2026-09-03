@@ -11,6 +11,7 @@ export interface PhotosManifestItem {
   mimeType: string;
   size: number;
   creationTime: string | null;
+  baseUrl?: string | null;
   mediaType: 'PHOTO' | 'VIDEO';
   albumIds: string[]; // JSON array of source album IDs
   destAlbumIds: string[]; // JSON array of dest album IDs
@@ -78,6 +79,7 @@ export class PhotosManifestStorage {
           mimeType TEXT,
           size INTEGER DEFAULT 0,
           creationTime TEXT,
+          baseUrl TEXT,
           mediaType TEXT DEFAULT 'PHOTO',
           albumIds TEXT DEFAULT '[]',
           destAlbumIds TEXT DEFAULT '[]',
@@ -136,15 +138,16 @@ export class PhotosManifestStorage {
       try {
         const stmt = await db.prepare(`
           INSERT INTO photos_manifest_items (
-            id, jobId, sourceMediaId, sourceFilename, mimeType, size, creationTime,
+            id, jobId, sourceMediaId, sourceFilename, mimeType, size, creationTime, baseUrl,
             mediaType, albumIds, destAlbumIds, destMediaId, checksum, status,
             retryCount, error, lastAttemptAt, verifiedAt, createdAt
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(jobId, sourceMediaId) DO UPDATE SET
             sourceFilename=excluded.sourceFilename,
             mimeType=excluded.mimeType,
             size=excluded.size,
             creationTime=excluded.creationTime,
+            baseUrl=excluded.baseUrl,
             albumIds=excluded.albumIds;
         `);
 
@@ -157,6 +160,7 @@ export class PhotosManifestStorage {
             item.mimeType || 'image/jpeg',
             Number(item.size || 0),
             item.creationTime || null,
+            item.baseUrl || null,
             item.mediaType || 'PHOTO',
             JSON.stringify(item.albumIds || []),
             JSON.stringify(item.destAlbumIds || []),

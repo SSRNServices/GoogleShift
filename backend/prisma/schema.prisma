@@ -27,6 +27,7 @@ model User {
   migrations        MigrationJob[]
   migrationSessions MigrationSession[]
   oauthAccounts     OAuthAccount[]
+  photosPickerSessions PhotosPickerSession[]
 
   @@index([email])
   @@index([googleId])
@@ -89,6 +90,7 @@ model MigrationJob {
   sourceFolderId      String?
   destinationFolderId String?
   serviceType         ServiceType       @default(DRIVE)
+  organization        String?           @default("FLAT")
   photosCount         Int               @default(0)
   videosCount         Int               @default(0)
   albumsCount         Int               @default(0)
@@ -304,3 +306,26 @@ enum ItemStatus {
   SUCCESS
   FAILED
 }
+
+model PhotosPickerSession {
+  id              String   @id @default(uuid())
+  pickerSessionId String   @unique
+  pickerUri       String
+  userId          String
+  sourceAccountId String?
+  migrationJobId  String?  @unique
+  status          String   @default("CREATED")
+  mediaItemsSet   Boolean  @default(false)
+  selectedCount   Int      @default(0)
+  photosCount     Int      @default(0)
+  videosCount     Int      @default(0)
+  totalBytes      BigInt   @default(0)
+  expiresAt       DateTime
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+}
+

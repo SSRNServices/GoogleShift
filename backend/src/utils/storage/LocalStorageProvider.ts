@@ -163,6 +163,81 @@ export class LocalStorageProvider implements IStorageProvider {
       error
     };
   }
+
+  public getPhotosTempStoragePath(): string {
+    const envPath = process.env.PHOTOS_TEMP_DIR;
+    if (envPath && envPath.trim()) {
+      const resolved = path.isAbsolute(envPath.trim()) ? envPath.trim() : path.join(process.cwd(), envPath.trim());
+      try {
+        if (!fs.existsSync(resolved)) fs.mkdirSync(resolved, { recursive: true });
+        return resolved;
+      } catch (_) {}
+    }
+
+    const defaultPath = path.join(process.cwd(), 'data', 'photos-temp');
+    try {
+      if (!fs.existsSync(defaultPath)) fs.mkdirSync(defaultPath, { recursive: true });
+      fs.accessSync(defaultPath, fs.constants.W_OK);
+      return defaultPath;
+    } catch (_) {
+      const fallbackPath = path.join(os.tmpdir(), 'googleshift', 'photos-temp');
+      try {
+        if (!fs.existsSync(fallbackPath)) fs.mkdirSync(fallbackPath, { recursive: true });
+      } catch (_) {}
+      return fallbackPath;
+    }
+  }
+
+  public async getPhotosTempDiagnostics(): Promise<StorageDiagnostics> {
+    const tempPath = this.getPhotosTempStoragePath();
+    const isDirExists = fs.existsSync(tempPath);
+    let writable = false;
+    let readable = false;
+    let error: string | undefined;
+
+    try {
+      if (isDirExists) {
+        const testFile = path.join(tempPath, `.perm_test_${Date.now()}`);
+        fs.writeFileSync(testFile, 'test', 'utf8');
+        writable = true;
+        fs.readFileSync(testFile, 'utf8');
+        readable = true;
+        fs.unlinkSync(testFile);
+      }
+    } catch (err: any) {
+      error = err.message;
+    }
+
+    let uid: number | undefined;
+    let gid: number | undefined;
+    try {
+      if (typeof process.getuid === 'function') uid = process.getuid();
+      if (typeof process.getgid === 'function') gid = process.getgid();
+    } catch (_) {}
+
+    let availableSpaceBytes: number | undefined;
+    let freeSpaceFormatted: string | undefined;
+    try {
+      if (fs.statfsSync) {
+        const stats = fs.statfsSync(tempPath);
+        availableSpaceBytes = Number(stats.bavail) * Number(stats.bsize);
+        freeSpaceFormatted = `${(availableSpaceBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+      }
+    } catch (_) {}
+
+    return {
+      provider: 'PhotosTempStorageProvider',
+      path: tempPath,
+      exists: isDirExists,
+      writable,
+      readable,
+      userUid: uid,
+      userGid: gid,
+      availableSpaceBytes,
+      freeSpaceFormatted,
+      error
+    };
+  }
 }
 
 export const defaultStorageProvider = new LocalStorageProvider();

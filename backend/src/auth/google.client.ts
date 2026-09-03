@@ -27,15 +27,7 @@ export class GoogleClientManager {
 
     if (type === 'photos-source') {
       scopes = [
-        'https://www.googleapis.com/auth/photoslibrary.readonly',
-        'https://www.googleapis.com/auth/userinfo.email',
-        'https://www.googleapis.com/auth/userinfo.profile',
-      ];
-    } else if (type === 'photos-destination') {
-      scopes = [
-        'https://www.googleapis.com/auth/photoslibrary',
-        'https://www.googleapis.com/auth/photoslibrary.sharing',
-        'https://www.googleapis.com/auth/photoslibrary.edit.appcreateddata',
+        'https://www.googleapis.com/auth/photospicker.mediaitems.readonly',
         'https://www.googleapis.com/auth/userinfo.email',
         'https://www.googleapis.com/auth/userinfo.profile',
       ];

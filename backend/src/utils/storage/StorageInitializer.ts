@@ -24,6 +24,25 @@ export class StorageInitializer {
       throw new Error(`Storage path '${diag.path}' is not writable. Application startup halted.`);
     }
 
-    console.log('✓ Storage initialization completed cleanly.\n');
+    console.log('✓ Manifest Storage initialization completed cleanly.\n');
+
+    console.log('--- Photos Temp Storage Diagnostics Check ---');
+    const photosDiag = await defaultStorageProvider.getPhotosTempDiagnostics();
+    console.log(`✓ Photos Temp Path: ${photosDiag.path}`);
+    console.log(`✓ Exists: ${photosDiag.exists ? 'YES' : 'NO'}`);
+    console.log(`✓ Writable: ${photosDiag.writable ? 'YES' : 'NO'}`);
+    console.log(`✓ Readable: ${photosDiag.readable ? 'YES' : 'NO'}`);
+    if (photosDiag.userUid !== undefined) {
+      console.log(`✓ UID/GID: ${photosDiag.userUid}/${photosDiag.userGid}`);
+    }
+    if (photosDiag.freeSpaceFormatted) {
+      console.log(`✓ Available Space: ${photosDiag.freeSpaceFormatted}`);
+    }
+
+    if (!photosDiag.writable) {
+      console.error(`❌ [Photos Temp Storage Warning] Photos temp path '${photosDiag.path}' is not writable! Error: ${photosDiag.error || 'N/A'}`);
+    } else {
+      console.log('✓ Photos Temp Storage initialization completed cleanly.\n');
+    }
   }
 }

@@ -2,10 +2,12 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiClient } from '../api/apiClient';
 import { API_URL } from '../config/api';
-import { Check, ChevronRight, Folder, Loader2, ArrowLeft, Cloud, HardDrive, Settings, Play, RefreshCw, Image, Video, FolderArchive } from 'lucide-react';
+import { Check, ChevronRight, Folder, Loader2, ArrowLeft, Cloud, HardDrive, Settings, Play, RefreshCw, Image, Video, CheckCircle2, FolderTree as FolderTreeIcon, Sparkles } from 'lucide-react';
 import { migrationApi } from '../api/migrationApi';
 import { DiscoveryScanner } from '../components/DiscoveryScanner';
 import { SourceFolderSelector } from '../components/SourceFolderSelector';
+import { PhotosPickerModal } from '../components/PhotosPickerModal';
+import type { PhotosSelectionSummary } from '../components/PhotosPickerModal';
 import { useMigrationSessionStore } from '../store/useMigrationSessionStore';
 import type { TransferOptionsState } from '../types/transfer';
 import type { DriveItem } from '../types/drive';
@@ -42,12 +44,12 @@ function TreeItem({ item, type, onSelect, selectedId }: { item: DriveItem, type:
   return (
     <div className="pl-4">
       <div 
-        className={`flex items-center py-1 px-2 rounded cursor-pointer transition-colors ${isSelected ? 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300' : 'hover:bg-gray-100 dark:hover:bg-gray-800'}`}
+        className={`flex items-center py-1.5 px-2 rounded cursor-pointer transition-colors ${isSelected ? 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-800'}`}
         onClick={() => { if(isFolder) onSelect(item); }}
       >
         <div onClick={handleExpand} className="mr-1 cursor-pointer p-0.5">
           {isFolder ? (
-            loading ? <Loader2 className="w-3 h-3 animate-spin" /> : 
+            loading ? <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-500" /> : 
             <ChevronRight className={`w-4 h-4 transition-transform ${expanded ? 'rotate-90' : ''}`} />
           ) : <span className="w-4 h-4 inline-block" />}
         </div>
@@ -106,19 +108,23 @@ export default function Migration() {
 
   // Photos Profiles
   const [photosSourceProfile, setPhotosSourceProfile] = useState<{state?: string; profile?: {email?: string}} | null>(null);
-  const [photosDestProfile, setPhotosDestProfile] = useState<{state?: string; profile?: {email?: string}} | null>(null);
 
   const { sessionId, sessionData, createSession, fetchSession } = useMigrationSessionStore();
 
   const [sourceSelectedItems, setSourceSelectedItems] = useState<DriveItem[]>([]);
   const [destSelected, setDestSelected] = useState<DriveItem | null>(null);
 
+  // Photos Selection & Folder Target State
+  const [pickerModalOpen, setPickerModalOpen] = useState(false);
+  const [photosSelection, setPhotosSelection] = useState<PhotosSelectionSummary | null>(null);
+  const [photosDriveFolderModalOpen, setPhotosDriveFolderModalOpen] = useState(false);
+  const [photosDriveFolderSelected, setPhotosDriveFolderSelected] = useState<DriveItem | null>(null);
+  const [organization, setOrganization] = useState<'FLAT' | 'BY_YEAR'>('FLAT');
+
   // Photos Options
   const [photosOptions, setPhotosOptions] = useState({
     migratePhotos: true,
     migrateVideos: true,
-    migrateAlbums: true,
-    preserveMetadata: true,
     verifyMedia: true
   });
 
@@ -145,18 +151,16 @@ export default function Migration() {
   useEffect(() => {
     const initMigrationWizard = async () => {
       try {
-        const [srcRes, destRes, pSrcRes, pDestRes, activeDiscovery] = await Promise.all([
+        const [srcRes, destRes, pSrcRes, activeDiscovery] = await Promise.all([
           apiClient('/auth/source/profile').catch(() => ({ state: 'NOT_CONNECTED' })),
           apiClient('/auth/destination/profile').catch(() => ({ state: 'NOT_CONNECTED' })),
           apiClient('/auth/photos/source/profile').catch(() => ({ state: 'NOT_CONNECTED' })),
-          apiClient('/auth/photos/destination/profile').catch(() => ({ state: 'NOT_CONNECTED' })),
           apiClient('/api/discovery/active').catch(() => ({ active: false, job: null }))
         ]);
 
         setSourceProfile(srcRes);
         setDestProfile(destRes);
         setPhotosSourceProfile(pSrcRes);
-        setPhotosDestProfile(pDestRes);
 
         if (activeDiscovery && activeDiscovery.active && activeDiscovery.job) {
           setPendingResumeJob(activeDiscovery.job);
@@ -207,7 +211,7 @@ export default function Migration() {
     }
     setStep((s) => Math.min(s + 1, 6) as Step);
   };
-  
+
   const handleBack = () => setStep((s) => Math.max(s - 1, 1) as Step);
 
   const startDriveMigration = async () => {
@@ -234,16 +238,28 @@ export default function Migration() {
   };
 
   const startPhotosMigration = async () => {
+    if (!photosSelection) {
+      toast.error('Please choose photos and videos first.');
+      return;
+    }
     setStarting(true);
     try {
-      const res = await apiClient('/api/photos/migrations', { method: 'POST' });
+      const res = await apiClient('/api/photos/migrations', {
+        method: 'POST',
+        body: JSON.stringify({
+          pickerSessionId: photosSelection.sessionId,
+          destinationDriveFolderId: photosDriveFolderSelected?.id || 'root',
+          destinationDriveFolderName: photosDriveFolderSelected?.name || 'My Drive',
+          organization
+        })
+      });
+
       if (!res.jobId) throw new Error('Failed to create Google Photos migration job.');
       const pJobId = res.jobId;
 
-      await apiClient(`/api/photos/migrations/${pJobId}/discovery`, { method: 'POST' });
       await apiClient(`/api/photos/migrations/${pJobId}/start`, { method: 'POST' });
 
-      toast.success('Google Photos migration started!');
+      toast.success('Google Photos → Google Drive migration started!');
       navigate(`/photos/progress/${pJobId}`);
     } catch (err: any) {
       toast.error(err.message || 'Failed to start Google Photos migration');
@@ -272,7 +288,6 @@ export default function Migration() {
   const isDriveSourceConnected = sourceProfile?.state === 'CONNECTED';
   const isDriveDestConnected = destProfile?.state === 'CONNECTED';
   const isPhotosSourceConnected = photosSourceProfile?.state === 'CONNECTED';
-  const isPhotosDestConnected = photosDestProfile?.state === 'CONNECTED';
 
   const canProceedDrive = () => {
     if (step === 1) return isDriveSourceConnected;
@@ -286,12 +301,20 @@ export default function Migration() {
     (activeDiscoveryStatus === 'COMPLETED' || discoveryCompleted || sessionData?.discoveryStatus === 'COMPLETED') &&
     activeDiscoveryStatus !== 'SCANNING' && activeDiscoveryStatus !== 'FINALIZING' && activeDiscoveryStatus !== 'FAILED';
 
+  const formatBytes = (bytes: number) => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
   return (
-    <div className="max-w-4xl mx-auto py-8">
+    <div className="max-w-4xl mx-auto py-8 space-y-6">
       <Toaster position="top-right" />
 
       {/* Migration Type Selection Tabs */}
-      <div className="mb-6 bg-gray-100 dark:bg-gray-800 p-1.5 rounded-xl flex space-x-2 border border-gray-200 dark:border-gray-700">
+      <div className="bg-gray-100 dark:bg-gray-800 p-1.5 rounded-xl flex space-x-2 border border-gray-200 dark:border-gray-700">
         <button
           onClick={() => { setMigrationType('DRIVE'); setStep(1); }}
           className={`flex-1 py-3 px-4 rounded-lg font-bold text-sm flex items-center justify-center transition-all ${
@@ -300,7 +323,7 @@ export default function Migration() {
               : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
           }`}
         >
-          <Cloud className="w-5 h-5 mr-2" /> Google Drive Migration
+          <Cloud className="w-5 h-5 mr-2 text-blue-500" /> Google Drive Migration
         </button>
 
         <button
@@ -311,14 +334,14 @@ export default function Migration() {
               : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
           }`}
         >
-          <Image className="w-5 h-5 mr-2" /> Google Photos Migration
+          <Image className="w-5 h-5 mr-2 text-purple-500" /> Google Photos → Google Drive
         </button>
       </div>
 
       {migrationType === 'DRIVE' ? (
         <>
           {/* Drive Wizard Stepper */}
-          <div className="mb-8">
+          <div className="mb-6">
             <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Google Drive Migration Setup</h1>
             <div className="mt-4 flex items-center justify-between">
               {[1, 2, 3, 4, 5, 6].map((s) => (
@@ -341,17 +364,17 @@ export default function Migration() {
 
           <div className="bg-white dark:bg-gray-900 shadow rounded-lg p-6 border border-gray-200 dark:border-gray-700 min-h-[400px]">
             {step === 1 && (
-              <div className="text-center">
+              <div className="text-center py-6">
                 <Cloud className="w-16 h-16 text-blue-500 mx-auto mb-4" />
                 <h2 className="text-xl font-semibold mb-2 text-gray-900 dark:text-white">Connect Source Drive Account</h2>
-                <p className="text-gray-500 mb-6">Authorize CloudShift to access the Google Drive you want to copy files from.</p>
+                <p className="text-gray-500 mb-6 max-w-md mx-auto">Authorize CloudShift to access the Google Drive you want to copy files from.</p>
                 {isDriveSourceConnected ? (
                   <div className="inline-flex items-center space-x-2 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-4 py-2 rounded-full font-medium">
                     <Check className="w-5 h-5" />
                     <span>Connected as {sourceProfile?.profile?.email}</span>
                   </div>
                 ) : (
-                  <button onClick={() => { window.location.href = `${API_URL}/auth/source` }} className="bg-indigo-600 text-white px-6 py-2 rounded hover:bg-indigo-700">
+                  <button onClick={() => { window.location.href = `${API_URL}/auth/source` }} className="bg-indigo-600 text-white px-6 py-2.5 rounded-lg font-semibold hover:bg-indigo-700 shadow-sm">
                     Connect Source Google Drive
                   </button>
                 )}
@@ -359,17 +382,17 @@ export default function Migration() {
             )}
 
             {step === 2 && (
-              <div className="text-center">
+              <div className="text-center py-6">
                 <HardDrive className="w-16 h-16 text-purple-500 mx-auto mb-4" />
                 <h2 className="text-xl font-semibold mb-2 text-gray-900 dark:text-white">Connect Destination Drive Account</h2>
-                <p className="text-gray-500 mb-6">Authorize CloudShift to access the Google Drive where files will be copied to.</p>
+                <p className="text-gray-500 mb-6 max-w-md mx-auto">Authorize CloudShift to access the Google Drive where files will be copied to.</p>
                 {isDriveDestConnected ? (
                   <div className="inline-flex items-center space-x-2 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-4 py-2 rounded-full font-medium">
                     <Check className="w-5 h-5" />
                     <span>Connected as {destProfile?.profile?.email}</span>
                   </div>
                 ) : (
-                  <button onClick={() => { window.location.href = `${API_URL}/auth/destination` }} className="bg-indigo-600 text-white px-6 py-2 rounded hover:bg-indigo-700">
+                  <button onClick={() => { window.location.href = `${API_URL}/auth/destination` }} className="bg-indigo-600 text-white px-6 py-2.5 rounded-lg font-semibold hover:bg-indigo-700 shadow-sm">
                     Connect Destination Google Drive
                   </button>
                 )}
@@ -389,7 +412,7 @@ export default function Migration() {
                 <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-white">Choose Destination Folder</h2>
                 <FolderTree type="destination" onSelect={setDestSelected} selectedId={destSelected?.id} />
                 {destSelected && (
-                  <div className="mt-4 p-3 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-800 dark:text-indigo-300 rounded border border-indigo-200 dark:border-indigo-800">
+                  <div className="mt-4 p-3 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-800 dark:text-indigo-300 rounded-lg border border-indigo-200 dark:border-indigo-800">
                     Selected: <span className="font-semibold">{destSelected.name}</span>
                   </div>
                 )}
@@ -440,11 +463,11 @@ export default function Migration() {
             </button>
 
             {step < 6 ? (
-              <button onClick={handleNext} disabled={!canProceedDrive()} className="flex items-center px-6 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-50">
+              <button onClick={handleNext} disabled={!canProceedDrive()} className="flex items-center px-6 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-50 font-medium">
                 Next <ChevronRight className="w-4 h-4 ml-2" />
               </button>
             ) : (
-              <button onClick={startDriveMigration} disabled={starting || !destSelected || !isDiscoveryFinished} className="flex items-center px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50">
+              <button onClick={startDriveMigration} disabled={starting || !destSelected || !isDiscoveryFinished} className="flex items-center px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 font-semibold shadow-sm">
                 {starting ? <Loader2 className="w-5 h-5 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
                 Start Drive Migration
               </button>
@@ -452,92 +475,280 @@ export default function Migration() {
           </div>
         </>
       ) : (
-        /* Google Photos Wizard */
-        <div className="bg-white dark:bg-gray-900 shadow rounded-xl p-8 border border-gray-200 dark:border-gray-700 space-y-6">
-          <div className="border-b border-gray-100 dark:border-gray-700 pb-4">
-            <h2 className="text-xl font-bold text-gray-900 dark:text-white flex items-center">
-              <Image className="w-6 h-6 text-purple-500 mr-2" /> Google Photos Migration Setup
-            </h2>
-            <p className="text-sm text-gray-500 mt-1">Migrate photos, videos, and albums seamlessly from one Google Photos account to another.</p>
+        /* New Production Google Photos → Google Drive Setup */
+        <div className="bg-white dark:bg-gray-900 shadow-sm rounded-2xl p-6 sm:p-8 border border-gray-200 dark:border-gray-700 space-y-8">
+          <div className="border-b border-gray-100 dark:border-gray-800 pb-4">
+            <h1 className="text-2xl font-extrabold text-gray-900 dark:text-white flex items-center">
+              <Image className="w-7 h-7 text-purple-500 mr-3" /> Google Photos → Google Drive Migration
+            </h1>
+            <p className="text-sm text-gray-500 mt-1">Select media from Google Photos and safely transfer them directly to a Google Drive folder.</p>
           </div>
 
-          {/* Account Status */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Source Photos */}
-            <div className="p-4 border border-gray-200 dark:border-gray-700 rounded-xl space-y-3">
-              <div className="flex justify-between items-center">
-                <span className="text-sm font-semibold text-gray-900 dark:text-white">Source Photos Account</span>
-                {isPhotosSourceConnected ? (
-                  <span className="text-xs px-2.5 py-0.5 bg-green-100 text-green-800 rounded-full dark:bg-green-900/30 dark:text-green-400">Connected</span>
-                ) : (
-                  <span className="text-xs px-2.5 py-0.5 bg-gray-100 text-gray-800 rounded-full dark:bg-gray-700">Not Connected</span>
-                )}
-              </div>
-              {isPhotosSourceConnected ? (
-                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">{photosSourceProfile?.profile?.email}</p>
-              ) : (
-                <button onClick={() => { window.location.href = `${API_URL}/auth/photos/source`; }} className="w-full text-xs bg-indigo-600 text-white font-medium py-2 rounded-lg hover:bg-indigo-700">
-                  Connect Source Google Photos
-                </button>
+          {/* Section 1: SOURCE - Google Photos */}
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-bold uppercase tracking-wider text-gray-400">SOURCE</h2>
+              {isPhotosSourceConnected && (
+                <span className="inline-flex items-center text-xs font-semibold text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/30 px-2.5 py-0.5 rounded-full">
+                  <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> Connected
+                </span>
               )}
             </div>
 
-            {/* Destination Photos */}
-            <div className="p-4 border border-gray-200 dark:border-gray-700 rounded-xl space-y-3">
+            <div className="p-5 border border-gray-200 dark:border-gray-700 rounded-xl space-y-4 bg-gray-50/50 dark:bg-gray-800/30">
               <div className="flex justify-between items-center">
-                <span className="text-sm font-semibold text-gray-900 dark:text-white">Destination Photos Account</span>
-                {isPhotosDestConnected ? (
-                  <span className="text-xs px-2.5 py-0.5 bg-green-100 text-green-800 rounded-full dark:bg-green-900/30 dark:text-green-400">Connected</span>
+                <div>
+                  <p className="text-base font-bold text-gray-900 dark:text-white flex items-center">
+                    <Image className="w-5 h-5 text-indigo-500 mr-2" /> Google Photos
+                  </p>
+                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-0.5">
+                    {isPhotosSourceConnected ? photosSourceProfile?.profile?.email : 'Not connected'}
+                  </p>
+                </div>
+
+                {!isPhotosSourceConnected ? (
+                  <button
+                    onClick={() => { window.location.href = `${API_URL}/auth/photos/source`; }}
+                    className="px-4 py-2 bg-indigo-600 text-white font-medium text-xs rounded-lg hover:bg-indigo-700 shadow-sm"
+                  >
+                    Connect Google Photos
+                  </button>
                 ) : (
-                  <span className="text-xs px-2.5 py-0.5 bg-gray-100 text-gray-800 rounded-full dark:bg-gray-700">Not Connected</span>
+                  <button
+                    onClick={() => setPickerModalOpen(true)}
+                    className="inline-flex items-center px-4 py-2.5 bg-indigo-600 text-white font-semibold text-xs rounded-lg hover:bg-indigo-700 shadow-sm transition-all"
+                  >
+                    <Sparkles className="w-4 h-4 mr-2" /> Choose Photos & Videos
+                  </button>
                 )}
               </div>
-              {isPhotosDestConnected ? (
-                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">{photosDestProfile?.profile?.email}</p>
-              ) : (
-                <button onClick={() => { window.location.href = `${API_URL}/auth/photos/destination`; }} className="w-full text-xs bg-indigo-600 text-white font-medium py-2 rounded-lg hover:bg-indigo-700">
-                  Connect Destination Google Photos
-                </button>
+
+              {/* Selection Summary Box */}
+              {photosSelection && (
+                <div className="p-4 bg-white dark:bg-gray-800 rounded-xl border border-indigo-200 dark:border-indigo-800 space-y-3">
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wide">Selected Media Summary</span>
+                    <button
+                      onClick={() => setPickerModalOpen(true)}
+                      className="text-xs text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 font-semibold underline"
+                    >
+                      Change Selection
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3 text-center">
+                    <div className="p-2.5 bg-indigo-50/50 dark:bg-indigo-900/20 rounded-lg">
+                      <p className="text-xs text-gray-500">Total Selected</p>
+                      <p className="text-lg font-extrabold text-gray-900 dark:text-white">{photosSelection.selectedCount.toLocaleString()}</p>
+                      <p className="text-[10px] text-gray-400 mt-0.5">{formatBytes(photosSelection.totalBytes)}</p>
+                    </div>
+                    <div className="p-2.5 bg-blue-50/50 dark:bg-blue-900/20 rounded-lg">
+                      <p className="text-xs text-gray-500 flex items-center justify-center">
+                        <Image className="w-3 h-3 mr-1 text-blue-500" /> Photos
+                      </p>
+                      <p className="text-lg font-extrabold text-gray-900 dark:text-white">{photosSelection.photosCount.toLocaleString()}</p>
+                    </div>
+                    <div className="p-2.5 bg-purple-50/50 dark:bg-purple-900/20 rounded-lg">
+                      <p className="text-xs text-gray-500 flex items-center justify-center">
+                        <Video className="w-3 h-3 mr-1 text-purple-500" /> Videos
+                      </p>
+                      <p className="text-lg font-extrabold text-gray-900 dark:text-white">{photosSelection.videosCount.toLocaleString()}</p>
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
           </div>
 
-          {/* Migration Options */}
-          <div className="space-y-3 pt-2">
-            <h3 className="text-base font-semibold text-gray-900 dark:text-white">Photos Migration Options</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm text-gray-700 dark:text-gray-300">
-              <label className="flex items-center space-x-3">
-                <input type="checkbox" checked={photosOptions.migratePhotos} onChange={e => setPhotosOptions({...photosOptions, migratePhotos: e.target.checked})} className="rounded text-indigo-600" />
+          <div className="border-t border-gray-100 dark:border-gray-800" />
+
+          {/* Section 2: DESTINATION - Google Drive */}
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-bold uppercase tracking-wider text-gray-400">DESTINATION</h2>
+              {isDriveDestConnected && (
+                <span className="inline-flex items-center text-xs font-semibold text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/30 px-2.5 py-0.5 rounded-full">
+                  <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> Connected
+                </span>
+              )}
+            </div>
+
+            <div className="p-5 border border-gray-200 dark:border-gray-700 rounded-xl space-y-4 bg-gray-50/50 dark:bg-gray-800/30">
+              <div className="flex justify-between items-center">
+                <div>
+                  <p className="text-base font-bold text-gray-900 dark:text-white flex items-center">
+                    <HardDrive className="w-5 h-5 text-purple-500 mr-2" /> Google Drive
+                  </p>
+                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-0.5">
+                    {isDriveDestConnected ? destProfile?.profile?.email : 'Not connected'}
+                  </p>
+                </div>
+
+                {!isDriveDestConnected ? (
+                  <button
+                    onClick={() => { window.location.href = `${API_URL}/auth/destination`; }}
+                    className="px-4 py-2 bg-indigo-600 text-white font-medium text-xs rounded-lg hover:bg-indigo-700 shadow-sm"
+                  >
+                    Connect Google Drive
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setPhotosDriveFolderModalOpen(!photosDriveFolderModalOpen)}
+                    className="px-4 py-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 font-medium text-xs rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700"
+                  >
+                    {photosDriveFolderSelected ? 'Change Folder' : 'Select Folder'}
+                  </button>
+                )}
+              </div>
+
+              {/* Destination Folder Selector Box */}
+              <div className="p-3.5 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                <div className="flex items-center space-x-2 truncate">
+                  <Folder className="w-5 h-5 text-amber-500 flex-shrink-0" />
+                  <span className="text-xs font-semibold text-gray-500">Destination Folder:</span>
+                  <span className="text-sm font-bold text-gray-900 dark:text-white truncate">
+                    📁 {photosDriveFolderSelected ? photosDriveFolderSelected.name : 'My Drive'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Folder Selector Tree Collapsible */}
+              {photosDriveFolderModalOpen && (
+                <div className="p-4 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 space-y-3">
+                  <p className="text-xs font-semibold text-gray-700 dark:text-gray-300 flex items-center">
+                    <FolderTreeIcon className="w-4 h-4 mr-1 text-indigo-500" /> Choose Destination Drive Folder
+                  </p>
+                  <FolderTree
+                    type="destination"
+                    onSelect={(folder) => {
+                      setPhotosDriveFolderSelected(folder);
+                      setPhotosDriveFolderModalOpen(false);
+                      toast.success(`Destination folder set to: ${folder.name}`);
+                    }}
+                    selectedId={photosDriveFolderSelected?.id}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="border-t border-gray-100 dark:border-gray-800" />
+
+          {/* Section 3: OPTIONS */}
+          <div className="space-y-4">
+            <h2 className="text-xs font-bold uppercase tracking-wider text-gray-400">OPTIONS</h2>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm font-medium text-gray-700 dark:text-gray-300">
+              <label className="flex items-center space-x-3 p-3 bg-gray-50 dark:bg-gray-800/40 rounded-xl border border-gray-200 dark:border-gray-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={photosOptions.migratePhotos}
+                  onChange={e => setPhotosOptions({...photosOptions, migratePhotos: e.target.checked})}
+                  className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4"
+                />
                 <span className="flex items-center"><Image className="w-4 h-4 mr-1.5 text-blue-500" /> Photos</span>
               </label>
-              <label className="flex items-center space-x-3">
-                <input type="checkbox" checked={photosOptions.migrateVideos} onChange={e => setPhotosOptions({...photosOptions, migrateVideos: e.target.checked})} className="rounded text-indigo-600" />
+
+              <label className="flex items-center space-x-3 p-3 bg-gray-50 dark:bg-gray-800/40 rounded-xl border border-gray-200 dark:border-gray-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={photosOptions.migrateVideos}
+                  onChange={e => setPhotosOptions({...photosOptions, migrateVideos: e.target.checked})}
+                  className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4"
+                />
                 <span className="flex items-center"><Video className="w-4 h-4 mr-1.5 text-purple-500" /> Videos</span>
               </label>
-              <label className="flex items-center space-x-3">
-                <input type="checkbox" checked={photosOptions.migrateAlbums} onChange={e => setPhotosOptions({...photosOptions, migrateAlbums: e.target.checked})} className="rounded text-indigo-600" />
-                <span className="flex items-center"><FolderArchive className="w-4 h-4 mr-1.5 text-amber-500" /> Google Photos Albums</span>
+
+              <label className="flex items-center space-x-3 p-3 bg-gray-50 dark:bg-gray-800/40 rounded-xl border border-gray-200 dark:border-gray-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={photosOptions.verifyMedia}
+                  onChange={e => setPhotosOptions({...photosOptions, verifyMedia: e.target.checked})}
+                  className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4"
+                />
+                <span>Verify Uploaded Files</span>
               </label>
-              <label className="flex items-center space-x-3">
-                <input type="checkbox" checked={photosOptions.verifyMedia} onChange={e => setPhotosOptions({...photosOptions, verifyMedia: e.target.checked})} className="rounded text-indigo-600" />
-                <span>Verify Migrated Media</span>
-              </label>
+            </div>
+
+            {/* Organization Options */}
+            <div className="space-y-2 pt-2">
+              <span className="text-xs font-semibold text-gray-500">Drive Folder Organization</span>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <label className={`p-4 rounded-xl border cursor-pointer transition-all ${
+                  organization === 'FLAT'
+                    ? 'border-indigo-600 bg-indigo-50/50 dark:bg-indigo-900/20 text-indigo-900 dark:text-indigo-200'
+                    : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800'
+                }`}>
+                  <div className="flex items-center space-x-3">
+                    <input
+                      type="radio"
+                      name="organization"
+                      checked={organization === 'FLAT'}
+                      onChange={() => setOrganization('FLAT')}
+                      className="text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <div>
+                      <p className="text-sm font-bold">Flat Structure</p>
+                      <p className="text-xs text-gray-500 mt-0.5">All files directly in destination folder</p>
+                    </div>
+                  </div>
+                </label>
+
+                <label className={`p-4 rounded-xl border cursor-pointer transition-all ${
+                  organization === 'BY_YEAR'
+                    ? 'border-indigo-600 bg-indigo-50/50 dark:bg-indigo-900/20 text-indigo-900 dark:text-indigo-200'
+                    : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800'
+                }`}>
+                  <div className="flex items-center space-x-3">
+                    <input
+                      type="radio"
+                      name="organization"
+                      checked={organization === 'BY_YEAR'}
+                      onChange={() => setOrganization('BY_YEAR')}
+                      className="text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <div>
+                      <p className="text-sm font-bold">By Year Folders</p>
+                      <p className="text-xs text-gray-500 mt-0.5">Organize files into subfolders by year (e.g. 2026/)</p>
+                    </div>
+                  </div>
+                </label>
+              </div>
             </div>
           </div>
 
-          {/* Start Photos Migration Button */}
-          <div className="pt-4 border-t border-gray-100 dark:border-gray-700 flex justify-end">
+          <div className="border-t border-gray-100 dark:border-gray-800" />
+
+          {/* Migration Review & Start Action */}
+          <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="text-xs text-gray-500">
+              {photosSelection ? (
+                <span>Ready to migrate <strong className="text-gray-900 dark:text-white">{photosSelection.selectedCount.toLocaleString()} items</strong> to <strong className="text-gray-900 dark:text-white">{photosDriveFolderSelected ? photosDriveFolderSelected.name : 'My Drive'}</strong></span>
+              ) : (
+                <span>Select photos to begin migration</span>
+              )}
+            </div>
+
             <button
               onClick={startPhotosMigration}
-              disabled={starting || !isPhotosSourceConnected || !isPhotosDestConnected}
-              className="flex items-center px-6 py-2.5 bg-indigo-600 text-white font-semibold text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50 shadow-sm"
+              disabled={starting || !isPhotosSourceConnected || !isDriveDestConnected || !photosSelection || photosSelection.selectedCount === 0}
+              className="w-full sm:w-auto flex items-center justify-center px-8 py-3 bg-indigo-600 text-white font-bold text-sm rounded-xl hover:bg-indigo-700 disabled:opacity-50 shadow-md transition-all"
             >
               {starting ? <Loader2 className="w-5 h-5 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
-              Start Google Photos Migration
+              Start Migration
             </button>
           </div>
         </div>
       )}
+
+      {/* Google Photos Picker Modal */}
+      <PhotosPickerModal
+        isOpen={pickerModalOpen}
+        onClose={() => setPickerModalOpen(false)}
+        onSelectionComplete={(summary) => {
+          setPhotosSelection(summary);
+        }}
+      />
 
       {showResumeModal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
