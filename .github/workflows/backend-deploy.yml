@@ -208,6 +208,10 @@ jobs:
             docker exec googleshift-backend node -e "const net=require('net');const s=net.createConnection(5432,'googleshift-db');s.setTimeout(10000);s.on('connect',()=>{console.log('✓ Database TCP OK');s.end();process.exit(0);});s.on('error',e=>{console.error('❌ Database TCP error:',e.message);process.exit(1);});"
 
             sleep 2
+            echo "Resolving 20260903170000 migration if recorded as failed..."
+            $COMPOSE_CMD exec -T backend npx prisma migrate resolve --applied 20260903170000_add_manifest_id_to_photos_picker_session 2>/dev/null || true
+
+            echo "Executing Prisma migrations..."
             $COMPOSE_CMD exec -T backend npx prisma migrate deploy
 
             echo "[6/6] Pruning obsolete Docker images..."
