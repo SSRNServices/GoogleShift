@@ -117,16 +117,18 @@ export class PhotosMigrationService {
     };
   }
 
-  public async startMigration(jobId: string, userId: string, manifestId: string): Promise<void> {
+  public async startMigration(jobId: string, userId: string, manifestId?: string): Promise<void> {
     const job = await prisma.migrationJob.findUnique({ where: { id: jobId } });
     if (!job || job.ownerId !== userId) throw new Error(`Migration job ${jobId} not found.`);
 
+    const targetManifestId = job.manifestId || manifestId || jobId;
+
     await prisma.migrationJob.update({
       where: { id: jobId },
-      data: { state: 'COPYING', startedAt: new Date() }
+      data: { state: 'COPYING', startedAt: new Date(), manifestId: targetManifestId }
     });
 
-    photosMigrationWorker.executeMigration(jobId, userId, manifestId).catch(err => {
+    photosMigrationWorker.executeMigration(jobId, userId, targetManifestId).catch(err => {
       console.error(`[PhotosMigrationService] Migration execution error for ${jobId}:`, err);
     });
   }

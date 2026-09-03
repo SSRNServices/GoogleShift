@@ -371,6 +371,7 @@ export class PhotosPickerService {
               mimeType,
               size,
               creationTime,
+              baseUrl: mediaFile.baseUrl || rawItem.baseUrl || null,
               mediaType,
               albumIds: [],
               destAlbumIds: [],

@@ -14,14 +14,32 @@ export class PhotosMigrationWorker {
   private activeJobs: Map<string, { isRunning: boolean; isPaused: boolean; isCancelled: boolean }> = new Map();
 
   public async executeMigration(jobId: string, userId: string, manifestId: string): Promise<void> {
-    console.log(`[PhotosWorker] Starting migration execution for jobId=${jobId}, manifestId=${manifestId}`);
+    const job = await prisma.migrationJob.findUnique({ where: { id: jobId } });
+    if (!job) {
+      console.error(`[PhotosWorker] MigrationJob not found: ${jobId}`);
+      return;
+    }
+
+    const effectiveManifestId = job.manifestId || manifestId;
+    console.log(`[PhotosWorker] JOB_START | jobId=${jobId} | manifestId=${effectiveManifestId} | expectedTotal=${job.totalFiles}`);
 
     const jobControl = { isRunning: true, isPaused: false, isCancelled: false };
     this.activeJobs.set(jobId, jobControl);
 
-    const job = await prisma.migrationJob.findUnique({ where: { id: jobId } });
-    if (!job) {
-      console.error(`[PhotosWorker] MigrationJob not found: ${jobId}`);
+    // Retrieve initial manifest statistics and enforce zero-item guard
+    const initialStats = await PhotosManifestStorage.getSummaryStats(effectiveManifestId);
+    console.log(`[PhotosWorker] MANIFEST_LOAD | manifestId=${effectiveManifestId} | loadedTotal=${initialStats.totalItems} | photos=${initialStats.photosCount} | videos=${initialStats.videosCount}`);
+
+    if (job.totalFiles > 0 && initialStats.totalItems === 0) {
+      console.error(`[PhotosWorker] ❌ FATAL DISCREPANCY: Job ${jobId} expects ${job.totalFiles} items, but selection manifest ${effectiveManifestId} loaded 0 items!`);
+      await prisma.migrationJob.update({
+        where: { id: jobId },
+        data: {
+          state: 'FAILED',
+          currentAction: `FATAL: Selection manifest ${effectiveManifestId} contains 0 items.`
+        }
+      });
+      await logJobEvent(jobId, `[FATAL] Selection manifest ${effectiveManifestId} contains 0 items.`);
       this.activeJobs.delete(jobId);
       return;
     }
@@ -60,7 +78,7 @@ export class PhotosMigrationWorker {
     });
 
     // Reset stuck states from previous process restarts
-    await PhotosManifestStorage.resetIncompleteStatus(manifestId);
+    await PhotosManifestStorage.resetIncompleteStatus(effectiveManifestId);
 
     // Map to cache Year Folder IDs in Drive for 'BY_YEAR' organization (e.g. '2026' -> 'drive_folder_id')
     const yearFolderMap = new Map<string, string>();
@@ -112,6 +130,8 @@ export class PhotosMigrationWorker {
     const processItem = async (item: PhotosManifestItem): Promise<void> => {
       if (!jobControl.isRunning || jobControl.isCancelled) return;
 
+      console.log(`[PhotosWorker] ITEM_START | ItemId=${item.id} | Filename=${item.sourceFilename} (${item.mediaType})`);
+
       // Skip already verified items
       if (item.status === 'VERIFIED' || item.status === 'SKIPPED') {
         return;
@@ -123,7 +143,7 @@ export class PhotosMigrationWorker {
           const existingFile = await drive.files.get({ fileId: item.destMediaId, fields: 'id, name' });
           if (existingFile.data && existingFile.data.id) {
             console.log(`[PhotosWorker] Item ${item.sourceFilename} (${item.sourceMediaId}) already uploaded to Drive (${item.destMediaId}). Marking VERIFIED.`);
-            await PhotosManifestStorage.updateItemStatus(manifestId, item.id, 'VERIFIED', item.destMediaId, null, item.checksum);
+            await PhotosManifestStorage.updateItemStatus(effectiveManifestId, item.id, 'VERIFIED', item.destMediaId, null, item.checksum);
             return;
           }
         } catch (_) {
@@ -138,7 +158,8 @@ export class PhotosMigrationWorker {
       let targetDriveFileId: string | null = null;
 
       try {
-        await PhotosManifestStorage.updateItemStatus(manifestId, item.id, 'DOWNLOADING');
+        await PhotosManifestStorage.updateItemStatus(effectiveManifestId, item.id, 'DOWNLOADING');
+        console.log(`[PhotosWorker] DOWNLOAD_START | Item: ${item.sourceFilename}`);
 
         // Fetch fresh OAuth access token for Google Photos download
         const photosTokenRes = await sourceClient.getAccessToken();
@@ -176,8 +197,9 @@ export class PhotosMigrationWorker {
         const calculatedChecksum = hash.digest('hex');
         const stat = await fs.promises.stat(tempFilePath);
         const fileSize = stat.size;
+        console.log(`[PhotosWorker] DOWNLOAD_COMPLETE | Item: ${item.sourceFilename} | Bytes: ${fileSize} | Checksum: ${calculatedChecksum.substring(0, 10)}...`);
 
-        await PhotosManifestStorage.updateItemStatus(manifestId, item.id, 'UPLOADING');
+        await PhotosManifestStorage.updateItemStatus(effectiveManifestId, item.id, 'UPLOADING');
 
         // Extract creation year for organization
         let year = '';
@@ -188,6 +210,8 @@ export class PhotosMigrationWorker {
           }
         }
         const targetFolderId = await getTargetFolderForYear(year);
+
+        console.log(`[PhotosWorker] DRIVE_UPLOAD_START | Item: ${item.sourceFilename} -> TargetFolder: ${targetFolderId}`);
 
         // 2. Upload stream to Google Drive
         const readStream = fs.createReadStream(tempFilePath);
@@ -209,7 +233,9 @@ export class PhotosMigrationWorker {
           throw new Error('Google Drive API failed to return a valid file ID.');
         }
 
-        await PhotosManifestStorage.updateItemStatus(manifestId, item.id, 'VERIFYING', targetDriveFileId, null, calculatedChecksum);
+        console.log(`[PhotosWorker] DRIVE_UPLOAD_COMPLETE | Item: ${item.sourceFilename} -> Drive FileId: ${targetDriveFileId}`);
+
+        await PhotosManifestStorage.updateItemStatus(effectiveManifestId, item.id, 'VERIFYING', targetDriveFileId, null, calculatedChecksum);
 
         // 3. Post-upload verification: query Drive file metadata
         const verifyRes = await drive.files.get({
@@ -221,7 +247,7 @@ export class PhotosMigrationWorker {
           throw new Error('Verification failed: uploaded file not found on Google Drive.');
         }
 
-        await PhotosManifestStorage.updateItemStatus(manifestId, item.id, 'VERIFIED', targetDriveFileId, null, calculatedChecksum);
+        await PhotosManifestStorage.updateItemStatus(effectiveManifestId, item.id, 'VERIFIED', targetDriveFileId, null, calculatedChecksum);
         rateLimiter.reportSuccess();
         console.log(`[PhotosWorker] VERIFIED | Item: ${item.sourceFilename} (${item.mediaType}) -> Drive FileId: ${targetDriveFileId}`);
 
@@ -245,16 +271,16 @@ export class PhotosMigrationWorker {
           return;
         }
 
-        const retryCount = await PhotosManifestStorage.incrementRetryCount(manifestId, item.id);
+        const retryCount = await PhotosManifestStorage.incrementRetryCount(effectiveManifestId, item.id);
         const maxRetries = 5;
 
         if (isRateLimit || retryCount <= maxRetries) {
           const delayMs = rateLimiter.reportRateLimit(isRateLimit ? 10 : Math.pow(2, retryCount));
           console.warn(`[PhotosWorker] RETRY | Item: ${item.sourceFilename} | Attempt: ${retryCount}/${maxRetries} | Error: ${info.message}`);
-          await PhotosManifestStorage.updateItemStatus(manifestId, item.id, 'QUEUED', targetDriveFileId, `Retry ${retryCount}: ${info.message}`);
+          await PhotosManifestStorage.updateItemStatus(effectiveManifestId, item.id, 'QUEUED', targetDriveFileId, `Retry ${retryCount}: ${info.message}`);
         } else {
           console.error(`[PhotosWorker] FAILED | Item: ${item.sourceFilename} | Exhausted ${maxRetries} retries | Error: ${info.message}`);
-          await PhotosManifestStorage.updateItemStatus(manifestId, item.id, 'FAILED', targetDriveFileId, info.message);
+          await PhotosManifestStorage.updateItemStatus(effectiveManifestId, item.id, 'FAILED', targetDriveFileId, info.message);
         }
       } finally {
         // Immediate clean up of temporary file
@@ -269,15 +295,31 @@ export class PhotosMigrationWorker {
     const maxConcurrency = rateLimiter.getConcurrency();
 
     while (jobControl.isRunning && !jobControl.isPaused && !jobControl.isCancelled) {
-      const pendingItems = await PhotosManifestStorage.getPendingFiles(manifestId, maxConcurrency);
+      const pendingItems = await PhotosManifestStorage.getPendingFiles(effectiveManifestId, maxConcurrency);
       
       if (pendingItems.length === 0) {
         // Check if all items are in terminal states
-        const stats = await PhotosManifestStorage.getSummaryStats(manifestId);
+        const stats = await PhotosManifestStorage.getSummaryStats(effectiveManifestId);
         if (stats.pendingItems === 0) {
+          // Hard invariant guard: Refuse to declare COMPLETED if total > 0 but 0 items were completed/failed
+          if (stats.totalItems > 0 && stats.completedItems === 0 && stats.failedItems === 0) {
+            console.error(`[PhotosWorker] ❌ INVALID COMPLETION: totalItems=${stats.totalItems}, completedItems=0, failedItems=0. Refusing to mark job COMPLETED.`);
+            await prisma.migrationJob.update({
+              where: { id: jobId },
+              data: {
+                state: 'FAILED',
+                currentAction: 'Migration failed: 0 items were transferred to Google Drive.'
+              }
+            });
+            await logJobEvent(jobId, `[ERROR] Migration failed: 0 of ${stats.totalItems} items were transferred to Google Drive.`);
+            break;
+          }
+
           console.log(`[PhotosWorker] All items processed for jobId=${jobId}. Finalizing migration...`);
-          const finalState = 'COMPLETED';
-          const currentAction = stats.failedItems > 0 ? `Completed with ${stats.failedItems} failed items` : 'Migration Completed Successfully';
+          const finalState = (stats.failedItems === 0 && stats.completedItems > 0) ? 'COMPLETED' : (stats.completedItems > 0 ? 'COMPLETED' : 'FAILED');
+          const currentAction = stats.failedItems > 0 
+            ? `Completed with ${stats.completedItems} succeeded and ${stats.failedItems} failed items` 
+            : `Migration Completed Successfully (${stats.completedItems}/${stats.totalItems} items verified)`;
 
           await prisma.migrationJob.update({
             where: { id: jobId },
@@ -295,7 +337,7 @@ export class PhotosMigrationWorker {
             }
           });
 
-          await logJobEvent(jobId, `[STATE] COMPLETED - Final Verified: ${stats.completedItems}/${stats.totalItems}, Failed: ${stats.failedItems}`);
+          await logJobEvent(jobId, `[STATE] ${finalState} - Final Verified: ${stats.completedItems}/${stats.totalItems}, Failed: ${stats.failedItems}, Transferred: ${stats.transferredBytes} B`);
           break;
         }
       }
@@ -306,7 +348,7 @@ export class PhotosMigrationWorker {
       const now = Date.now();
       if (now - lastProgressEmit > 2000) {
         lastProgressEmit = now;
-        const stats = await PhotosManifestStorage.getSummaryStats(manifestId);
+        const stats = await PhotosManifestStorage.getSummaryStats(effectiveManifestId);
         await updateJobProgress(jobId, {
           completedFiles: stats.completedItems,
           failedFiles: stats.failedItems,

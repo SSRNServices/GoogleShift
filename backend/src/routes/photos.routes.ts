@@ -228,7 +228,13 @@ router.post('/migrations/:id/start', requireUserAuth, async (req, res) => {
   try {
     const userId = (req as any).user.id;
     const jobId = req.params.id as string;
-    const manifestId = jobId;
+
+    const job = await prisma.migrationJob.findUnique({ where: { id: jobId } });
+    if (!job || job.ownerId !== userId) {
+      return res.status(404).json({ error: `Photos migration job ${jobId} not found.` });
+    }
+
+    const manifestId = job.manifestId || jobId;
 
     await photosMigrationService.startMigration(jobId, userId, manifestId);
     res.json({ success: true, status: 'started' });
