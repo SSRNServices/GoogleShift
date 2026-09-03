@@ -187,7 +187,8 @@ export class AuthController {
 
   public getAuthUrl = (type: AccountType, req: Request, res: Response): void => {
     const frontendUrl = this.getFrontendUrl();
-    if (type !== 'source' && type !== 'destination') {
+    const validTypes: AccountType[] = ['source', 'destination', 'photos-source', 'photos-destination'];
+    if (!validTypes.includes(type)) {
       res.redirect(`${frontendUrl}/dashboard?error=invalid_type&reason=${encodeURIComponent('Invalid account type')}`);
       return;
     }
@@ -236,16 +237,17 @@ export class AuthController {
     let stateUserId: string | null = null;
     let decodedStateObj: any = null;
 
+    const validTypes: AccountType[] = ['source', 'destination', 'photos-source', 'photos-destination'];
     if (rawState) {
-      if (rawState === 'source' || rawState === 'destination') {
-        type = rawState;
+      if (validTypes.includes(rawState as AccountType)) {
+        type = rawState as AccountType;
         console.log(`[OAuthAudit] STATE_DECODE | Plain string state detected: ${type}`);
       } else {
         try {
           decodedStateObj = JSON.parse(Buffer.from(rawState, 'base64url').toString('utf8'));
           console.log(`[OAuthAudit] STATE_DECODE | JSON state decoded:`, JSON.stringify(decodedStateObj));
-          if (decodedStateObj.type === 'source' || decodedStateObj.type === 'destination') {
-            type = decodedStateObj.type;
+          if (validTypes.includes(decodedStateObj.type as AccountType)) {
+            type = decodedStateObj.type as AccountType;
             stateUserId = decodedStateObj.userId || null;
           }
         } catch (e: any) {
@@ -377,7 +379,8 @@ export class AuthController {
   };
 
   public getProfile = async (type: AccountType, req: Request, res: Response): Promise<void> => {
-    if (type !== 'source' && type !== 'destination') {
+    const validTypes: AccountType[] = ['source', 'destination', 'photos-source', 'photos-destination'];
+    if (!validTypes.includes(type)) {
       res.status(400).json({ error: 'Bad Request', message: 'Invalid account type' });
       return;
     }
@@ -393,7 +396,8 @@ export class AuthController {
   };
 
   public logoutAccount = async (type: AccountType, req: Request, res: Response): Promise<void> => {
-    if (type !== 'source' && type !== 'destination') {
+    const validTypes: AccountType[] = ['source', 'destination', 'photos-source', 'photos-destination'];
+    if (!validTypes.includes(type)) {
       res.status(400).json({ error: 'Bad Request', message: 'Invalid account type' });
       return;
     }

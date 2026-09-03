@@ -1,7 +1,7 @@
 import { Credentials } from 'google-auth-library';
 import { prisma } from '../utils/database';
 
-export type AccountType = 'source' | 'destination';
+export type AccountType = 'source' | 'destination' | 'photos-source' | 'photos-destination';
 
 export interface TokenStore {
   saveTokens(userId: string, accountType: AccountType, tokens: Credentials, accountInfo?: { email?: string; googleAccountId?: string; scopes?: string }): Promise<void>;
@@ -13,6 +13,9 @@ export interface TokenStore {
 export class DatabaseTokenStore implements TokenStore {
   
   private getProviderString(accountType: AccountType) {
+    if (accountType.startsWith('photos-')) {
+      return `google-${accountType}`;
+    }
     return `google-drive-${accountType}`;
   }
 

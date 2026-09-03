@@ -88,6 +88,10 @@ model MigrationJob {
   destinationEmail    String?
   sourceFolderId      String?
   destinationFolderId String?
+  serviceType         ServiceType       @default(DRIVE)
+  photosCount         Int               @default(0)
+  videosCount         Int               @default(0)
+  albumsCount         Int               @default(0)
   totalFolders        Int               @default(0)
   totalFiles          Int               @default(0)
   completedFiles      Int               @default(0)
@@ -238,6 +242,7 @@ model MigrationSession {
   sourceFolderId       String?
   destinationFolderId  String?
   manifestId           String?
+  serviceType          ServiceType    @default(DRIVE)
   discoveryStatus      String         @default("PENDING")
   migrationStatus      String         @default("PENDING")
   statistics           Json?
@@ -248,6 +253,11 @@ model MigrationSession {
   owner                User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
   @@index([ownerId])
+}
+
+enum ServiceType {
+  DRIVE
+  PHOTOS
 }
 
 enum Role {

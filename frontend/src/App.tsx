@@ -13,6 +13,7 @@ import NotFound from './pages/errors/404';
 import Forbidden from './pages/errors/403';
 import Migration from './pages/Migration';
 import MigrationProgress from './pages/MigrationProgress';
+import PhotosMigrationProgress from './pages/PhotosMigrationProgress';
 import History from './pages/History';
 import Settings from './pages/Settings';
 
@@ -86,6 +87,8 @@ export default function App() {
             <Route path="/migration/progress" element={<MigrationProgress />} />
             <Route path="/migration/progress/:jobId" element={<MigrationProgress />} />
             <Route path="/migration/:jobId" element={<MigrationProgress />} />
+            <Route path="/photos/progress" element={<PhotosMigrationProgress />} />
+            <Route path="/photos/progress/:jobId" element={<PhotosMigrationProgress />} />
             <Route path="/history" element={<History />} />
             <Route path="/settings" element={<Settings />} />
           </Route>

@@ -108,10 +108,10 @@ export class AuthService {
 
       const [userInfo, driveAbout] = await Promise.all([
         oauth2.userinfo.get(),
-        drive.about.get({ fields: 'storageQuota' }),
+        drive.about.get({ fields: 'storageQuota' }).catch(() => null),
       ]);
 
-      const quota = (driveAbout.data as any).storageQuota;
+      const quota = (driveAbout?.data as any)?.storageQuota;
 
       return {
         state: ConnectionState.CONNECTED,

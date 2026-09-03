@@ -18,17 +18,36 @@ export class GoogleClientManager {
   public getAuthUrl(type: AccountType, customState?: string): string {
     const client = this.getClient();
     const stateValue = customState || type;
+
+    let scopes: string[] = [
+      'https://www.googleapis.com/auth/drive',
+      'https://www.googleapis.com/auth/userinfo.email',
+      'https://www.googleapis.com/auth/userinfo.profile',
+    ];
+
+    if (type === 'photos-source') {
+      scopes = [
+        'https://www.googleapis.com/auth/photoslibrary.readonly',
+        'https://www.googleapis.com/auth/userinfo.email',
+        'https://www.googleapis.com/auth/userinfo.profile',
+      ];
+    } else if (type === 'photos-destination') {
+      scopes = [
+        'https://www.googleapis.com/auth/photoslibrary',
+        'https://www.googleapis.com/auth/photoslibrary.sharing',
+        'https://www.googleapis.com/auth/photoslibrary.edit.appcreateddata',
+        'https://www.googleapis.com/auth/userinfo.email',
+        'https://www.googleapis.com/auth/userinfo.profile',
+      ];
+    }
+
     const url = client.generateAuthUrl({
       access_type: 'offline',
       prompt: 'consent',
       state: stateValue,
       include_granted_scopes: true,
       response_type: 'code',
-      scope: [
-        'https://www.googleapis.com/auth/drive',
-        'https://www.googleapis.com/auth/userinfo.email',
-        'https://www.googleapis.com/auth/userinfo.profile',
-      ],
+      scope: scopes,
     });
 
     console.log(`\n=== OAuth URL Generation for ${type} ===`);

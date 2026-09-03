@@ -28,6 +28,16 @@ router.get('/destination/profile', requireUserAuth, (req, res) => authController
 router.post('/source/logout', requireUserAuth, (req, res) => authController.logoutAccount('source', req, res));
 router.post('/destination/logout', requireUserAuth, (req, res) => authController.logoutAccount('destination', req, res));
 
+// --- PHOTOS OAUTH ACCOUNT CONNECTION ROUTES ---
+router.get('/photos/source', requireUserAuthBrowser, (req, res) => authController.getAuthUrl('photos-source', req, res));
+router.get('/photos/destination', requireUserAuthBrowser, (req, res) => authController.getAuthUrl('photos-destination', req, res));
+
+router.get('/photos/source/profile', requireUserAuth, (req, res) => authController.getProfile('photos-source', req, res));
+router.get('/photos/destination/profile', requireUserAuth, (req, res) => authController.getProfile('photos-destination', req, res));
+
+router.post('/photos/source/logout', requireUserAuth, (req, res) => authController.logoutAccount('photos-source', req, res));
+router.post('/photos/destination/logout', requireUserAuth, (req, res) => authController.logoutAccount('photos-destination', req, res));
+
 // Fallback for direct browser GET /auth/login -> redirect gracefully to frontend login page
 router.get('/login', (req, res) => {
   const frontendUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? 'https://migration.ssrnservices.in' : 'http://localhost:5173');

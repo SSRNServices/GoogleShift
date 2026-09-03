@@ -27,6 +27,7 @@ import authAdminRoutes from './routes/auth.admin.routes';
 import discoveryRoutes from './routes/discovery.routes';
 import sessionRoutes from './routes/session.routes';
 import healthRoutes from './routes/health.routes';
+import photosRoutes from './routes/photos.routes';
 import { workerWatchdog } from './transfer/WorkerWatchdog';
 import dns from 'dns';
 import { promisify } from 'util';
@@ -153,6 +154,7 @@ async function bootstrap() {
     app.use(`${prefix}/api/migrations`, requireUserAuth, migrationRoutes);
     app.use(`${prefix}/api/migration/session`, requireUserAuth, sessionRoutes);
     app.use(`${prefix}/api/discovery`, requireUserAuth, discoveryRoutes);
+    app.use(`${prefix}/api/photos`, photosRoutes);
   };
 
   // Mount API v1 Routes
@@ -166,6 +168,7 @@ async function bootstrap() {
   app.use('/api/migrations', requireUserAuth, migrationRoutes);
   app.use('/api/migration/session', requireUserAuth, sessionRoutes);
   app.use('/api/discovery', requireUserAuth, discoveryRoutes);
+  app.use('/api/photos', photosRoutes);
 
   // Global Error Handler
   app.use(globalErrorHandler);
