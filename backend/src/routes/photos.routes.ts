@@ -22,12 +22,47 @@ const serializeBigInt = (obj: any) => {
 function handleRouteError(res: any, error: any, userFriendlyDefault: string) {
   HttpErrorSanitizer.logError('photos.routes', error);
   const info = HttpErrorSanitizer.extractSanitizedInfo(error);
+  const statusCode = error.statusCode || 500;
+  const errorCode = error.code || 'PHOTOS_UNKNOWN_ERROR';
+
   let userMsg = info.message || userFriendlyDefault;
   if (typeof userMsg === 'string' && (userMsg.includes('prisma.') || userMsg.includes('invocation:'))) {
     userMsg = userFriendlyDefault;
   }
-  return res.status(500).json({ success: false, error: userMsg });
+
+  if (typeof userMsg === 'string' && userMsg.includes(': ')) {
+    const parts = userMsg.split(': ');
+    if (parts[0].startsWith('PHOTOS_')) {
+      userMsg = parts.slice(1).join(': ');
+    }
+  }
+
+  return res.status(statusCode).json({
+    success: false,
+    code: errorCode,
+    error: userMsg,
+    projectId: '636862284300'
+  });
 }
+
+// GET /api/photos/diagnostics - Safe diagnostic endpoint
+router.get('/diagnostics', requireUserAuth, async (req, res) => {
+  try {
+    const userId = (req as any).user.id;
+    const authStatus = await authService.isPhotosPickerAuthorized(userId);
+    res.json({
+      photosAccountConnected: authStatus.pickerAuthorized,
+      hasRequiredScope: authStatus.pickerAuthorized,
+      tokenPresent: !!authStatus.email,
+      tokenExpired: !authStatus.pickerAuthorized && !!authStatus.reason?.includes('expired'),
+      apiProject: '636862284300',
+      pickerApiConfigured: true,
+      email: authStatus.email || null
+    });
+  } catch (error: any) {
+    handleRouteError(res, error, 'Failed to fetch Photos diagnostics.');
+  }
+});
 
 // GET /api/photos/auth/status - Verify Google Photos Picker scope authorization
 router.get('/auth/status', requireUserAuth, async (req, res) => {

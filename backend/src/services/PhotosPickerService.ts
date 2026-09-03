@@ -4,6 +4,7 @@ import { googleClientManager } from '../auth/google.client';
 import { PhotosManifestStorage, PhotosManifestItem } from '../utils/PhotosManifestStorage';
 import { HttpErrorSanitizer } from '../utils/HttpErrorSanitizer';
 import { authService } from '../auth/auth.service';
+import { GoogleApiErrorClassifier, PhotosErrorCode } from '../utils/GoogleApiErrorClassifier';
 
 export interface PickerSessionResult {
   id: string;
@@ -108,16 +109,15 @@ export class PhotosPickerService {
       };
     } catch (err: any) {
       HttpErrorSanitizer.logError('PhotosPickerService.createPickerSession', err);
-      const info = HttpErrorSanitizer.extractSanitizedInfo(err);
+      const classified = GoogleApiErrorClassifier.classify(err);
 
-      if (err.response?.status === 403 || err.message?.includes('insufficient authentication scopes') || err.message?.includes('403')) {
-        const scopeErr = new Error('PHOTOS_AUTH_REQUIRED: Your Google Photos permission is missing the required Photos Picker scope. Please reconnect Google Photos.');
-        (scopeErr as any).code = 'PHOTOS_AUTH_REQUIRED';
-        (scopeErr as any).statusCode = 403;
-        throw scopeErr;
-      }
+      console.error(`[PhotosPicker] ERROR Code: ${classified.code} | HttpStatus: ${classified.statusCode} | Reason: ${classified.rawReason || 'N/A'} | Msg: ${classified.userMessage}`);
 
-      throw new Error(`Failed to create Google Photos Picker session: ${info.message}`);
+      const classifiedErr = new Error(`${classified.code}: ${classified.userMessage}`);
+      (classifiedErr as any).code = classified.code;
+      (classifiedErr as any).statusCode = classified.statusCode;
+      (classifiedErr as any).classified = classified;
+      throw classifiedErr;
     }
   }
 

@@ -1,6 +1,6 @@
 import { google } from 'googleapis';
 import { GaxiosError } from 'gaxios';
-import { googleClientManager } from './google.client';
+import { googleClientManager, PHOTOS_PICKER_SCOPE } from './google.client';
 import { tokenStore, AccountType } from './token.store';
 
 export enum ConnectionState {
@@ -162,14 +162,14 @@ export class AuthService {
 
     const scopesStr = account.scopes || '';
     const grantedScopes = scopesStr.split(/\s+/).filter(Boolean);
-    const hasPickerScope = grantedScopes.some((s: string) => s.includes('photospicker.mediaitems.readonly'));
+    const hasPickerScope = grantedScopes.some((s: string) => s.includes('photospicker.mediaitems.readonly') || s === PHOTOS_PICKER_SCOPE);
 
     if (!hasPickerScope) {
       return {
         pickerAuthorized: false,
         email: account.email || null,
         grantedScopes,
-        reason: 'Granted scopes missing photospicker.mediaitems.readonly permission.'
+        reason: `Granted scopes missing ${PHOTOS_PICKER_SCOPE} permission.`
       };
     }
 

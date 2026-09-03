@@ -22,7 +22,7 @@ interface PhotosPickerModalProps {
 export function PhotosPickerModal({ isOpen, onClose, onSelectionComplete }: PhotosPickerModalProps) {
   const [statusText, setStatusText] = useState('Initializing Google Photos Picker...');
   const [pickerUri, setPickerUri] = useState<string | null>(null);
-  const [stage, setStage] = useState<'INITIALIZING' | 'WAITING' | 'ENUMERATING' | 'COMPLETE' | 'EXPIRED' | 'AUTH_REQUIRED' | 'ERROR'>('INITIALIZING');
+  const [stage, setStage] = useState<'INITIALIZING' | 'WAITING' | 'ENUMERATING' | 'COMPLETE' | 'EXPIRED' | 'AUTH_REQUIRED' | 'API_DISABLED' | 'TOKEN_EXPIRED' | 'ERROR'>('INITIALIZING');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const popupRef = useRef<Window | null>(null);
@@ -71,14 +71,22 @@ export function PhotosPickerModal({ isOpen, onClose, onSelectionComplete }: Phot
 
     } catch (err: any) {
       console.error('[PhotosPickerModal] Error starting picker:', err);
-      const isAuthReq = err.message?.includes('PHOTOS_AUTH_REQUIRED') || err.message?.includes('403') || err.message?.includes('scope');
-      if (isAuthReq) {
+      const code = err.code || '';
+      const msg = err.message || '';
+
+      if (code === 'PHOTOS_API_DISABLED' || msg.includes('photospicker.googleapis.com') || msg.includes('disabled') || msg.includes('has not been used in project')) {
+        setStage('API_DISABLED');
+        setErrorMsg(msg);
+      } else if (code === 'PHOTOS_AUTH_REQUIRED' || msg.includes('PHOTOS_AUTH_REQUIRED') || msg.includes('scope')) {
         setStage('AUTH_REQUIRED');
         setErrorMsg('Google Photos permission is required to select photos and videos.');
+      } else if (code === 'PHOTOS_TOKEN_EXPIRED' || msg.includes('TOKEN_EXPIRED') || msg.includes('expired')) {
+        setStage('TOKEN_EXPIRED');
+        setErrorMsg('Your Google session has expired. Please reconnect Google Photos.');
       } else {
         setStage('ERROR');
-        setErrorMsg(err.message || 'Failed to open Google Photos Picker.');
-        toast.error(err.message || 'Failed to open Google Photos Picker.');
+        setErrorMsg(msg || 'Failed to open Google Photos Picker.');
+        toast.error(msg || 'Failed to open Google Photos Picker.');
       }
     }
   };
@@ -262,6 +270,28 @@ export function PhotosPickerModal({ isOpen, onClose, onSelectionComplete }: Phot
               >
                 Connect Google Photos
               </button>
+            </div>
+          )}
+
+          {stage === 'API_DISABLED' && (
+            <div className="space-y-4">
+              <div className="inline-flex p-3 bg-red-50 dark:bg-red-900/30 rounded-full text-red-600 dark:text-red-400">
+                <AlertCircle className="w-8 h-8" />
+              </div>
+              <div className="space-y-2">
+                <p className="text-base font-bold text-gray-900 dark:text-white">Google Photos Picker API Is Not Enabled</p>
+                <p className="text-xs text-gray-600 dark:text-gray-300 max-w-sm mx-auto leading-relaxed">
+                  Google Photos authorization succeeded, but the <strong>Google Photos Picker API (photospicker.googleapis.com)</strong> is not enabled in CloudShift's Google Cloud Project <code className="bg-gray-100 dark:bg-gray-700 px-1 py-0.5 rounded text-indigo-600 font-mono">636862284300</code>.
+                </p>
+              </div>
+              <a
+                href="https://console.developers.google.com/apis/api/photospicker.googleapis.com/overview?project=636862284300"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center px-6 py-2.5 bg-indigo-600 text-white font-bold text-xs rounded-xl hover:bg-indigo-700 shadow-md transition-all"
+              >
+                <ExternalLink className="w-4 h-4 mr-2" /> Enable API in Google Cloud Console
+              </a>
             </div>
           )}
 

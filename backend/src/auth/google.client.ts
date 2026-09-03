@@ -2,6 +2,8 @@ import { google } from 'googleapis';
 import { OAuth2Client } from 'google-auth-library';
 import { tokenStore, AccountType } from './token.store';
 
+export const PHOTOS_PICKER_SCOPE = 'https://www.googleapis.com/auth/photospicker.mediaitems.readonly';
+
 export class GoogleClientManager {
   
   public getClient(): OAuth2Client {
@@ -27,7 +29,7 @@ export class GoogleClientManager {
 
     if (type === 'photos-source') {
       scopes = [
-        'https://www.googleapis.com/auth/photospicker.mediaitems.readonly',
+        PHOTOS_PICKER_SCOPE,
         'https://www.googleapis.com/auth/userinfo.email',
         'https://www.googleapis.com/auth/userinfo.profile',
       ];
