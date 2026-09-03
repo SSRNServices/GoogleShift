@@ -119,7 +119,6 @@ router.post('/picker/session/:id/items', requireUserAuth, async (req, res) => {
 
     res.json({
       success: true,
-      manifestId: targetManifestId,
       ...result
     });
   } catch (error: any) {
