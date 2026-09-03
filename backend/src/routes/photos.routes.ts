@@ -17,6 +17,15 @@ const serializeBigInt = (obj: any) => {
   );
 };
 
+function handleRouteError(res: any, error: any, userFriendlyDefault: string) {
+  console.error('[PHOTOS_ROUTE_ERROR]', error);
+  let userMsg = error?.message || userFriendlyDefault;
+  if (typeof userMsg === 'string' && (userMsg.includes('prisma.') || userMsg.includes('invocation:'))) {
+    userMsg = userFriendlyDefault;
+  }
+  return res.status(500).json({ success: false, error: userMsg });
+}
+
 // GET /api/photos/migrations/current
 router.get('/migrations/current', requireUserAuth, async (req, res) => {
   try {
@@ -92,7 +101,7 @@ router.post('/migrations', requireUserAuth, async (req, res) => {
 
     res.status(201).json({ success: true, jobId, manifestId: jobId });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    handleRouteError(res, error, 'Unable to start Google Photos migration. Please check the migration service and try again.');
   }
 });
 

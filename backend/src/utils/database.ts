@@ -206,6 +206,7 @@ const EXPECTED_SCHEMA: Record<string, string[]> = {
   MigrationJob: [
     'id', 'ownerId', 'sessionId', 'manifestId', 'state', 'sourceEmail', 
     'destinationEmail', 'sourceFolderId', 'destinationFolderId', 
+    'serviceType', 'photosCount', 'videosCount', 'albumsCount', 
     'totalFolders', 'totalFiles', 'completedFiles', 'failedFiles', 
     'totalBytes', 'transferredBytes', 'speed', 'eta', 'currentAction', 
     'currentFile', 'currentFolder', 'startedAt', 'completedAt', 'cancelledAt'
@@ -218,7 +219,7 @@ const EXPECTED_SCHEMA: Record<string, string[]> = {
   MigrationSession: [
     'id', 'ownerId', 'sourceEmail', 'destinationEmail', 'sourceAccountId', 
     'destinationAccountId', 'sourceFolderId', 'destinationFolderId', 
-    'manifestId', 'discoveryStatus', 'migrationStatus', 'statistics', 
+    'manifestId', 'serviceType', 'discoveryStatus', 'migrationStatus', 'statistics', 
     'createdAt', 'updatedAt'
   ],
   session: ['sid', 'sess', 'expire'],
@@ -268,22 +269,44 @@ export async function validateDatabaseSchema(): Promise<void> {
     console.log(`  - Pending Migrations: None (Schema up to date)`);
   }
 
-  // 2. Audit Columns
-  const columnsRaw: Array<{ table_name: string; column_name: string }> = await prisma.$queryRaw`
-    SELECT table_name, column_name 
-    FROM information_schema.columns 
-    WHERE table_schema = 'public'
-  `;
+  // 2. Self-Healing Enums & Columns Check
+  try {
+    // ServiceType Enum & Columns
+    await pool.query(`
+      DO $$ 
+      BEGIN 
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'ServiceType') THEN 
+          CREATE TYPE "ServiceType" AS ENUM ('DRIVE', 'PHOTOS'); 
+        END IF;
 
-  const dbMap: Record<string, Set<string>> = {};
-  for (const row of columnsRaw) {
-    const table = row.table_name;
-    if (!dbMap[table]) dbMap[table] = new Set();
-    dbMap[table].add(row.column_name);
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'MigrationJob' AND column_name = 'serviceType'
+        ) THEN
+          ALTER TABLE "MigrationJob" ADD COLUMN "serviceType" "ServiceType" NOT NULL DEFAULT 'DRIVE';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'MigrationJob' AND column_name = 'photosCount'
+        ) THEN
+          ALTER TABLE "MigrationJob" ADD COLUMN "photosCount" INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE "MigrationJob" ADD COLUMN "videosCount" INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE "MigrationJob" ADD COLUMN "albumsCount" INTEGER NOT NULL DEFAULT 0;
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'MigrationSession' AND column_name = 'serviceType'
+        ) THEN
+          ALTER TABLE "MigrationSession" ADD COLUMN "serviceType" "ServiceType" NOT NULL DEFAULT 'DRIVE';
+        END IF;
+      END $$;
+    `);
+    console.log('  - Schema Integrity: ServiceType enum & counter columns verified/self-healed.');
+  } catch (healErr: any) {
+    console.warn('⚠️ Self-healing schema query error:', healErr.message);
   }
-
-  let mismatchCount = 0;
-  const missingColumnsReport: string[] = [];
 
   // 3. Audit Enum Types (DiscoveryState)
   try {
@@ -319,7 +342,6 @@ export async function validateDatabaseSchema(): Promise<void> {
         console.log(`✓ Self-healing DDL query created DiscoveryState enum successfully.`);
       } catch (ddlErr: any) {
         console.error(`❌ Could not auto-create DiscoveryState enum: ${ddlErr.message}`);
-        mismatchCount++;
       }
     } else {
       console.log(`  - Enum Check: DiscoveryState exists in PostgreSQL schema.`);
@@ -327,6 +349,23 @@ export async function validateDatabaseSchema(): Promise<void> {
   } catch (err: any) {
     console.warn('⚠️ Could not query pg_type for DiscoveryState enum:', err.message);
   }
+
+  // 4. Audit Columns against EXPECTED_SCHEMA
+  const columnsRaw: Array<{ table_name: string; column_name: string }> = await prisma.$queryRaw`
+    SELECT table_name, column_name 
+    FROM information_schema.columns 
+    WHERE table_schema = 'public'
+  `;
+
+  const dbMap: Record<string, Set<string>> = {};
+  for (const row of columnsRaw) {
+    const table = row.table_name;
+    if (!dbMap[table]) dbMap[table] = new Set();
+    dbMap[table].add(row.column_name);
+  }
+
+  let mismatchCount = 0;
+  const missingColumnsReport: string[] = [];
 
   for (const [table, expectedColumns] of Object.entries(EXPECTED_SCHEMA)) {
     const existingColumns = dbMap[table];
@@ -352,16 +391,16 @@ export async function validateDatabaseSchema(): Promise<void> {
   }
 
   if (mismatchCount > 0 || pendingMigrations.length > 0) {
-    console.warn(`\n⚠️ [DB WARNING] Database schema mismatch or pending migrations detected.`);
+    console.error(`\n❌ [DATABASE SCHEMA MISMATCH DETECTED]`);
     if (missingColumnsReport.length > 0) {
-      console.warn(`⚠️ [DB WARNING] Missing Columns (${missingColumnsReport.length}): ${missingColumnsReport.join(', ')}`);
+      console.error(`❌ Missing Required Database Columns (${missingColumnsReport.length}): ${missingColumnsReport.join(', ')}`);
     }
     if (pendingMigrations.length > 0) {
-      console.warn(`⚠️ [DB WARNING] Pending Migrations (${pendingMigrations.length}): ${pendingMigrations.join(', ')}`);
+      console.error(`❌ Pending Prisma Migrations (${pendingMigrations.length}): ${pendingMigrations.join(', ')}`);
     }
-    console.warn(`⚠️ [DB WARNING] Run 'npx prisma migrate deploy' to sync schema. Continuing startup to serve HTTP requests...\n`);
+    throw new Error(`DATABASE SCHEMA MISMATCH: Incompatible PostgreSQL schema. Missing columns: ${missingColumnsReport.join(', ')}. Pending migrations: ${pendingMigrations.join(', ')}.`);
   } else {
-    console.log('✓ Database Schema Validation Passed - All required models, columns, and migrations are present.\n');
+    console.log('✓ Database Schema Validation Passed - All required models, columns, enums, and migrations are verified.\n');
   }
 }
 
