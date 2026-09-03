@@ -162,6 +162,18 @@ export default function Migration() {
     }
   };
 
+  const handleClearPhotosSelection = async () => {
+    if (!photosSelection) return;
+    try {
+      await apiClient('/api/photos/selection/clear', {
+        method: 'POST',
+        body: JSON.stringify({ manifestId: photosSelection.manifestId })
+      });
+    } catch (_) {}
+    setPhotosSelection(null);
+    toast.success('Photos selection cleared.');
+  };
+
   useEffect(() => {
     const initMigrationWizard = async () => {
       try {
@@ -173,16 +185,21 @@ export default function Migration() {
           setPickerModalOpen(true);
         }
 
-        const [srcRes, destRes, pSrcRes, activeDiscovery] = await Promise.all([
+        const [srcRes, destRes, pSrcRes, activeDiscovery, activePhotosSelection] = await Promise.all([
           apiClient('/auth/source/profile').catch(() => ({ state: 'NOT_CONNECTED' })),
           apiClient('/auth/destination/profile').catch(() => ({ state: 'NOT_CONNECTED' })),
           apiClient('/auth/photos/source/profile').catch(() => ({ state: 'NOT_CONNECTED' })),
-          apiClient('/api/discovery/active').catch(() => ({ active: false, job: null }))
+          apiClient('/api/discovery/active').catch(() => ({ active: false, job: null })),
+          apiClient('/api/photos/selection/active').catch(() => ({ active: false, summary: null }))
         ]);
 
         setSourceProfile(srcRes);
         setDestProfile(destRes);
         setPhotosSourceProfile(pSrcRes);
+
+        if (activePhotosSelection && activePhotosSelection.active && activePhotosSelection.summary) {
+          setPhotosSelection(activePhotosSelection.summary);
+        }
 
         if (activeDiscovery && activeDiscovery.active && activeDiscovery.job) {
           setPendingResumeJob(activeDiscovery.job);
@@ -559,7 +576,7 @@ export default function Migration() {
                       </p>
                     </div>
                     <button
-                      onClick={() => setPhotosSelection(null)}
+                      onClick={handleClearPhotosSelection}
                       className="text-xs text-red-500 hover:text-red-700 dark:text-red-400 font-semibold"
                     >
                       Clear Selection

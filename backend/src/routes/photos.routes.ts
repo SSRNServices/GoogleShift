@@ -96,6 +96,71 @@ router.post('/picker/session', requireUserAuth, async (req, res) => {
   }
 });
 
+// GET /api/photos/selection/active - Get current active unmigrated selection manifest summary
+router.get('/selection/active', requireUserAuth, async (req, res) => {
+  try {
+    const userId = (req as any).user.id;
+
+    const activeSession = await prisma.photosPickerSession.findFirst({
+      where: {
+        userId,
+        migrationJobId: null,
+        manifestId: { not: null },
+        status: { notIn: ['CANCELLED', 'EXPIRED'] }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    if (!activeSession || !activeSession.manifestId) {
+      return res.json({ success: true, active: false, summary: null });
+    }
+
+    const stats = await PhotosManifestStorage.getSummaryStats(activeSession.manifestId).catch(() => null);
+    if (!stats || stats.totalItems === 0) {
+      return res.json({ success: true, active: false, summary: null });
+    }
+
+    res.json({
+      success: true,
+      active: true,
+      summary: {
+        manifestId: stats.manifestId,
+        selectedCount: stats.totalItems,
+        photosCount: stats.photosCount,
+        videosCount: stats.videosCount,
+        totalBytes: stats.totalBytes,
+        batches: stats.batches
+      }
+    });
+  } catch (error: any) {
+    handleRouteError(res, error, 'Failed to retrieve active selection summary.');
+  }
+});
+
+// POST /api/photos/selection/clear - Cancel active unmigrated selection manifest for user
+router.post('/selection/clear', requireUserAuth, async (req, res) => {
+  try {
+    const userId = (req as any).user.id;
+    const { manifestId } = req.body || {};
+
+    if (manifestId) {
+      await prisma.photosPickerSession.updateMany({
+        where: { userId, manifestId, migrationJobId: null },
+        data: { status: 'CANCELLED' }
+      });
+    } else {
+      await prisma.photosPickerSession.updateMany({
+        where: { userId, migrationJobId: null },
+        data: { status: 'CANCELLED' }
+      });
+    }
+
+    res.json({ success: true, message: 'Selection cleared successfully.' });
+  } catch (error: any) {
+    handleRouteError(res, error, 'Failed to clear selection.');
+  }
+});
+
 // GET /api/photos/selection/:manifestId - Get cumulative selection summary & batch history
 router.get('/selection/:manifestId', requireUserAuth, async (req, res) => {
   try {

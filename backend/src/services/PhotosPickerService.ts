@@ -53,7 +53,26 @@ export class PhotosPickerService {
       throw err;
     }
 
-    const targetManifestId = manifestId || `photos-manifest-${Date.now()}`;
+    let targetManifestId = manifestId;
+
+    if (!targetManifestId) {
+      const activeUnmigratedSession = await prisma.photosPickerSession.findFirst({
+        where: {
+          userId,
+          migrationJobId: null,
+          manifestId: { not: null },
+          status: { notIn: ['CANCELLED', 'EXPIRED'] }
+        },
+        orderBy: { createdAt: 'desc' }
+      });
+      if (activeUnmigratedSession?.manifestId) {
+        targetManifestId = activeUnmigratedSession.manifestId;
+      }
+    }
+
+    if (!targetManifestId) {
+      targetManifestId = `photos-manifest-${Date.now()}`;
+    }
 
     const requestPayload = {
       pickingConfig: {

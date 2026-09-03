@@ -41,6 +41,7 @@ export function PhotosPickerModal({ isOpen, onClose, onSelectionComplete, manife
   const popupRef = useRef<Window | null>(null);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isEnumeratingRef = useRef(false);
+  const activeManifestIdRef = useRef<string | null>(null);
 
   const cleanupPolling = () => {
     if (pollIntervalRef.current) {
@@ -65,6 +66,7 @@ export function PhotosPickerModal({ isOpen, onClose, onSelectionComplete, manife
       }
 
       const session = res.session;
+      activeManifestIdRef.current = session.manifestId || manifestId || null;
       setPickerUri(session.pickerUri);
       setStage('WAITING');
       setStatusText('Google Photos Picker opened. Please select up to 2,000 photos/videos and click "Done".');
@@ -146,9 +148,11 @@ export function PhotosPickerModal({ isOpen, onClose, onSelectionComplete, manife
       setStage('ENUMERATING');
       setStatusText('Retrieving and deduplicating selected media items...');
 
+      const targetManifestId = activeManifestIdRef.current || manifestId;
+
       const res = await apiClient(`/api/photos/picker/session/${sId}/items`, {
         method: 'POST',
-        body: JSON.stringify({ manifestId })
+        body: JSON.stringify({ manifestId: targetManifestId })
       });
 
       if (!res.success) {
