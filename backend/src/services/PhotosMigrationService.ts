@@ -93,11 +93,22 @@ export class PhotosMigrationService {
       }
     });
 
-    // Link Picker Session to Migration Job
-    await prisma.photosPickerSession.update({
-      where: { id: pickerSession.id },
-      data: { migrationJobId: job.id }
-    });
+    // Link Picker Sessions to Migration Job
+    if (pickerSession?.id) {
+      await prisma.photosPickerSession.update({
+        where: { id: pickerSession.id },
+        data: { migrationJobId: job.id }
+      }).catch(err => {
+        console.warn(`[PhotosMigrationService] Could not update migrationJobId for picker session ${pickerSession.id}:`, err.message);
+      });
+    }
+
+    if (manifestId) {
+      await prisma.photosPickerSession.updateMany({
+        where: { manifestId, userId },
+        data: { migrationJobId: job.id }
+      }).catch(() => null);
+    }
 
     console.log(`[PhotosMigrationService] Created Photos Migration Job ${jobId} with ${summary.selectedCount} selected items (Photos: ${summary.photosCount}, Videos: ${summary.videosCount})`);
 
