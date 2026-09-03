@@ -148,9 +148,31 @@ export default function Migration() {
   const [showResumeModal, setShowResumeModal] = useState(false);
   const [pendingResumeJob, setPendingResumeJob] = useState<any>(null);
 
+  const handleChoosePhotosClick = async () => {
+    try {
+      const authStatus = await apiClient('/api/photos/auth/status');
+      if (!authStatus.pickerAuthorized) {
+        toast.error('Google Photos permission is required. Redirecting to Google authorization...');
+        window.location.href = `${API_URL}/auth/photos/source`;
+        return;
+      }
+      setPickerModalOpen(true);
+    } catch (_) {
+      setPickerModalOpen(true);
+    }
+  };
+
   useEffect(() => {
     const initMigrationWizard = async () => {
       try {
+        const searchParams = new URLSearchParams(window.location.search);
+        if (searchParams.get('photosAuth') === 'success') {
+          window.history.replaceState({}, document.title, window.location.pathname);
+          setMigrationType('PHOTOS');
+          toast.success('✓ Google Photos authorization connected!');
+          setPickerModalOpen(true);
+        }
+
         const [srcRes, destRes, pSrcRes, activeDiscovery] = await Promise.all([
           apiClient('/auth/source/profile').catch(() => ({ state: 'NOT_CONNECTED' })),
           apiClient('/auth/destination/profile').catch(() => ({ state: 'NOT_CONNECTED' })),
@@ -515,7 +537,7 @@ export default function Migration() {
                   </button>
                 ) : (
                   <button
-                    onClick={() => setPickerModalOpen(true)}
+                    onClick={handleChoosePhotosClick}
                     className="inline-flex items-center px-4 py-2.5 bg-indigo-600 text-white font-semibold text-xs rounded-lg hover:bg-indigo-700 shadow-sm transition-all"
                   >
                     <Sparkles className="w-4 h-4 mr-2" /> Choose Photos & Videos

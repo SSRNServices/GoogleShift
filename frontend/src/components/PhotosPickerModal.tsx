@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { apiClient } from '../api/apiClient';
-import { Loader2, Image, AlertCircle, ExternalLink, X } from 'lucide-react';
+import { API_URL } from '../config/api';
+import { Loader2, Image, AlertCircle, ExternalLink, X, ShieldAlert } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
 export interface PhotosSelectionSummary {
@@ -21,7 +22,7 @@ interface PhotosPickerModalProps {
 export function PhotosPickerModal({ isOpen, onClose, onSelectionComplete }: PhotosPickerModalProps) {
   const [statusText, setStatusText] = useState('Initializing Google Photos Picker...');
   const [pickerUri, setPickerUri] = useState<string | null>(null);
-  const [stage, setStage] = useState<'INITIALIZING' | 'WAITING' | 'ENUMERATING' | 'COMPLETE' | 'EXPIRED' | 'ERROR'>('INITIALIZING');
+  const [stage, setStage] = useState<'INITIALIZING' | 'WAITING' | 'ENUMERATING' | 'COMPLETE' | 'EXPIRED' | 'AUTH_REQUIRED' | 'ERROR'>('INITIALIZING');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const popupRef = useRef<Window | null>(null);
@@ -70,9 +71,15 @@ export function PhotosPickerModal({ isOpen, onClose, onSelectionComplete }: Phot
 
     } catch (err: any) {
       console.error('[PhotosPickerModal] Error starting picker:', err);
-      setStage('ERROR');
-      setErrorMsg(err.message || 'Failed to open Google Photos Picker.');
-      toast.error(err.message || 'Failed to open Google Photos Picker.');
+      const isAuthReq = err.message?.includes('PHOTOS_AUTH_REQUIRED') || err.message?.includes('403') || err.message?.includes('scope');
+      if (isAuthReq) {
+        setStage('AUTH_REQUIRED');
+        setErrorMsg('Google Photos permission is required to select photos and videos.');
+      } else {
+        setStage('ERROR');
+        setErrorMsg(err.message || 'Failed to open Google Photos Picker.');
+        toast.error(err.message || 'Failed to open Google Photos Picker.');
+      }
     }
   };
 
@@ -234,6 +241,26 @@ export function PhotosPickerModal({ isOpen, onClose, onSelectionComplete }: Phot
                 className="px-5 py-2 bg-indigo-600 text-white font-medium text-sm rounded-lg hover:bg-indigo-700 shadow-sm"
               >
                 Choose Photos Again
+              </button>
+            </div>
+          )}
+
+          {stage === 'AUTH_REQUIRED' && (
+            <div className="space-y-4">
+              <div className="inline-flex p-3 bg-amber-50 dark:bg-amber-900/30 rounded-full text-amber-600 dark:text-amber-400">
+                <ShieldAlert className="w-8 h-8" />
+              </div>
+              <div className="space-y-1">
+                <p className="text-base font-bold text-gray-900 dark:text-white">Google Photos Permission Required</p>
+                <p className="text-xs text-gray-500 max-w-xs mx-auto">
+                  CloudShift needs permission to let you select photos and videos from your Google Photos library.
+                </p>
+              </div>
+              <button
+                onClick={() => { window.location.href = `${API_URL}/auth/photos/source`; }}
+                className="px-6 py-2.5 bg-indigo-600 text-white font-bold text-xs rounded-xl hover:bg-indigo-700 shadow-md transition-all"
+              >
+                Connect Google Photos
               </button>
             </div>
           )}

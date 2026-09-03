@@ -7,6 +7,8 @@ import { photosPickerService } from '../services/PhotosPickerService';
 import { PhotosManifestStorage } from '../utils/PhotosManifestStorage';
 import { HttpErrorSanitizer } from '../utils/HttpErrorSanitizer';
 
+import { authService } from '../auth/auth.service';
+
 const router = Router();
 
 const serializeBigInt = (obj: any) => {
@@ -26,6 +28,24 @@ function handleRouteError(res: any, error: any, userFriendlyDefault: string) {
   }
   return res.status(500).json({ success: false, error: userMsg });
 }
+
+// GET /api/photos/auth/status - Verify Google Photos Picker scope authorization
+router.get('/auth/status', requireUserAuth, async (req, res) => {
+  try {
+    const userId = (req as any).user.id;
+    const authStatus = await authService.isPhotosPickerAuthorized(userId);
+    res.json({
+      success: true,
+      connected: authStatus.pickerAuthorized,
+      pickerAuthorized: authStatus.pickerAuthorized,
+      email: authStatus.email,
+      reason: authStatus.reason || undefined,
+      authUrl: '/auth/photos/source'
+    });
+  } catch (error: any) {
+    handleRouteError(res, error, 'Failed to check Google Photos authorization status.');
+  }
+});
 
 // --- PICKER SESSION ENDPOINTS ---
 

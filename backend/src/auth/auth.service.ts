@@ -148,6 +148,47 @@ export class AuthService {
     // but usually just deleting from our store is enough for "logout".
     await tokenStore.deleteTokens(userId, type);
   }
+
+  public async isPhotosPickerAuthorized(userId: string): Promise<{
+    pickerAuthorized: boolean;
+    email: string | null;
+    grantedScopes: string[];
+    reason?: string;
+  }> {
+    const account = await tokenStore.getAccount(userId, 'photos-source');
+    if (!account) {
+      return { pickerAuthorized: false, email: null, grantedScopes: [], reason: 'No Google Photos account connected.' };
+    }
+
+    const scopesStr = account.scopes || '';
+    const grantedScopes = scopesStr.split(/\s+/).filter(Boolean);
+    const hasPickerScope = grantedScopes.some((s: string) => s.includes('photospicker.mediaitems.readonly'));
+
+    if (!hasPickerScope) {
+      return {
+        pickerAuthorized: false,
+        email: account.email || null,
+        grantedScopes,
+        reason: 'Granted scopes missing photospicker.mediaitems.readonly permission.'
+      };
+    }
+
+    const client = await googleClientManager.getAuthenticatedClient(userId, 'photos-source');
+    if (!client) {
+      return {
+        pickerAuthorized: false,
+        email: account.email || null,
+        grantedScopes,
+        reason: 'Google Photos credentials expired or revoked.'
+      };
+    }
+
+    return {
+      pickerAuthorized: true,
+      email: account.email || null,
+      grantedScopes
+    };
+  }
 }
 
 export const authService = new AuthService();

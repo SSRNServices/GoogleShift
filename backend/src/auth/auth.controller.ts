@@ -318,7 +318,9 @@ export class AuthController {
           console.warn(`[OAuthAudit] Post-OAuth getProfile warning (non-fatal): ${pErr.message}`);
         }
 
-        const redirectUrl = `${frontendUrl}/dashboard?connected=${type}`;
+        const redirectUrl = type === 'photos-source'
+          ? `${frontendUrl}/migration?photosAuth=success`
+          : `${frontendUrl}/dashboard?connected=${type}`;
         console.log(`[OAuthAudit] FRONTEND_REDIRECT | Redirecting to ${redirectUrl}`);
         console.log(`[OAuthAudit] CALLBACK_COMPLETE | Mode: ${type} | UserId: ${userId} | Success`);
         

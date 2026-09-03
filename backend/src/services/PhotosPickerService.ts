@@ -3,6 +3,7 @@ import { prisma } from '../utils/database';
 import { googleClientManager } from '../auth/google.client';
 import { PhotosManifestStorage, PhotosManifestItem } from '../utils/PhotosManifestStorage';
 import { HttpErrorSanitizer } from '../utils/HttpErrorSanitizer';
+import { authService } from '../auth/auth.service';
 
 export interface PickerSessionResult {
   id: string;
@@ -18,21 +19,36 @@ export interface PickerSessionResult {
 }
 
 export class PhotosPickerService {
-  private pickerApiBase = 'https://photospicker.googleapis.com/v1';
+  private readonly pickerApiBase = 'https://photospicker.googleapis.com/v1';
 
   /**
    * Create a Google Photos Picker Session for the user
    */
   public async createPickerSession(userId: string): Promise<PickerSessionResult> {
+    const authStatus = await authService.isPhotosPickerAuthorized(userId);
+    if (!authStatus.pickerAuthorized) {
+      console.warn(`[PhotosPicker] Pre-check failed for userId=${userId}: ${authStatus.reason}`);
+      const err = new Error(`PHOTOS_AUTH_REQUIRED: ${authStatus.reason || 'Google Photos permission required.'}`);
+      (err as any).code = 'PHOTOS_AUTH_REQUIRED';
+      (err as any).statusCode = 403;
+      throw err;
+    }
+
     const client = await googleClientManager.getAuthenticatedClient(userId, 'photos-source');
     if (!client) {
-      throw new Error('Google Photos account is not connected. Please connect Google Photos first.');
+      const err = new Error('PHOTOS_AUTH_REQUIRED: Google Photos account is not connected. Please connect Google Photos first.');
+      (err as any).code = 'PHOTOS_AUTH_REQUIRED';
+      (err as any).statusCode = 403;
+      throw err;
     }
 
     const tokenRes = await client.getAccessToken();
     const accessToken = tokenRes.token || client.credentials.access_token;
     if (!accessToken) {
-      throw new Error('Google Photos access token is missing or expired.');
+      const err = new Error('PHOTOS_AUTH_REQUIRED: Google Photos access token is missing or expired.');
+      (err as any).code = 'PHOTOS_AUTH_REQUIRED';
+      (err as any).statusCode = 403;
+      throw err;
     }
 
     try {
@@ -93,6 +109,14 @@ export class PhotosPickerService {
     } catch (err: any) {
       HttpErrorSanitizer.logError('PhotosPickerService.createPickerSession', err);
       const info = HttpErrorSanitizer.extractSanitizedInfo(err);
+
+      if (err.response?.status === 403 || err.message?.includes('insufficient authentication scopes') || err.message?.includes('403')) {
+        const scopeErr = new Error('PHOTOS_AUTH_REQUIRED: Your Google Photos permission is missing the required Photos Picker scope. Please reconnect Google Photos.');
+        (scopeErr as any).code = 'PHOTOS_AUTH_REQUIRED';
+        (scopeErr as any).statusCode = 403;
+        throw scopeErr;
+      }
+
       throw new Error(`Failed to create Google Photos Picker session: ${info.message}`);
     }
   }
