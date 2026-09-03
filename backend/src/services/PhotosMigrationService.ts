@@ -5,7 +5,8 @@ import { photosMigrationWorker } from './PhotosMigrationWorker';
 
 export interface CreatePhotosJobParams {
   userId: string;
-  pickerSessionId: string;
+  pickerSessionId?: string;
+  manifestId?: string;
   destinationDriveFolderId?: string;
   destinationDriveFolderName?: string;
   organization?: 'FLAT' | 'BY_YEAR';
@@ -15,7 +16,7 @@ export interface CreatePhotosJobParams {
 
 export class PhotosMigrationService {
   /**
-   * Create Photos Migration Job from a completed Google Photos Picker Session
+   * Create Photos Migration Job from a cumulative selection manifest
    */
   public async createPhotosJob(params: CreatePhotosJobParams): Promise<{
     jobId: string;
@@ -25,37 +26,30 @@ export class PhotosMigrationService {
     videosCount: number;
     totalBytes: number;
   }> {
-    const { userId, pickerSessionId, destinationDriveFolderId, organization = 'FLAT', sourceEmail, destinationEmail } = params;
+    const { userId, pickerSessionId, manifestId: inputManifestId, destinationDriveFolderId, organization = 'FLAT', sourceEmail, destinationEmail } = params;
 
-    const pickerSession = await prisma.photosPickerSession.findFirst({
-      where: {
-        OR: [{ id: pickerSessionId }, { pickerSessionId }],
-        userId
-      }
-    });
-
-    if (!pickerSession) {
-      throw new Error('Google Photos Picker session not found.');
+    let pickerSession = null;
+    if (pickerSessionId) {
+      pickerSession = await prisma.photosPickerSession.findFirst({
+        where: {
+          OR: [{ id: pickerSessionId }, { pickerSessionId }],
+          userId
+        }
+      });
     }
 
-    let summary: { selectedCount: number; photosCount: number; videosCount: number; totalBytes: number; manifestId?: string };
-    let manifestId: string;
+    const manifestId = inputManifestId || pickerSession?.manifestId || `photos-manifest-${Date.now()}`;
+    const stats = await PhotosManifestStorage.getSummaryStats(manifestId).catch(() => null);
 
-    // Reuse existing manifest if selection enumeration has already completed for this session
-    if ((pickerSession.status === 'SELECTION_COMPLETE' || pickerSession.status === 'CLEANED_UP') && pickerSession.manifestId) {
-      manifestId = pickerSession.manifestId;
-      console.log(`[PhotosMigrationService] Reusing completed selection for session ${pickerSession.pickerSessionId} with manifest ${manifestId}`);
-      const stats = await PhotosManifestStorage.getSummaryStats(manifestId).catch(() => null);
-      summary = {
-        selectedCount: stats?.totalItems || pickerSession.selectedCount,
-        photosCount: stats?.photosCount || pickerSession.photosCount,
-        videosCount: stats?.videosCount || pickerSession.videosCount,
-        totalBytes: stats?.totalBytes || Number(pickerSession.totalBytes),
-        manifestId
-      };
-    } else {
-      const jobId = `photos-migration-${Date.now()}`;
-      manifestId = jobId;
+    let summary = {
+      selectedCount: stats?.totalItems || pickerSession?.selectedCount || 0,
+      photosCount: stats?.photosCount || pickerSession?.photosCount || 0,
+      videosCount: stats?.videosCount || pickerSession?.videosCount || 0,
+      totalBytes: stats?.totalBytes || Number(pickerSession?.totalBytes || 0),
+      manifestId
+    };
+
+    if (summary.selectedCount === 0 && pickerSession) {
       summary = await photosPickerService.enumerateAndPersistSelectedItems(userId, pickerSession.pickerSessionId, manifestId);
     }
 

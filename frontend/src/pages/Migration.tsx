@@ -260,7 +260,7 @@ export default function Migration() {
   };
 
   const startPhotosMigration = async () => {
-    if (!photosSelection) {
+    if (!photosSelection || photosSelection.selectedCount === 0) {
       toast.error('Please choose photos and videos first.');
       return;
     }
@@ -270,6 +270,7 @@ export default function Migration() {
         method: 'POST',
         body: JSON.stringify({
           pickerSessionId: photosSelection.sessionId,
+          manifestId: photosSelection.manifestId,
           destinationDriveFolderId: photosDriveFolderSelected?.id || 'root',
           destinationDriveFolderName: photosDriveFolderSelected?.name || 'My Drive',
           organization
@@ -281,7 +282,7 @@ export default function Migration() {
 
       await apiClient(`/api/photos/migrations/${pJobId}/start`, { method: 'POST' });
 
-      toast.success('Google Photos → Google Drive migration started!');
+      toast.success(`Google Photos → Google Drive migration started for ${photosSelection.selectedCount.toLocaleString()} items!`);
       navigate(`/photos/progress/${pJobId}`);
     } catch (err: any) {
       toast.error(err.message || 'Failed to start Google Photos migration');
@@ -545,37 +546,96 @@ export default function Migration() {
                 )}
               </div>
 
-              {/* Selection Summary Box */}
+              {/* Multi-Batch Selection Summary Box */}
               {photosSelection && (
-                <div className="p-4 bg-white dark:bg-gray-800 rounded-xl border border-indigo-200 dark:border-indigo-800 space-y-3">
-                  <div className="flex justify-between items-center">
-                    <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wide">Selected Media Summary</span>
+                <div className="p-4 bg-white dark:bg-gray-800 rounded-xl border border-indigo-200 dark:border-indigo-800 space-y-4">
+                  <div className="flex justify-between items-center border-b border-gray-100 dark:border-gray-700 pb-2">
+                    <div>
+                      <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wide">
+                        Cumulative Media Selection
+                      </span>
+                      <p className="text-[11px] text-gray-500 mt-0.5">
+                        Google Photos limits each session to 2,000 items. Add multiple batches to migrate larger libraries.
+                      </p>
+                    </div>
                     <button
-                      onClick={() => setPickerModalOpen(true)}
-                      className="text-xs text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 font-semibold underline"
+                      onClick={() => setPhotosSelection(null)}
+                      className="text-xs text-red-500 hover:text-red-700 dark:text-red-400 font-semibold"
                     >
-                      Change Selection
+                      Clear Selection
                     </button>
                   </div>
 
+                  {/* Cumulative Stats Grid */}
                   <div className="grid grid-cols-3 gap-3 text-center">
-                    <div className="p-2.5 bg-indigo-50/50 dark:bg-indigo-900/20 rounded-lg">
-                      <p className="text-xs text-gray-500">Total Selected</p>
-                      <p className="text-lg font-extrabold text-gray-900 dark:text-white">{photosSelection.selectedCount.toLocaleString()}</p>
-                      <p className="text-[10px] text-gray-400 mt-0.5">{formatBytes(photosSelection.totalBytes)}</p>
-                    </div>
-                    <div className="p-2.5 bg-blue-50/50 dark:bg-blue-900/20 rounded-lg">
-                      <p className="text-xs text-gray-500 flex items-center justify-center">
-                        <Image className="w-3 h-3 mr-1 text-blue-500" /> Photos
+                    <div className="p-3 bg-indigo-50/70 dark:bg-indigo-900/30 rounded-xl border border-indigo-100 dark:border-indigo-800">
+                      <p className="text-xs text-gray-500 font-medium">Selected So Far</p>
+                      <p className="text-xl font-extrabold text-indigo-600 dark:text-indigo-400">
+                        {photosSelection.selectedCount.toLocaleString()} items
                       </p>
-                      <p className="text-lg font-extrabold text-gray-900 dark:text-white">{photosSelection.photosCount.toLocaleString()}</p>
+                      <p className="text-[11px] text-gray-400 mt-0.5">{formatBytes(photosSelection.totalBytes)}</p>
                     </div>
-                    <div className="p-2.5 bg-purple-50/50 dark:bg-purple-900/20 rounded-lg">
-                      <p className="text-xs text-gray-500 flex items-center justify-center">
-                        <Video className="w-3 h-3 mr-1 text-purple-500" /> Videos
+                    <div className="p-3 bg-blue-50/70 dark:bg-blue-900/30 rounded-xl border border-blue-100 dark:border-blue-800">
+                      <p className="text-xs text-gray-500 font-medium flex items-center justify-center">
+                        <Image className="w-3.5 h-3.5 mr-1 text-blue-500" /> Photos
                       </p>
-                      <p className="text-lg font-extrabold text-gray-900 dark:text-white">{photosSelection.videosCount.toLocaleString()}</p>
+                      <p className="text-xl font-extrabold text-blue-600 dark:text-blue-400">
+                        {photosSelection.photosCount.toLocaleString()}
+                      </p>
                     </div>
+                    <div className="p-3 bg-purple-50/70 dark:bg-purple-900/30 rounded-xl border border-purple-100 dark:border-purple-800">
+                      <p className="text-xs text-gray-500 font-medium flex items-center justify-center">
+                        <Video className="w-3.5 h-3.5 mr-1 text-purple-500" /> Videos
+                      </p>
+                      <p className="text-xl font-extrabold text-purple-600 dark:text-purple-400">
+                        {photosSelection.videosCount.toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Selection Batches History List */}
+                  {photosSelection.batches && photosSelection.batches.length > 0 && (
+                    <div className="space-y-2 pt-1 border-t border-gray-100 dark:border-gray-700">
+                      <p className="text-xs font-bold text-gray-700 dark:text-gray-300">
+                        Selection Batches ({photosSelection.batches.length})
+                      </p>
+                      <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                        {photosSelection.batches.map((b) => (
+                          <div
+                            key={b.batchNumber}
+                            className="flex items-center justify-between p-2 rounded-lg bg-gray-50 dark:bg-gray-700/50 text-xs"
+                          >
+                            <div className="flex items-center space-x-2">
+                              <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0" />
+                              <span className="font-semibold text-gray-800 dark:text-gray-200">
+                                Batch {b.batchNumber}
+                              </span>
+                            </div>
+                            <div className="text-gray-600 dark:text-gray-400 font-mono">
+                              {b.selectedCount.toLocaleString()} items
+                              {b.duplicateCount > 0 && (
+                                <span className="text-amber-500 ml-1 text-[10px]">
+                                  ({b.duplicateCount} dupes skipped)
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Multi-Batch Action Buttons */}
+                  <div className="flex items-center justify-between pt-2 border-t border-gray-100 dark:border-gray-700">
+                    <button
+                      onClick={() => setPickerModalOpen(true)}
+                      className="inline-flex items-center px-4 py-2 bg-indigo-50 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 font-bold text-xs rounded-xl hover:bg-indigo-100 dark:hover:bg-indigo-900/60 transition-all border border-indigo-200 dark:border-indigo-800"
+                    >
+                      <Sparkles className="w-4 h-4 mr-1.5 text-indigo-500" /> + Add More Photos & Videos
+                    </button>
+                    <span className="text-[11px] text-gray-400">
+                      Single cumulative migration job
+                    </span>
                   </div>
                 </div>
               )}
@@ -770,6 +830,7 @@ export default function Migration() {
         onSelectionComplete={(summary) => {
           setPhotosSelection(summary);
         }}
+        manifestId={photosSelection?.manifestId}
       />
 
       {showResumeModal && (

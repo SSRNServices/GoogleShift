@@ -4,22 +4,35 @@ import { API_URL } from '../config/api';
 import { Loader2, Image, AlertCircle, ExternalLink, X, ShieldAlert } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
+export interface PhotosBatchSummary {
+  id?: string;
+  batchNumber: number;
+  selectedCount: number;
+  newCount: number;
+  duplicateCount: number;
+  photosCount?: number;
+  videosCount?: number;
+  status?: string;
+}
+
 export interface PhotosSelectionSummary {
-  sessionId: string;
+  sessionId?: string;
   selectedCount: number;
   photosCount: number;
   videosCount: number;
   totalBytes: number;
   manifestId?: string;
+  batches?: PhotosBatchSummary[];
 }
 
 interface PhotosPickerModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSelectionComplete: (summary: PhotosSelectionSummary) => void;
+  manifestId?: string;
 }
 
-export function PhotosPickerModal({ isOpen, onClose, onSelectionComplete }: PhotosPickerModalProps) {
+export function PhotosPickerModal({ isOpen, onClose, onSelectionComplete, manifestId }: PhotosPickerModalProps) {
   const [statusText, setStatusText] = useState('Initializing Google Photos Picker...');
   const [pickerUri, setPickerUri] = useState<string | null>(null);
   const [stage, setStage] = useState<'INITIALIZING' | 'WAITING' | 'ENUMERATING' | 'COMPLETE' | 'EXPIRED' | 'AUTH_REQUIRED' | 'API_DISABLED' | 'TOKEN_EXPIRED' | 'ERROR'>('INITIALIZING');
@@ -41,9 +54,12 @@ export function PhotosPickerModal({ isOpen, onClose, onSelectionComplete }: Phot
       isEnumeratingRef.current = false;
       setErrorMsg(null);
       setStage('INITIALIZING');
-      setStatusText('Creating Google Photos Picker session...');
+      setStatusText(manifestId ? 'Adding another batch (up to 2,000 items)...' : 'Creating Google Photos Picker session...');
 
-      const res = await apiClient('/api/photos/picker/session', { method: 'POST' });
+      const res = await apiClient('/api/photos/picker/session', {
+        method: 'POST',
+        body: JSON.stringify({ manifestId })
+      });
       if (!res.session || !res.session.pickerUri) {
         throw new Error('Failed to obtain Google Photos Picker URL.');
       }
@@ -51,7 +67,7 @@ export function PhotosPickerModal({ isOpen, onClose, onSelectionComplete }: Phot
       const session = res.session;
       setPickerUri(session.pickerUri);
       setStage('WAITING');
-      setStatusText('Google Photos Picker opened. Please select your photos and videos.');
+      setStatusText('Google Photos Picker opened. Please select up to 2,000 photos/videos and click "Done".');
 
       // Open official Google Photos Picker in a centered popup window
       const width = 850;
@@ -128,11 +144,11 @@ export function PhotosPickerModal({ isOpen, onClose, onSelectionComplete }: Phot
 
     try {
       setStage('ENUMERATING');
-      setStatusText('Retrieving selected media items...');
+      setStatusText('Retrieving and deduplicating selected media items...');
 
       const res = await apiClient(`/api/photos/picker/session/${sId}/items`, {
         method: 'POST',
-        body: JSON.stringify({})
+        body: JSON.stringify({ manifestId })
       });
 
       if (!res.success) {
@@ -148,10 +164,15 @@ export function PhotosPickerModal({ isOpen, onClose, onSelectionComplete }: Phot
         photosCount: res.photosCount || 0,
         videosCount: res.videosCount || 0,
         totalBytes: res.totalBytes || 0,
-        manifestId: res.manifestId
+        manifestId: res.manifestId,
+        batches: res.batches || []
       };
 
-      toast.success(`Selected ${summary.selectedCount} items (${summary.photosCount} photos, ${summary.videosCount} videos)`);
+      if (res.batchAdded) {
+        toast.success(`Added Batch #${res.batchAdded.batchNumber}: ${res.batchAdded.newCount} new items (${res.batchAdded.duplicateCount} duplicates skipped). Total selected: ${summary.selectedCount}`);
+      } else {
+        toast.success(`Selected ${summary.selectedCount} items (${summary.photosCount} photos, ${summary.videosCount} videos)`);
+      }
       onSelectionComplete(summary);
       onClose();
     } catch (err: any) {

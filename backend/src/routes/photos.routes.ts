@@ -88,10 +88,32 @@ router.get('/auth/status', requireUserAuth, async (req, res) => {
 router.post('/picker/session', requireUserAuth, async (req, res) => {
   try {
     const userId = (req as any).user.id;
-    const session = await photosPickerService.createPickerSession(userId);
+    const { manifestId } = req.body || {};
+    const session = await photosPickerService.createPickerSession(userId, manifestId);
     res.status(201).json({ success: true, session });
   } catch (error: any) {
     handleRouteError(res, error, 'Failed to create Google Photos Picker session.');
+  }
+});
+
+// GET /api/photos/selection/:manifestId - Get cumulative selection summary & batch history
+router.get('/selection/:manifestId', requireUserAuth, async (req, res) => {
+  try {
+    const manifestId = req.params.manifestId as string;
+    const stats = await PhotosManifestStorage.getSummaryStats(manifestId);
+    res.json({
+      success: true,
+      summary: {
+        manifestId: stats.manifestId,
+        selectedCount: stats.totalItems,
+        photosCount: stats.photosCount,
+        videosCount: stats.videosCount,
+        totalBytes: stats.totalBytes,
+        batches: stats.batches
+      }
+    });
+  } catch (error: any) {
+    handleRouteError(res, error, 'Failed to retrieve selection summary.');
   }
 });
 
@@ -114,7 +136,7 @@ router.post('/picker/session/:id/items', requireUserAuth, async (req, res) => {
     const sessionId = req.params.id as string;
     const { manifestId } = req.body || {};
 
-    const targetManifestId = manifestId || `photos-migration-${Date.now()}`;
+    const targetManifestId = manifestId || `photos-manifest-${Date.now()}`;
     const result = await photosPickerService.enumerateAndPersistSelectedItems(userId, sessionId, targetManifestId);
 
     res.json({
@@ -190,7 +212,7 @@ router.get('/migrations/history', requireUserAuth, async (req, res) => {
 router.post('/migrations', requireUserAuth, async (req, res) => {
   try {
     const userId = (req as any).user.id;
-    const { pickerSessionId, destinationDriveFolderId, destinationDriveFolderName, organization } = req.body || {};
+    const { pickerSessionId, manifestId, destinationDriveFolderId, destinationDriveFolderName, organization } = req.body || {};
 
     const sourceAccount = await tokenStore.getAccount(userId, 'photos-source');
     const destAccount = await tokenStore.getAccount(userId, 'destination');
@@ -203,13 +225,14 @@ router.post('/migrations', requireUserAuth, async (req, res) => {
       return res.status(400).json({ error: 'Destination Google Drive account is not connected.' });
     }
 
-    if (!pickerSessionId) {
-      return res.status(400).json({ error: 'Google Photos Picker session ID is required.' });
+    if (!pickerSessionId && !manifestId) {
+      return res.status(400).json({ error: 'Google Photos selection manifest ID or session ID is required.' });
     }
 
     const result = await photosMigrationService.createPhotosJob({
       userId,
       pickerSessionId,
+      manifestId,
       destinationDriveFolderId: destinationDriveFolderId || 'root',
       destinationDriveFolderName: destinationDriveFolderName || 'My Drive',
       organization: organization === 'BY_YEAR' ? 'BY_YEAR' : 'FLAT',

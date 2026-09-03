@@ -17,6 +17,7 @@ export interface PickerSessionResult {
   videosCount: number;
   totalBytes: number;
   expiresAt: string;
+  manifestId?: string;
 }
 
 export class PhotosPickerService {
@@ -25,7 +26,7 @@ export class PhotosPickerService {
   /**
    * Create a Google Photos Picker Session for the user
    */
-  public async createPickerSession(userId: string): Promise<PickerSessionResult> {
+  public async createPickerSession(userId: string, manifestId?: string): Promise<PickerSessionResult> {
     const authStatus = await authService.isPhotosPickerAuthorized(userId);
     if (!authStatus.pickerAuthorized) {
       console.warn(`[PhotosPicker] Pre-check failed for userId=${userId}: ${authStatus.reason}`);
@@ -52,11 +53,13 @@ export class PhotosPickerService {
       throw err;
     }
 
+    const targetManifestId = manifestId || `photos-manifest-${Date.now()}`;
+
     try {
-      console.log(`[PhotosPicker] Creating picker session for userId=${userId}...`);
+      console.log(`[PhotosPicker] Creating picker session (maxItemCount: 2000) for userId=${userId}, manifestId=${targetManifestId}...`);
       const response = await axios.post(
         `${this.pickerApiBase}/sessions`,
-        {},
+        { maxItemCount: 2000 },
         {
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -74,7 +77,6 @@ export class PhotosPickerService {
         throw new Error('Invalid response from Google Photos Picker API: missing session ID or picker URI.');
       }
 
-      // Append /autoclose so the popup window closes automatically after selection completes
       if (!pickerUri.includes('/autoclose')) {
         pickerUri = pickerUri.endsWith('/') ? `${pickerUri}autoclose` : `${pickerUri}/autoclose`;
       }
@@ -82,18 +84,18 @@ export class PhotosPickerService {
       const expireTimeStr = sessionData.expireTime || sessionData.expiresAt;
       const expiresAt = expireTimeStr ? new Date(expireTimeStr) : new Date(Date.now() + 30 * 60 * 1000);
 
-      // Persist in Prisma
       const dbSession = await prisma.photosPickerSession.create({
         data: {
           pickerSessionId,
           pickerUri,
           userId,
+          manifestId: targetManifestId,
           status: 'CREATED',
           expiresAt
         }
       });
 
-      console.log(`[PhotosPicker] Picker session created cleanly. DB ID=${dbSession.id}, GoogleSessionId=${pickerSessionId}`);
+      console.log(`[PhotosPicker] Picker session created cleanly. DB ID=${dbSession.id}, GoogleSessionId=${pickerSessionId}, ManifestId=${targetManifestId}`);
 
       return {
         id: dbSession.id,
@@ -105,153 +107,33 @@ export class PhotosPickerService {
         photosCount: 0,
         videosCount: 0,
         totalBytes: 0,
-        expiresAt: expiresAt.toISOString()
+        expiresAt: expiresAt.toISOString(),
+        manifestId: targetManifestId
       };
     } catch (err: any) {
       HttpErrorSanitizer.logError('PhotosPickerService.createPickerSession', err);
       const classified = GoogleApiErrorClassifier.classify(err);
 
-      console.error(`[PhotosPicker] ERROR Code: ${classified.code} | HttpStatus: ${classified.statusCode} | Reason: ${classified.rawReason || 'N/A'} | Msg: ${classified.userMessage}`);
+      console.error(`[PhotosPicker] Session creation failed (Status ${classified.statusCode}): ${classified.code} - ${classified.userMessage}`);
 
       const classifiedErr = new Error(`${classified.code}: ${classified.userMessage}`);
       (classifiedErr as any).code = classified.code;
       (classifiedErr as any).statusCode = classified.statusCode;
-      (classifiedErr as any).classified = classified;
       throw classifiedErr;
     }
   }
 
   /**
-   * Poll Google Photos Picker session status
+   * Check status of a Google Photos Picker Session
    */
-  public async getPickerSessionStatus(userId: string, sessionId: string): Promise<PickerSessionResult> {
+  public async getPickerSessionStatus(userId: string, dbSessionId: string): Promise<PickerSessionResult> {
     const dbSession = await prisma.photosPickerSession.findFirst({
       where: {
-        OR: [{ id: sessionId }, { pickerSessionId: sessionId }],
-        userId
-      }
-    });
-
-    if (!dbSession) {
-      throw new Error('Picker session not found or does not belong to the user.');
-    }
-
-    // Check local expiration
-    if (new Date() > dbSession.expiresAt && dbSession.status !== 'SELECTION_COMPLETE') {
-      await prisma.photosPickerSession.update({
-        where: { id: dbSession.id },
-        data: { status: 'EXPIRED' }
-      });
-      return {
-        id: dbSession.id,
-        pickerSessionId: dbSession.pickerSessionId,
-        pickerUri: dbSession.pickerUri,
-        status: 'EXPIRED',
-        mediaItemsSet: dbSession.mediaItemsSet,
-        selectedCount: dbSession.selectedCount,
-        photosCount: dbSession.photosCount,
-        videosCount: dbSession.videosCount,
-        totalBytes: Number(dbSession.totalBytes),
-        expiresAt: dbSession.expiresAt.toISOString()
-      };
-    }
-
-    if (dbSession.status === 'SELECTION_COMPLETE') {
-      return {
-        id: dbSession.id,
-        pickerSessionId: dbSession.pickerSessionId,
-        pickerUri: dbSession.pickerUri,
-        status: dbSession.status,
-        mediaItemsSet: true,
-        selectedCount: dbSession.selectedCount,
-        photosCount: dbSession.photosCount,
-        videosCount: dbSession.videosCount,
-        totalBytes: Number(dbSession.totalBytes),
-        expiresAt: dbSession.expiresAt.toISOString()
-      };
-    }
-
-    // Poll Google Photos Picker API
-    const client = await googleClientManager.getAuthenticatedClient(userId, 'photos-source');
-    if (!client) {
-      throw new Error('Google Photos account is not connected.');
-    }
-
-    const tokenRes = await client.getAccessToken();
-    const accessToken = tokenRes.token || client.credentials.access_token;
-    if (!accessToken) {
-      throw new Error('Google Photos access token is missing or expired.');
-    }
-
-    try {
-      const response = await axios.get(
-        `${this.pickerApiBase}/sessions/${dbSession.pickerSessionId}`,
-        {
-          headers: { Authorization: `Bearer ${accessToken}` },
-          timeout: 10000
-        }
-      );
-
-      const sessionData = response.data;
-      const mediaItemsSet = !!sessionData.mediaItemsSet;
-      const status = mediaItemsSet ? 'SELECTION_COMPLETE' : (dbSession.status === 'CREATED' ? 'WAITING_FOR_SELECTION' : dbSession.status);
-
-      if (status !== dbSession.status || mediaItemsSet !== dbSession.mediaItemsSet) {
-        await prisma.photosPickerSession.update({
-          where: { id: dbSession.id },
-          data: { status, mediaItemsSet }
-        });
-      }
-
-      return {
-        id: dbSession.id,
-        pickerSessionId: dbSession.pickerSessionId,
-        pickerUri: dbSession.pickerUri,
-        status,
-        mediaItemsSet,
-        selectedCount: dbSession.selectedCount,
-        photosCount: dbSession.photosCount,
-        videosCount: dbSession.videosCount,
-        totalBytes: Number(dbSession.totalBytes),
-        expiresAt: dbSession.expiresAt.toISOString()
-      };
-    } catch (err: any) {
-      HttpErrorSanitizer.logError('PhotosPickerService.getPickerSessionStatus', err);
-      const info = HttpErrorSanitizer.extractSanitizedInfo(err);
-      if (info.status === 404 || info.status === 410) {
-        await prisma.photosPickerSession.update({
-          where: { id: dbSession.id },
-          data: { status: 'EXPIRED' }
-        });
-        return {
-          id: dbSession.id,
-          pickerSessionId: dbSession.pickerSessionId,
-          pickerUri: dbSession.pickerUri,
-          status: 'EXPIRED',
-          mediaItemsSet: dbSession.mediaItemsSet,
-          selectedCount: dbSession.selectedCount,
-          photosCount: dbSession.photosCount,
-          videosCount: dbSession.videosCount,
-          totalBytes: Number(dbSession.totalBytes),
-          expiresAt: dbSession.expiresAt.toISOString()
-        };
-      }
-      throw new Error(`Failed to check Picker session status: ${info.message}`);
-    }
-  }
-
-  /**
-   * Enumerate selected media items from Google Photos Picker API with pagination and persist to SQLite manifest
-   */
-  public async enumerateAndPersistSelectedItems(
-    userId: string,
-    sessionId: string,
-    targetManifestId: string
-  ): Promise<{ selectedCount: number; photosCount: number; videosCount: number; totalBytes: number; manifestId: string }> {
-    const dbSession = await prisma.photosPickerSession.findFirst({
-      where: {
-        OR: [{ id: sessionId }, { pickerSessionId: sessionId }],
-        userId
+        userId,
+        OR: [
+          { id: dbSessionId },
+          { pickerSessionId: dbSessionId }
+        ]
       }
     });
 
@@ -259,26 +141,194 @@ export class PhotosPickerService {
       throw new Error('Picker session not found.');
     }
 
-    // IDEMPOTENCY GUARD: If session is already completed or cleaned up, return cached result!
-    if ((dbSession.status === 'SELECTION_COMPLETE' || dbSession.status === 'CLEANED_UP') && dbSession.manifestId) {
-      console.log(`[PhotosPicker] Session ${dbSession.pickerSessionId} already completed with manifestId=${dbSession.manifestId}. Returning cached selection stats.`);
-      const cachedStats = await PhotosManifestStorage.getSummaryStats(dbSession.manifestId).catch(() => null);
-      
-      const selectedCount = cachedStats?.totalItems || dbSession.selectedCount;
-      const photosCount = cachedStats?.photosCount || dbSession.photosCount;
-      const videosCount = cachedStats?.videosCount || dbSession.videosCount;
-      const totalBytes = cachedStats?.totalBytes || Number(dbSession.totalBytes);
+    if (dbSession.status === 'CREATED' && new Date() > dbSession.expiresAt) {
+      await prisma.photosPickerSession.update({
+        where: { id: dbSession.id },
+        data: { status: 'EXPIRED' }
+      });
+      dbSession.status = 'EXPIRED';
+    }
 
+    let selectedCount = dbSession.selectedCount;
+    let photosCount = dbSession.photosCount;
+    let videosCount = dbSession.videosCount;
+    let totalBytes = Number(dbSession.totalBytes);
+
+    if (dbSession.manifestId) {
+      const stats = await PhotosManifestStorage.getSummaryStats(dbSession.manifestId).catch(() => null);
+      if (stats) {
+        selectedCount = stats.totalItems;
+        photosCount = stats.photosCount;
+        videosCount = stats.videosCount;
+        totalBytes = stats.totalBytes;
+      }
+    }
+
+    if (dbSession.mediaItemsSet || dbSession.status === 'SELECTION_COMPLETE' || dbSession.status === 'CLEANED_UP') {
       return {
+        id: dbSession.id,
+        pickerSessionId: dbSession.pickerSessionId,
+        pickerUri: dbSession.pickerUri,
+        status: dbSession.status,
+        mediaItemsSet: true,
         selectedCount,
         photosCount,
         videosCount,
         totalBytes,
-        manifestId: dbSession.manifestId
+        expiresAt: dbSession.expiresAt.toISOString(),
+        manifestId: dbSession.manifestId || undefined
       };
     }
 
-    // CONCURRENCY GUARD: If currently enumerating, wait for in-flight operation
+    const client = await googleClientManager.getAuthenticatedClient(userId, 'photos-source');
+    if (!client) {
+      return {
+        id: dbSession.id,
+        pickerSessionId: dbSession.pickerSessionId,
+        pickerUri: dbSession.pickerUri,
+        status: dbSession.status,
+        mediaItemsSet: false,
+        selectedCount: 0,
+        photosCount: 0,
+        videosCount: 0,
+        totalBytes: 0,
+        expiresAt: dbSession.expiresAt.toISOString(),
+        manifestId: dbSession.manifestId || undefined
+      };
+    }
+
+    const tokenRes = await client.getAccessToken();
+    const accessToken = tokenRes.token || client.credentials.access_token;
+    if (!accessToken) {
+      return {
+        id: dbSession.id,
+        pickerSessionId: dbSession.pickerSessionId,
+        pickerUri: dbSession.pickerUri,
+        status: dbSession.status,
+        mediaItemsSet: false,
+        selectedCount: 0,
+        photosCount: 0,
+        videosCount: 0,
+        totalBytes: 0,
+        expiresAt: dbSession.expiresAt.toISOString(),
+        manifestId: dbSession.manifestId || undefined
+      };
+    }
+
+    try {
+      const response = await axios.get(`${this.pickerApiBase}/sessions/${dbSession.pickerSessionId}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        timeout: 10000
+      });
+
+      const sessionData = response.data;
+      const mediaItemsSet = !!sessionData.mediaItemsSet;
+
+      if (mediaItemsSet && !dbSession.mediaItemsSet) {
+        await prisma.photosPickerSession.update({
+          where: { id: dbSession.id },
+          data: { mediaItemsSet: true, status: 'SELECTION_COMPLETE' }
+        });
+      }
+
+      return {
+        id: dbSession.id,
+        pickerSessionId: dbSession.pickerSessionId,
+        pickerUri: dbSession.pickerUri,
+        status: mediaItemsSet ? 'SELECTION_COMPLETE' : dbSession.status,
+        mediaItemsSet,
+        selectedCount,
+        photosCount,
+        videosCount,
+        totalBytes,
+        expiresAt: dbSession.expiresAt.toISOString(),
+        manifestId: dbSession.manifestId || undefined
+      };
+    } catch (err: any) {
+      HttpErrorSanitizer.logError('PhotosPickerService.getPickerSessionStatus', err);
+      const classified = GoogleApiErrorClassifier.classify(err);
+
+      if (classified.code === PhotosErrorCode.PHOTOS_PICKER_SESSION_NOT_FOUND && dbSession.manifestId) {
+        const stats = await PhotosManifestStorage.getSummaryStats(dbSession.manifestId).catch(() => null);
+        if (stats && stats.totalItems > 0) {
+          console.warn(`[PhotosPicker] Session ${dbSession.pickerSessionId} 404'd on Google API, but local manifest ${dbSession.manifestId} has ${stats.totalItems} items. Treating as SELECTION_COMPLETE.`);
+          return {
+            id: dbSession.id,
+            pickerSessionId: dbSession.pickerSessionId,
+            pickerUri: dbSession.pickerUri,
+            status: 'SELECTION_COMPLETE',
+            mediaItemsSet: true,
+            selectedCount: stats.totalItems,
+            photosCount: stats.photosCount,
+            videosCount: stats.videosCount,
+            totalBytes: stats.totalBytes,
+            expiresAt: dbSession.expiresAt.toISOString(),
+            manifestId: dbSession.manifestId
+          };
+        }
+      }
+
+      return {
+        id: dbSession.id,
+        pickerSessionId: dbSession.pickerSessionId,
+        pickerUri: dbSession.pickerUri,
+        status: dbSession.status,
+        mediaItemsSet: dbSession.mediaItemsSet,
+        selectedCount,
+        photosCount,
+        videosCount,
+        totalBytes,
+        expiresAt: dbSession.expiresAt.toISOString(),
+        manifestId: dbSession.manifestId || undefined
+      };
+    }
+  }
+
+  /**
+   * Enumerate selected media items from Google Photos Picker Session and persist them to SQLite manifest
+   */
+  public async enumerateAndPersistSelectedItems(
+    userId: string,
+    dbSessionId: string,
+    targetManifestId?: string
+  ): Promise<{
+    selectedCount: number;
+    photosCount: number;
+    videosCount: number;
+    totalBytes: number;
+    manifestId: string;
+    batches?: any[];
+    batchAdded?: any;
+  }> {
+    const dbSession = await prisma.photosPickerSession.findFirst({
+      where: {
+        userId,
+        OR: [
+          { id: dbSessionId },
+          { pickerSessionId: dbSessionId }
+        ]
+      }
+    });
+
+    if (!dbSession) {
+      throw new Error('Picker session not found.');
+    }
+
+    if ((dbSession.status === 'SELECTION_COMPLETE' || dbSession.status === 'CLEANED_UP') && dbSession.manifestId) {
+      console.log(`[PhotosPicker] Session ${dbSession.pickerSessionId} already completed with manifestId=${dbSession.manifestId}. Returning cached selection stats.`);
+      const cachedStats = await PhotosManifestStorage.getSummaryStats(dbSession.manifestId).catch(() => null);
+      if (cachedStats) {
+        return {
+          selectedCount: cachedStats.totalItems,
+          photosCount: cachedStats.photosCount,
+          videosCount: cachedStats.videosCount,
+          totalBytes: cachedStats.totalBytes,
+          manifestId: dbSession.manifestId,
+          batches: cachedStats.batches
+        };
+      }
+    }
+
     if (dbSession.status === 'ENUMERATING') {
       console.log(`[PhotosPicker] Session ${dbSession.pickerSessionId} is currently being enumerated by another request.`);
       let attempts = 0;
@@ -293,19 +343,19 @@ export class PhotosPickerService {
             photosCount: cachedStats?.photosCount || current.photosCount,
             videosCount: cachedStats?.videosCount || current.videosCount,
             totalBytes: cachedStats?.totalBytes || Number(current.totalBytes),
-            manifestId: current.manifestId
+            manifestId: current.manifestId,
+            batches: cachedStats?.batches || []
           };
         }
       }
     }
 
-    // Atomically transition status to ENUMERATING
     await prisma.photosPickerSession.update({
       where: { id: dbSession.id },
       data: { status: 'ENUMERATING' }
     });
 
-    const manifestId = dbSession.manifestId || targetManifestId;
+    const manifestId = dbSession.manifestId || targetManifestId || `photos-manifest-${Date.now()}`;
 
     const client = await googleClientManager.getAuthenticatedClient(userId, 'photos-source');
     if (!client) {
@@ -323,6 +373,8 @@ export class PhotosPickerService {
     let photosCount = 0;
     let videosCount = 0;
     let totalBytes = 0;
+    let batchNewCount = 0;
+    let batchDuplicateCount = 0;
     let itemSeq = 0;
 
     console.log(`[PhotosPicker] Starting media enumeration for sessionId=${dbSession.pickerSessionId}, manifestId=${manifestId}`);
@@ -355,7 +407,6 @@ export class PhotosPickerService {
             const size = mediaFile.sizeBytes ? Number(mediaFile.sizeBytes) : (mediaFile.size ? Number(mediaFile.size) : 0);
             const creationTime = mediaFile.mediaFileMetadata?.creationTime || mediaFile.createTime || new Date().toISOString();
 
-            // Generate deterministic fallback filename if missing
             let filename = mediaFile.filename || rawItem.filename;
             if (!filename) {
               const ext = isVideo ? 'mp4' : (mimeType.includes('png') ? 'png' : 'jpg');
@@ -391,15 +442,16 @@ export class PhotosPickerService {
             totalBytes += size;
           }
 
-          // Persist chunk to SQLite
-          await PhotosManifestStorage.saveMediaItemsChunk(manifestId, manifestItems);
-          console.log(`[PhotosPicker] Persisted chunk of ${manifestItems.length} items to manifest ${manifestId}. (Total: ${totalSelected})`);
+          const saveRes = await PhotosManifestStorage.saveMediaItemsChunk(manifestId, manifestItems);
+          batchNewCount += saveRes.newCount;
+          batchDuplicateCount += saveRes.duplicateCount;
+
+          console.log(`[PhotosPicker] Persisted chunk of ${manifestItems.length} items to manifest ${manifestId}. (Batch total: ${totalSelected}, New: ${batchNewCount}, Dupes: ${batchDuplicateCount})`);
         }
       } catch (err: any) {
         HttpErrorSanitizer.logError('PhotosPickerService.enumerateAndPersistSelectedItems', err);
         const classified = GoogleApiErrorClassifier.classify(err);
 
-        // If 404 and session is already deleted, but items were saved, break cleanly without failing!
         if (classified.code === PhotosErrorCode.PHOTOS_PICKER_SESSION_NOT_FOUND && totalSelected > 0) {
           console.warn(`[PhotosPicker] Session ${dbSession.pickerSessionId} returned 404 during pagination, but ${totalSelected} items were already persisted.`);
           break;
@@ -412,7 +464,24 @@ export class PhotosPickerService {
       }
     } while (pageToken);
 
-    // Update session summary & manifestId in DB
+    const existingBatches = await PhotosManifestStorage.getBatches(manifestId);
+    const batchNumber = existingBatches.length + 1;
+
+    await PhotosManifestStorage.recordBatch(manifestId, {
+      id: `batch_${dbSession.id}`,
+      manifestId,
+      pickerSessionId: dbSession.pickerSessionId,
+      batchNumber,
+      selectedCount: totalSelected,
+      newCount: batchNewCount,
+      duplicateCount: batchDuplicateCount,
+      photosCount,
+      videosCount,
+      totalBytes,
+      status: 'COMPLETED',
+      createdAt: Date.now()
+    });
+
     await prisma.photosPickerSession.update({
       where: { id: dbSession.id },
       data: {
@@ -426,7 +495,6 @@ export class PhotosPickerService {
       }
     });
 
-    // Cleanup session on Google Photos API server-side
     try {
       await axios.delete(`${this.pickerApiBase}/sessions/${dbSession.pickerSessionId}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
@@ -441,12 +509,21 @@ export class PhotosPickerService {
       console.warn(`[PhotosPicker] Non-fatal warning: Google Picker session deletion returned: ${cleanupErr.message}`);
     }
 
+    const cumulativeStats = await PhotosManifestStorage.getSummaryStats(manifestId);
+
     return {
-      selectedCount: totalSelected,
-      photosCount,
-      videosCount,
-      totalBytes,
-      manifestId
+      selectedCount: cumulativeStats.totalItems,
+      photosCount: cumulativeStats.photosCount,
+      videosCount: cumulativeStats.videosCount,
+      totalBytes: cumulativeStats.totalBytes,
+      manifestId,
+      batches: cumulativeStats.batches,
+      batchAdded: {
+        batchNumber,
+        selectedCount: totalSelected,
+        newCount: batchNewCount,
+        duplicateCount: batchDuplicateCount
+      }
     };
   }
 }
